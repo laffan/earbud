@@ -84,8 +84,13 @@ final class PreviewView: UIView {
   override func layoutSubviews() {
     super.layoutSubviews()
     let orientation = window?.windowScene?.interfaceOrientation ?? .portrait
-    if let connection = previewLayer.connection, connection.isVideoOrientationSupported {
-      connection.videoOrientation = CapturePlugin.videoOrientation(for: orientation)
+    let wanted = CapturePlugin.videoOrientation(for: orientation)
+    // Only touch the connection when the orientation really changes; layout
+    // runs often and the capture graph should be left alone while recording.
+    if let connection = previewLayer.connection, connection.isVideoOrientationSupported,
+      connection.videoOrientation != wanted
+    {
+      connection.videoOrientation = wanted
     }
   }
 }
@@ -382,6 +387,19 @@ class CapturePlugin: Plugin, AVCaptureFileOutputRecordingDelegate {
         videoSize = nil
       }
 
+      // Attach the preview *before* the session starts. Attaching a preview
+      // layer to a running session adds a connection, which reconfigures the
+      // session; if that lands while the movie output is starting, the
+      // recording stops at once with AVError -11818 "Recording Stopped".
+      var previewConnection: AVCaptureConnection? = nil
+      if videoDevice != nil {
+        previewConnection = DispatchQueue.main.sync { () -> AVCaptureConnection? in
+          self.installPreview(session: session)
+          return self.previewView?.previewLayer.connection
+        }
+        log("preview attached (connection=\(previewConnection != nil))")
+      }
+
       observe(session)
       let runStart = Date()
       session.startRunning()
@@ -394,10 +412,15 @@ class CapturePlugin: Plugin, AVCaptureFileOutputRecordingDelegate {
 
       // Give the capture graph a moment to come up: starting a file output
       // on inactive connections can fail or end immediately.
+      let watched = output.connections + [previewConnection].compactMap { $0 }
       let settleDeadline = Date().addingTimeInterval(1.0)
-      while Date() < settleDeadline && !output.connections.allSatisfy({ $0.isActive }) {
+      while Date() < settleDeadline && !watched.allSatisfy({ $0.isActive }) {
         Thread.sleep(forTimeInterval: 0.02)
       }
+      // Let the first buffers flow before the file writer starts.
+      Thread.sleep(forTimeInterval: 0.1)
+      let allActive = watched.allSatisfy { $0.isActive }
+      log("connections active=\(allActive) count=\(watched.count)")
       if session.isInterrupted {
         throw CaptureError.interrupted(lastInterruption ?? "the capture session was interrupted")
       }
@@ -413,9 +436,6 @@ class CapturePlugin: Plugin, AVCaptureFileOutputRecordingDelegate {
       self.startInvoke = invoke
       self.recordingStartedAt = nil
 
-      if videoDevice != nil {
-        showPreview(session: session)
-      }
       setIdleTimerDisabled(true)
       armStartWatchdog(for: output)
       // Resolved from fileOutput(_:didStartRecordingTo:from:).
@@ -545,9 +565,17 @@ class CapturePlugin: Plugin, AVCaptureFileOutputRecordingDelegate {
         errorCode = error.code
         let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError
         let underlyingText = underlying.map { "\($0.domain) \($0.code)" } ?? "none"
+        let details = error.userInfo
+          .filter { $0.key != NSUnderlyingErrorKey && $0.key != NSLocalizedDescriptionKey }
+          .map { "\($0.key)=\($0.value)" }
+          .sorted()
+          .joined(separator: "; ")
         self.log(
           "recording ended with \(error.domain) \(error.code) (\(error.localizedDescription)); "
-            + "underlying=\(underlyingText) fileComplete=\(ok)")
+            + "underlying=\(underlyingText) fileComplete=\(ok) info: \(details)")
+        if let session = self.session {
+          self.log("session running=\(session.isRunning) interrupted=\(session.isInterrupted)")
+        }
       }
       let seconds = CMTimeGetSeconds(recorded)
       let userStopped = self.stopInvoke != nil
@@ -733,24 +761,34 @@ class CapturePlugin: Plugin, AVCaptureFileOutputRecordingDelegate {
 
   // MARK: Preview (main thread)
 
-  private func showPreview(session: AVCaptureSession) {
-    DispatchQueue.main.async {
-      guard let webView = self.webView, let container = webView.superview else { return }
-      self.previewView?.removeFromSuperview()
-      let preview = PreviewView(frame: webView.frame)
-      preview.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-      preview.backgroundColor = .black
-      // Show the whole recorded frame so framing the keyboard is honest.
-      preview.previewLayer.videoGravity = .resizeAspect
-      preview.previewLayer.session = session
-      container.insertSubview(preview, belowSubview: webView)
-      self.previewView = preview
-
-      self.savedBackground = webView.backgroundColor
-      webView.isOpaque = false
-      webView.backgroundColor = .clear
-      webView.scrollView.backgroundColor = .clear
+  /// Main thread only. Puts the camera preview behind the (now transparent)
+  /// web view and connects it to the session.
+  private func installPreview(session: AVCaptureSession) {
+    guard let webView = self.webView, let container = webView.superview else { return }
+    if let old = previewView {
+      old.previewLayer.session = nil
+      old.removeFromSuperview()
     }
+    let preview = PreviewView(frame: webView.frame)
+    preview.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    preview.backgroundColor = .black
+    // Show the whole recorded frame so framing the keyboard is honest.
+    preview.previewLayer.videoGravity = .resizeAspect
+    preview.previewLayer.session = session
+    // Set the orientation now, before the session runs, so the first layout
+    // pass has nothing to change on the connection.
+    if let connection = preview.previewLayer.connection, connection.isVideoOrientationSupported {
+      connection.videoOrientation = CapturePlugin.videoOrientation(for: currentInterfaceOrientation())
+    }
+    container.insertSubview(preview, belowSubview: webView)
+    previewView = preview
+
+    if !(webView.backgroundColor == UIColor.clear) {
+      savedBackground = webView.backgroundColor
+    }
+    webView.isOpaque = false
+    webView.backgroundColor = .clear
+    webView.scrollView.backgroundColor = .clear
   }
 
   private func hidePreview() {

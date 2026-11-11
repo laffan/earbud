@@ -4,10 +4,11 @@ Earbud's iOS build uses Tauri 2's iOS support. Recording is done natively by
 `plugins/tauri-plugin-capture` (Swift + AVFoundation). Everything else
 (storage, transcription, UI) is shared with desktop.
 
-> **Status:** the app builds and runs on iPhone. The first device build had unreliable recording start-up
-> (a take ending as soon as it started, or hanging on "Starting…"). The current version changes the audio
-> session and start-up handling to address that (see [How capture works](#how-capture-works-on-ios)), but the fix
-> has not been confirmed on a device yet. Use the [device checklist](#first-run-checklist-on-a-device) and the
+> **Status:** the app builds and runs on iPhone. Early device builds had unreliable recording start-up: takes
+> ended about 80 ms after starting with AVError −11818 "Recording Stopped". The recording log pointed to the camera
+> preview being attached to an already-running capture session, which reconfigures it mid-start. The preview is now
+> attached before the session starts (see [How capture works](#how-capture-works-on-ios)). This fix has not been
+> confirmed on a device yet. Use the [device checklist](#first-run-checklist-on-a-device) and the
 > [recording log](#troubleshooting-recording).
 
 ## One-time setup (macOS)
@@ -119,16 +120,18 @@ No other permissions are used. There is no network access, photo-library access 
   app is killed mid-take the recording up to the last fragment usually survives. Earbud recovers such takes on
   the next launch.
 - The live preview is an `AVCaptureVideoPreviewLayer` inserted **behind** the WKWebView, with the webview made
-  transparent while recording. No frames cross the JavaScript bridge; JS receives only small events (input level
+  transparent while recording. It is connected to the capture session **before** `startRunning()`. Attaching a
+  preview layer to a running session adds a connection and reconfigures the session, and if that coincides with the
+  movie output starting, the recording stops immediately (−11818 "Recording Stopped", underlying −16414). Nothing
+  touches the session's configuration while it is recording. No frames cross the JavaScript bridge; JS receives only small events (input level
   10×/s, interruptions, completion) over a Tauri `Channel`.
 - Auto-lock is disabled while recording.
 - The audio session uses `.playAndRecord` with `.videoRecording` mode by default. Settings → *Unprocessed
   microphone* switches to `.measurement` mode (no system AGC/EQ; more faithful but quieter). After recording the
   session returns to `.playback`, so review playback ignores the silent switch.
-- The recording session is **mixable** (`.mixWithOthers`). WKWebView plays audio from a separate process with its
-  own audio session; a non-mixable recording session and the web view's session can interrupt each other, which
-  ends the recording the moment it starts. A side effect: music already playing in another app keeps playing
-  (and is picked up by the microphone). Pause it before recording.
+- The recording session is **mixable** (`.mixWithOthers`), as a precaution: WKWebView plays audio from a separate
+  process with its own audio session, and a non-mixable recording session can be interrupted by it. A side effect:
+  music already playing in another app keeps playing (and is picked up by the microphone). Pause it before recording.
 - Start-up is defensive: the recorder waits for the app to be active after the permission alerts, waits for the
   capture connections to come up before writing, and gives up after 6 s without data instead of hanging. The app
   retries a failed start once automatically. A take that ends by itself within 1.5 s is not saved and is retried

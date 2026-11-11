@@ -136,8 +136,8 @@ Linux; the header of `scripts/tauri-webdriver-smoke.mjs` explains the setup.
 
 ## Known limitations
 
-- **iOS has been run on one device so far.** Recording start-up was unreliable in that first build, and the
-  fix has not been confirmed on hardware yet. If recording misbehaves, Settings → Diagnostics shows a recording
+- **iOS has been run on one device so far.** Recording start-up was unreliable in early builds (the camera
+  preview was attached to the session while recording was starting). The fix has not been confirmed on hardware yet. If recording misbehaves, Settings → Diagnostics shows a recording
   log; see [docs/IOS.md](docs/IOS.md#troubleshooting-recording).
 - **Transcription accuracy** is that of Basic Pitch: expect occasional ghost notes from strong harmonics,
   octave confusions, and approximate note ends with the sustain pedal down. Velocities are estimated from
