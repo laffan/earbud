@@ -17,7 +17,8 @@
     "postinstall": "node scripts/copy-model.mjs",
     "tauri": "tauri",
     "smoke:browser": "node scripts/browser-smoke.cjs",
-    "smoke:tauri": "node scripts/tauri-webdriver-smoke.mjs"
+    "smoke:tauri": "node scripts/tauri-webdriver-smoke.mjs",
+    "smoke:playback": "node scripts/playback-check.cjs"
   },
   "license": "MIT",
   "dependencies": {

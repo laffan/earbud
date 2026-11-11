@@ -88,8 +88,10 @@ APPLE_DEVELOPMENT_TEAM=<your team id> npm run tauri ios dev -- --host
 3. **Transcribe**: happens automatically. The card shows progress, then the chord progression.
 4. **Review**: open a sketch. From top to bottom: the piano roll (scroll it sideways, pinch to zoom; it follows
    the playhead and lights the sounding keys), the detected chords (tap one to hear it), a waveform of the take
-   (tap or drag to scrub; the shaded band is what the roll is showing), the transport, then the video. Choose
+   (tap or drag to scrub; the tinted band is what the roll is showing), the transport, then the video. Choose
    *Take*, *Notes* (a synth plays the transcription) or *Both*, and slow down to 0.75× or 0.5×.
+   Drag the bracket handles at either end of the waveform to **crop playback** to a passage (saved with the
+   sketch; the recording itself is not trimmed), and turn on **loop** to repeat it.
 5. **Edit**: tap *Edit notes*. Tap a note to select it, drag to move it, drag its end to resize it, and
    double-tap to add one. The toolbar transposes, nudges, deletes and undoes. Edits save automatically and can
    be reverted to the original transcription.
@@ -136,6 +138,10 @@ node scripts/make-test-audio.mjs /tmp/chords.wav
 
 ```bash
 SMOKE_WAV=/tmp/chords.wav npm run smoke:browser   # with `npm run dev` running
+```
+
+```bash
+npm run smoke:playback   # scrub, play, crop and loop on the ?demo sketch, with `npm run dev` running
 ```
 
 `npm run smoke:tauri` drives the real desktop app (Rust, SQLite, IPC, asset protocol) through WebDriver on

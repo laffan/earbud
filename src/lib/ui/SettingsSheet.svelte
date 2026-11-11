@@ -103,8 +103,8 @@
   <section>
     <h3>Diagnostics</h3>
     {#if diagnostics === null}
-      <button class="pill-button" onclick={showDiagnostics}>Show recording log</button>
-      <p class="help">Details about recent recording attempts, useful when reporting a problem.</p>
+      <button class="pill-button" onclick={showDiagnostics}>Show diagnostics log</button>
+      <p class="help">Recent recording and playback events, useful when reporting a problem.</p>
     {:else}
       <div class="diag-actions">
         <button class="pill-button" onclick={copyDiagnostics}>{copied ? 'Copied' : 'Copy'}</button>

@@ -34,6 +34,7 @@ pub fn run() {
             commands::discard_sketch,
             commands::update_sketch,
             commands::delete_sketch,
+            commands::set_crop,
             commands::set_transcription_status,
             commands::save_transcription,
             commands::save_edits,

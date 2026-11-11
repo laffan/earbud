@@ -289,6 +289,8 @@ impl Library {
             recovered: row.get("recovered")?,
             summary: summary_json.and_then(|s| serde_json::from_str(&s).ok()),
             has_edits: edited != 0,
+            crop_start_ms: row.get("crop_start_ms")?,
+            crop_end_ms: row.get("crop_end_ms")?,
             id,
         })
     }
@@ -381,6 +383,30 @@ impl Library {
             return Err(Error::NotFound(args.id));
         }
         Ok(self.get(&args.id)?.sketch)
+    }
+
+    /// Set (or clear, with `None`) the playback crop range. Only affects
+    /// playback; the recording is untouched.
+    pub fn set_crop(&self, id: &str, start_ms: Option<i64>, end_ms: Option<i64>) -> Result<Sketch> {
+        validate_id(id)?;
+        if let Some(start) = start_ms {
+            if start < 0 {
+                return Err(Error::Invalid("crop start must not be negative".into()));
+            }
+        }
+        if let (Some(start), Some(end)) = (start_ms, end_ms) {
+            if end - start < 100 {
+                return Err(Error::Invalid("crop range is too short".into()));
+            }
+        }
+        let changed = self.conn().execute(
+            "UPDATE sketches SET crop_start_ms = ?2, crop_end_ms = ?3, updated_at = ?4 WHERE id = ?1",
+            params![id, start_ms, end_ms, now_ms()],
+        )?;
+        if changed == 0 {
+            return Err(Error::NotFound(id.to_string()));
+        }
+        Ok(self.get(id)?.sketch)
     }
 
     /// Permanently delete a sketch and every file that belongs to it.

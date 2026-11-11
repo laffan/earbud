@@ -136,6 +136,9 @@ pub struct Sketch {
     /// produced by the music engine so the list does not need every note.
     pub summary: Option<serde_json::Value>,
     pub has_edits: bool,
+    /// Playback crop range in milliseconds (None = whole take).
+    pub crop_start_ms: Option<i64>,
+    pub crop_end_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]

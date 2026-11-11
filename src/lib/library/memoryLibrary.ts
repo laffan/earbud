@@ -89,6 +89,8 @@ export class MemoryLibrary implements SketchLibrary {
         recovered: false,
         summary: null,
         hasEdits: false,
+        cropStartMs: null,
+        cropEndMs: null,
       },
       transcription: null,
       chunks: [],
@@ -129,6 +131,14 @@ export class MemoryLibrary implements SketchLibrary {
     if (args.textNotes !== undefined) entry.sketch.textNotes = args.textNotes;
     if (args.durationMs !== undefined) entry.sketch.durationMs = args.durationMs;
     entry.sketch.updatedAt = Date.now();
+    return this.snapshot(entry);
+  }
+
+  async setCrop(id: string, startMs: number | null, endMs: number | null): Promise<Sketch> {
+    const entry = this.entry(id);
+    if (startMs !== null && endMs !== null && endMs - startMs < 100) throw new Error('crop range is too short');
+    entry.sketch.cropStartMs = startMs;
+    entry.sketch.cropEndMs = endMs;
     return this.snapshot(entry);
   }
 

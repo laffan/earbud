@@ -45,6 +45,9 @@ export class TauriLibrary implements SketchLibrary {
   remove(id: string) {
     return invoke<void>('delete_sketch', { id });
   }
+  setCrop(id: string, startMs: number | null, endMs: number | null) {
+    return invoke<Sketch>('set_crop', { id, startMs, endMs });
+  }
   setTranscriptionStatus(id: string, status: TranscriptionStatus, error: string | null = null) {
     return invoke<Sketch>('set_transcription_status', { id, status, error });
   }

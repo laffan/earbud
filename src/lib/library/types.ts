@@ -28,6 +28,9 @@ export interface Sketch {
   recovered: boolean;
   summary: SketchSummary | null;
   hasEdits: boolean;
+  /** Playback crop range in milliseconds (null = whole take). */
+  cropStartMs: number | null;
+  cropEndMs: number | null;
 }
 
 export interface Transcription {
@@ -117,6 +120,8 @@ export interface SketchLibrary {
   discard(id: string): Promise<void>;
   update(args: UpdateSketchArgs): Promise<Sketch>;
   remove(id: string): Promise<void>;
+  /** Set or clear (nulls) the playback crop range. The recording is untouched. */
+  setCrop(id: string, startMs: number | null, endMs: number | null): Promise<Sketch>;
   setTranscriptionStatus(id: string, status: TranscriptionStatus, error?: string | null): Promise<Sketch>;
   saveTranscription(args: SaveTranscriptionArgs): Promise<SketchDetail>;
   saveEdits(args: SaveEditsArgs): Promise<SketchDetail>;

@@ -27,6 +27,9 @@
     onchordtap?: (chord: ChordSegment) => void;
     /** Visible time window changed (seconds). */
     onviewchange?: (start: number, end: number) => void;
+    /** Playback crop range (seconds); outside it is dimmed. */
+    cropStart?: number | null;
+    cropEnd?: number | null;
   }
 
   let {
@@ -42,6 +45,8 @@
     onpreview,
     onchordtap,
     onviewchange,
+    cropStart = null,
+    cropEnd = null,
   }: Props = $props();
 
   const GUTTER = 40;
@@ -331,6 +336,25 @@
         // Resize grips.
         ctx.fillStyle = c.paper;
         ctx.fillRect(x + w - 4, y + h / 2 - Math.min(5, h / 3), 2, Math.min(10, (h * 2) / 3));
+      }
+    }
+
+    // Outside the playback crop range.
+    if (cropStart !== null || cropEnd !== null) {
+      ctx.globalAlpha = 0.6;
+      ctx.fillStyle = c.paper;
+      const a = cropStart ?? 0;
+      const b = cropEnd ?? totalSeconds;
+      if (a > t0) ctx.fillRect(GUTTER, CHORD_LANE, Math.min(rollWidth, xOf(a) - GUTTER), height - CHORD_LANE);
+      if (b < t1) {
+        const x = Math.max(GUTTER, xOf(b));
+        ctx.fillRect(x, CHORD_LANE, width - x, height - CHORD_LANE);
+      }
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = c.chord;
+      for (const edge of [cropStart, cropEnd]) {
+        if (edge === null || edge < t0 || edge > t1) continue;
+        ctx.fillRect(Math.round(xOf(edge)) - 1, CHORD_LANE, 2, height - CHORD_LANE);
       }
     }
 

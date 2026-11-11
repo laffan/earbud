@@ -59,6 +59,16 @@ pub async fn update_sketch(library: State<'_, Library>, args: UpdateSketchArgs) 
 }
 
 #[tauri::command]
+pub async fn set_crop(
+    library: State<'_, Library>,
+    id: String,
+    start_ms: Option<i64>,
+    end_ms: Option<i64>,
+) -> Result<Sketch> {
+    library.set_crop(&id, start_ms, end_ms)
+}
+
+#[tauri::command]
 pub async fn delete_sketch(library: State<'_, Library>, id: String) -> Result<()> {
     library.delete_sketch(&id)
 }

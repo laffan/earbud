@@ -179,7 +179,28 @@ which makes the whole UI testable in Chromium.
   200 MB → extracted analysis audio), the listen mode (take / synthesized notes / both), playback rate, the
   editing toolbar with undo/redo and debounced autosave, notes and export.
 
-## 6. Export (`src/lib/export`)
+## 6. Playback transport (`src/lib/playback/transport.ts`)
+
+One `MediaTransport` owns "where are we, are we playing" for the video, waveform, piano roll and synth:
+
+- **Position is authoritative in the UI.** While scrubbing, the playhead follows the finger and the media follows
+  with one seek in flight at a time, always to the latest target (exact seeks; no `fastSeek`, which lands on
+  keyframes and made the views disagree).
+- **Playing is re-derived from the element** on every media event. A source reload stops playback without a
+  `pause` event; relying on play/pause events alone left the app showing *Pause* over a stopped video with a frozen
+  playhead.
+- **Aborted `play()` calls are retried**, not reported. A seek or reload rejects a pending play with AbortError,
+  which had surfaced as a "Playback aborted" error toast.
+- **The position survives a source reload** (e.g. the fallback from the `asset://` URL to an in-memory copy), and
+  playback resumes.
+- **Crop and loop.** Playback is limited to the sketch's crop range (stored as `crop_start_ms` / `crop_end_ms`,
+  schema v2). At the end it stops and returns to the crop start, or loops.
+- Media events (errors with codes, stalls, aborts, reloads, retries) go to the diagnostics log in Settings.
+
+`src/lib/playback/transport.test.ts` drives it with a fake media element: seek coalescing, play after scrub,
+reload during playback, aborted play, crop stop/loop, and throttled animation frames.
+
+## 7. Export (`src/lib/export`)
 
 `prepareExports(ids, kinds)` handles one or many sketches. `kinds` is any of `recording` | `audio` | `notes-audio` | `midi`:
 

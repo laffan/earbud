@@ -173,6 +173,10 @@ These behaviours could not be verified without hardware. Please check them on th
 11. **List gestures**: swiping a sketch left reveals *Share* and *Delete*; vertical scrolling still works when the
     finger starts on a card; pressing and holding a card enters selection mode without opening the iOS text
     selection or callout.
+12. **Playback sync**: scrub the waveform (also while playing), then press play. The playhead in the waveform and
+    piano roll moves with the video, and no error toast appears. Drag the waveform's bracket handles to crop;
+    playback stops at the crop end (or loops with the loop button). If anything is off, Settings → Diagnostics now
+    also records playback events (`[playback]` lines).
 
 To look at what is stored, Safari's Web Inspector console can run:
 

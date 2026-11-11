@@ -6,6 +6,7 @@
   import { normalizeNote, notesEndTime, sortNotes } from '../music/notes';
   import { summarize } from '../music/summary';
   import { NoteSynth } from '../music/synth';
+  import { MediaTransport } from '../playback/transport';
   import { errorMessage, fileUrl } from '../platform/tauri';
   import { app } from '../state/app.svelte';
   import type { PianoNote } from '../transcription/types';
@@ -50,8 +51,46 @@
   let mediaNotice = $state<string | null>(null);
   let blobUrl: string | null = null;
   const BLOB_FALLBACK_LIMIT = 200 * 1024 * 1024;
-  let raf = 0;
+  let buffering = $state(false);
+  /** Playback crop range in seconds (null = whole take). */
+  let cropStart = $state<number | null>(null);
+  let cropEnd = $state<number | null>(null);
+  let loopPlayback = $state(false);
   const synth = new NoteSynth();
+
+  /**
+   * One clock for the video, the waveform, the piano roll and the synth.
+   * `currentTime` and `playing` below always come from it.
+   */
+  const transport = new MediaTransport({
+    onState: (state) => {
+      currentTime = state.position;
+      buffering = state.buffering;
+      if (state.playing !== playing) {
+        playing = state.playing;
+        if (playing && listen !== 'recording') void synth.start(state.position, rate);
+        if (!playing) synth.stop();
+      }
+    },
+    onFrame: (position, playbackRate) => {
+      if (listen !== 'recording') synth.tick(position, playbackRate);
+    },
+    onJump: (position) => {
+      if (listen !== 'recording') void synth.start(position, rate);
+    },
+    onError: (message) => app.toast(message, 'error'),
+    log: (message) => app.logCapture(`[playback] ${message}`),
+  });
+
+  $effect(() => {
+    transport.attach(video);
+  });
+  $effect(() => {
+    transport.setRange(cropStart ?? 0, cropEnd);
+  });
+  $effect(() => {
+    transport.setLoop(loopPlayback);
+  });
 
   // --------------------------------------------------------------- ui
   let roll = $state<ReturnType<typeof PianoRoll> | null>(null);
@@ -92,6 +131,8 @@
       textNotes = d.textNotes;
       notes = workingNotes(d);
       synth.setNotes(notes);
+      cropStart = d.cropStartMs !== null ? d.cropStartMs / 1000 : null;
+      cropEnd = d.cropEndMs !== null ? d.cropEndMs / 1000 : null;
       if (d.mediaPath) {
         sources = [fileUrl(d.mediaPath)];
         sourceIndex = 0;
@@ -137,7 +178,7 @@
     window.clearTimeout(notesTimer);
     if (detail && textNotes !== detail.textNotes) void app.saveNotesText(id, textNotes);
     void saveNow();
-    cancelAnimationFrame(raf);
+    transport.dispose();
     synth.dispose();
     // Release the media pipeline (and WebKit's audio session) right away
     // instead of waiting for garbage collection.
@@ -154,26 +195,6 @@
   $effect(() => {
     if (video) video.muted = listen === 'notes';
   });
-
-  function loop() {
-    if (!video) return;
-    currentTime = video.currentTime;
-    if (listen !== 'recording') synth.tick(video.currentTime, video.playbackRate);
-    if (!video.paused) raf = requestAnimationFrame(loop);
-  }
-
-  function onPlay() {
-    playing = true;
-    if (video && listen !== 'recording') void synth.start(video.currentTime, video.playbackRate);
-    cancelAnimationFrame(raf);
-    raf = requestAnimationFrame(loop);
-  }
-
-  function onPause() {
-    playing = false;
-    synth.stop();
-    if (video) currentTime = video.currentTime;
-  }
 
   function onMetadata() {
     if (!video) return;
@@ -194,6 +215,9 @@
     const d = detail;
     if (!d || !d.mediaPath) return;
     const original = fileUrl(d.mediaPath);
+    app.logCapture(
+      `[playback] source ${sourceIndex} failed (code ${video?.error?.code ?? '?'} ${video?.error?.message ?? ''}); trying the next one`,
+    );
     // Some WebKit builds cannot stream media from a custom URL scheme:
     // retry from an in-memory blob, then fall back to the analysis audio.
     if (sources[sourceIndex] === original && !original.startsWith('blob:')) {
@@ -224,29 +248,12 @@
     mediaNotice = 'This recording cannot be played on this device. It is still saved and can be exported.';
   }
 
-  async function togglePlay() {
-    if (!video) return;
-    if (video.paused) {
-      if (video.ended || (duration > 0 && video.currentTime >= duration - 0.05)) video.currentTime = 0;
-      try {
-        await video.play();
-      } catch (error) {
-        app.toast(`Playback failed: ${errorMessage(error)}`, 'error');
-      }
-    } else {
-      video.pause();
-    }
+  function togglePlay() {
+    transport.toggle();
   }
 
-  function seek(t: number, scrubbing = false) {
-    currentTime = t;
-    if (video) {
-      // While dragging, jump to the nearest keyframe (fast); land exactly on release.
-      const fast = (video as HTMLVideoElement & { fastSeek?: (t: number) => void }).fastSeek;
-      if (scrubbing && typeof fast === 'function') fast.call(video, t);
-      else video.currentTime = t;
-    }
-    if (!scrubbing && playing && listen !== 'recording') void synth.start(t, video?.playbackRate ?? 1);
+  function seek(t: number) {
+    transport.seek(t);
   }
 
   /** Tapping a chord plays it (the voicing from the take where possible). */
@@ -261,13 +268,43 @@
       video.playbackRate = rate;
       (video as HTMLVideoElement & { preservesPitch?: boolean }).preservesPitch = true;
     }
+    if (playing && listen !== 'recording') void synth.start(currentTime, rate);
   }
 
   function setListen(mode: typeof listen) {
     listen = mode;
-    if (!video) return;
     if (mode === 'recording') synth.stop();
-    else if (!video.paused) void synth.start(video.currentTime, video.playbackRate);
+    else if (playing) void synth.start(currentTime, rate);
+  }
+
+  // ------------------------------------------------------------ crop
+
+  const cropped = $derived(cropStart !== null || cropEnd !== null);
+
+  function onCropChange(start: number, end: number, done: boolean) {
+    const whole = start <= 0.05 && end >= duration - 0.05;
+    cropStart = whole ? null : start;
+    cropEnd = whole ? null : end;
+    if (done) void saveCrop();
+  }
+
+  function clearCrop() {
+    cropStart = null;
+    cropEnd = null;
+    void saveCrop();
+  }
+
+  async function saveCrop() {
+    try {
+      const updated = await app.library.setCrop(
+        id,
+        cropStart === null ? null : Math.round(cropStart * 1000),
+        cropEnd === null ? null : Math.round(cropEnd * 1000),
+      );
+      app.upsert(updated);
+    } catch (error) {
+      app.toast(`Could not save the crop: ${errorMessage(error)}`, 'error');
+    }
   }
 
   // ---------------------------------------------------------- editing
@@ -564,6 +601,8 @@
             bind:this={roll}
             {notes}
             {chords}
+            {cropStart}
+            {cropEnd}
             {duration}
             {currentTime}
             {playing}
@@ -627,13 +666,19 @@
           {currentTime}
           {viewStart}
           {viewEnd}
-          onseek={(t, scrubbing) => seek(t, scrubbing)}
+          {cropStart}
+          {cropEnd}
+          onseek={(t) => seek(t)}
+          oncropchange={onCropChange}
         />
         <div class="transport">
           <button class="play" onclick={togglePlay} aria-label={playing ? 'Pause' : 'Play'}>
             <Icon name={playing ? 'pause' : 'play'} size={22} />
           </button>
-          <span class="time tabular">{formatClock(currentTime)}<span class="dim"> / {formatClock(duration)}</span></span>
+          <span class="time tabular"
+            >{formatClock(currentTime)}<span class="dim"> / {formatClock(duration)}</span
+            >{#if buffering}<span class="buffering" aria-live="polite"> loading…</span>{/if}</span
+          >
           <span class="spacer"></span>
           <div class="segmented" role="group" aria-label="Listen to">
             <button aria-pressed={listen === 'recording'} onclick={() => setListen('recording')}>Take</button>
@@ -644,8 +689,24 @@
               >Both</button
             >
           </div>
+          <button
+            class="icon-button loop"
+            class:on={loopPlayback}
+            onclick={() => (loopPlayback = !loopPlayback)}
+            aria-pressed={loopPlayback}
+            aria-label="Loop"
+            title="Loop"
+          >
+            <Icon name="loop" size={18} />
+          </button>
           <button class="pill-button rate tabular" onclick={cycleRate} aria-label="Playback speed">{rate}×</button>
         </div>
+        {#if cropped}
+          <div class="crop-info">
+            <span class="tabular">Playing {formatClock(cropStart ?? 0)}–{formatClock(cropEnd ?? duration)}</span>
+            <button class="link" onclick={clearCrop}>Play the whole take</button>
+          </div>
+        {/if}
       </section>
 
       <!-- 3. The take -->
@@ -660,11 +721,6 @@
               preload="auto"
               onloadedmetadata={onMetadata}
               ondurationchange={() => video && Number.isFinite(video.duration) && (mediaDuration = video.duration)}
-              onplay={onPlay}
-              onpause={onPause}
-              onended={onPause}
-              onseeked={() => video && (currentTime = video.currentTime)}
-              ontimeupdate={() => !playing && video && (currentTime = video.currentTime)}
               onerror={onMediaError}
               onclick={togglePlay}
             ></video>
@@ -942,6 +998,10 @@
   .dim {
     color: var(--ink-3);
   }
+  .buffering {
+    color: var(--ink-3);
+    font-size: 0.8rem;
+  }
   .spacer {
     flex: 1;
   }
@@ -949,6 +1009,28 @@
     min-width: 46px;
     padding: 0 8px;
     justify-content: center;
+  }
+  .loop {
+    width: 36px;
+    height: 36px;
+  }
+  .loop.on {
+    color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .crop-info {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 0.82rem;
+    color: var(--chord);
+  }
+  .link {
+    color: var(--ink-2);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    font-size: 0.82rem;
   }
   .transport .segmented button {
     padding: 0 9px;
@@ -1059,7 +1141,7 @@
     gap: 8px;
   }
 
-  @media (max-width: 380px) {
+  @media (max-width: 430px) {
     .time .dim {
       display: none;
     }

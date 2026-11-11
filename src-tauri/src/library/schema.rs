@@ -39,6 +39,12 @@ const MIGRATIONS: &[&str] = &[
         edited_at           INTEGER
     );
     "#,
+    // v2: playback crop range (milliseconds; NULL = whole take). Playback
+    // only: the recording is never trimmed.
+    r#"
+    ALTER TABLE sketches ADD COLUMN crop_start_ms INTEGER;
+    ALTER TABLE sketches ADD COLUMN crop_end_ms INTEGER;
+    "#,
 ];
 
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {

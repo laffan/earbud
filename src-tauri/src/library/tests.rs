@@ -271,3 +271,50 @@ fn safe_stems() {
     assert_eq!(safe_file_stem("../.."), "-");
     assert_eq!(safe_file_stem("Ballade in G minor"), "Ballade in G minor");
 }
+
+#[test]
+fn crop_range_is_stored_and_validated() {
+    let (_tmp, lib) = lib();
+    let created = create(&lib);
+    fs::write(&created.media_path, b"movie").unwrap();
+    finalize(&lib, &created.id);
+    let s = lib.set_crop(&created.id, Some(2_000), Some(6_500)).unwrap();
+    assert_eq!((s.crop_start_ms, s.crop_end_ms), (Some(2_000), Some(6_500)));
+    assert!(lib.set_crop(&created.id, Some(3_000), Some(3_050)).is_err());
+    assert!(lib.set_crop(&created.id, Some(-1), None).is_err());
+    let cleared = lib.set_crop(&created.id, None, None).unwrap();
+    assert_eq!((cleared.crop_start_ms, cleared.crop_end_ms), (None, None));
+    // The recording is untouched.
+    assert_eq!(fs::read(&created.media_path).unwrap(), b"movie");
+}
+
+#[test]
+fn migrates_a_v1_database() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().join("library");
+    fs::create_dir_all(root.join("sketches")).unwrap();
+    {
+        // A database as written by the first release (schema v1 only).
+        let conn = rusqlite::Connection::open(root.join("earbud.sqlite3")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sketches (id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL DEFAULT '',
+               created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, status TEXT NOT NULL,
+               duration_ms INTEGER, media_file TEXT, media_mime TEXT, has_video INTEGER NOT NULL DEFAULT 1,
+               video_width INTEGER, video_height INTEGER, text_notes TEXT NOT NULL DEFAULT '',
+               transcription_status TEXT NOT NULL DEFAULT 'pending', transcription_error TEXT,
+               capture_backend TEXT NOT NULL DEFAULT '', recovered INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE transcriptions (sketch_id TEXT PRIMARY KEY NOT NULL, engine TEXT NOT NULL,
+               engine_version TEXT NOT NULL, params_json TEXT NOT NULL, original_notes_json TEXT NOT NULL,
+               edited_notes_json TEXT, summary_json TEXT, created_at INTEGER NOT NULL, edited_at INTEGER);
+             INSERT INTO sketches (id, title, created_at, updated_at, status, media_file)
+               VALUES ('0123456789abcdef0123456789abcdef', 'Old', 1, 1, 'saved', 'recording.mov');
+             PRAGMA user_version = 1;",
+        )
+        .unwrap();
+    }
+    let lib = Library::open(&root).unwrap();
+    let sketches = lib.list().unwrap();
+    assert_eq!(sketches.len(), 1);
+    assert_eq!(sketches[0].title, "Old");
+    assert_eq!(sketches[0].crop_start_ms, None);
+}

@@ -3,7 +3,7 @@
   type Name =
     | 'back' | 'more' | 'play' | 'pause' | 'settings' | 'share' | 'trash' | 'undo' | 'redo'
     | 'plus' | 'edit' | 'zoom-in' | 'zoom-out' | 'refresh' | 'close' | 'up' | 'down'
-    | 'left' | 'right' | 'check' | 'mic' | 'camera' | 'shorter' | 'longer' | 'import';
+    | 'left' | 'right' | 'check' | 'mic' | 'camera' | 'shorter' | 'longer' | 'import' | 'loop';
 
   let { name, size = 20, label }: { name: Name; size?: number; label?: string } = $props();
 </script>
@@ -45,6 +45,7 @@
   {:else if name === 'camera'}<path d="M4 8h3l2-3h6l2 3h3v11H4z" /><circle cx="12" cy="13" r="3.5" />
   {:else if name === 'shorter'}<path d="M4 12h9M10 8l-4 4 4 4M20 5v14" />
   {:else if name === 'longer'}<path d="M4 12h13M14 8l4 4-4 4M20 5v14" />
+  {:else if name === 'loop'}<path d="M17 2l3 3-3 3" /><path d="M4 11V9a4 4 0 0 1 4-4h12" /><path d="M7 22l-3-3 3-3" /><path d="M20 13v2a4 4 0 0 1-4 4H4" />
   {:else if name === 'import'}<path d="M12 15V3M7 10l5 5 5-5" /><path d="M5 15v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" />
   {/if}
 </svg>
