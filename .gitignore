@@ -1,0 +1,13 @@
+node_modules
+dist
+.DS_Store
+*.local
+.env
+.env.*
+!.env.example
+vite.config.ts.timestamp-*
+# Copied from node_modules by scripts/copy-model.mjs
+public/models/basic-pitch/
+# Test artifacts
+test-results/
+playwright-report/

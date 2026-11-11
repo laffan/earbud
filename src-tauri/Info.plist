@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Merged by Tauri into the macOS (and iOS) app Info.plist. -->
+<plist version="1.0">
+<dict>
+  <key>NSCameraUsageDescription</key>
+  <string>Earbud records video of your hands at the piano so you can review what you played.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Earbud records the sound of your piano so it can save and transcribe your musical ideas.</string>
+</dict>
+</plist>

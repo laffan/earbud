@@ -1,0 +1,643 @@
+<script lang="ts">
+  /**
+   * Interactive piano roll (canvas).
+   *  - Review: tap to seek, drag to scroll, pinch / ctrl+wheel to zoom; the
+   *    view follows the playhead and lights up sounding notes and keys.
+   *  - Edit: tap a note to select, drag to move (time + pitch), drag an edge
+   *    to resize, double-tap empty space to add, Delete/arrow keys on desktop.
+   */
+  import { onMount, untrack } from 'svelte';
+  import type { ChordSegment } from '../music/chords';
+  import { isBlackKey, noteName, normalizeNote, pitchClass, PIANO_MAX, PIANO_MIN } from '../music/notes';
+  import type { PianoNote } from '../transcription/types';
+  import { formatClock } from './format';
+
+  interface Props {
+    notes: PianoNote[];
+    chords?: ChordSegment[];
+    duration: number;
+    currentTime: number;
+    playing?: boolean;
+    editing?: boolean;
+    selected?: number | null;
+    onseek?: (time: number) => void;
+    onchange?: (notes: PianoNote[], focus: PianoNote | null) => void;
+    onpreview?: (pitch: number) => void;
+  }
+
+  let {
+    notes,
+    chords = [],
+    duration,
+    currentTime,
+    playing = false,
+    editing = false,
+    selected = $bindable(null),
+    onseek,
+    onchange,
+    onpreview,
+  }: Props = $props();
+
+  const GUTTER = 40;
+  const CHORD_LANE = 26;
+  const RULER = 16;
+  const TOP = CHORD_LANE + RULER;
+  const MIN_PX = 12;
+  const MAX_PX = 700;
+
+  let container: HTMLDivElement;
+  let canvas: HTMLCanvasElement;
+  let width = $state(0);
+  let height = $state(0);
+  let pxPerSec = $state(80);
+  let scrollX = $state(0);
+  let userZoomed = false;
+  let fittedFor = 0;
+  let userScrollUntil = 0;
+  let dragPreview = $state<{ index: number; note: PianoNote } | null>(null);
+  let themeVersion = $state(0);
+
+  const notesEnd = $derived(notes.reduce((t, n) => Math.max(t, n.endTime), 0));
+  const totalSeconds = $derived(Math.max(duration || 0, notesEnd, 1));
+  const rollWidth = $derived(Math.max(0, width - GUTTER));
+  const visibleSeconds = $derived(rollWidth / pxPerSec);
+
+  const range = $derived.by(() => {
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const n of notes) {
+      lo = Math.min(lo, n.pitch);
+      hi = Math.max(hi, n.pitch);
+    }
+    if (!Number.isFinite(lo)) {
+      lo = 48;
+      hi = 72;
+    }
+    const pad = editing ? 5 : 2;
+    lo -= pad;
+    hi += pad;
+    const minSpan = 25;
+    if (hi - lo + 1 < minSpan) {
+      const center = (lo + hi) / 2;
+      lo = Math.round(center - minSpan / 2);
+      hi = lo + minSpan - 1;
+    }
+    return { lo: Math.max(PIANO_MIN, lo), hi: Math.min(PIANO_MAX, hi) };
+  });
+  const rowH = $derived(Math.max(3, (height - TOP) / (range.hi - range.lo + 1)));
+
+  const xOf = (t: number) => GUTTER + (t - scrollX) * pxPerSec;
+  const tOf = (x: number) => scrollX + (x - GUTTER) / pxPerSec;
+  const yOf = (pitch: number) => TOP + (range.hi - pitch) * rowH;
+  const pitchOf = (y: number) =>
+    Math.max(range.lo, Math.min(range.hi, range.hi - Math.floor((y - TOP) / rowH)));
+  const snap = (t: number) => Math.round(t * 100) / 100;
+  const clampScroll = (s: number) => Math.max(0, Math.min(s, Math.max(0, totalSeconds - visibleSeconds * 0.85)));
+
+  // ------------------------------------------------------------------ view
+
+  /** Fit short sketches entirely; long ones at a readable zoom. */
+  $effect(() => {
+    const total = totalSeconds;
+    const available = rollWidth;
+    untrack(() => {
+      if (available <= 0 || userZoomed) return;
+      if (Math.abs(total - fittedFor) / Math.max(1, fittedFor) < 0.2) return;
+      fittedFor = total;
+      pxPerSec = Math.max(25, Math.min(160, available / (total * 1.02)));
+      scrollX = clampScroll(scrollX);
+    });
+  });
+
+  /** Follow the playhead. */
+  $effect(() => {
+    // Only react to the clock, not to the user scrolling the view.
+    const t = currentTime;
+    const isPlaying = playing;
+    untrack(() => {
+      if (rollWidth <= 0 || performance.now() < userScrollUntil) return;
+      const left = scrollX;
+      const right = scrollX + visibleSeconds;
+      if (isPlaying) {
+        if (t < left || t > left + visibleSeconds * 0.8) scrollX = clampScroll(t - visibleSeconds * 0.2);
+      } else if (t < left || t > right) {
+        scrollX = clampScroll(t - visibleSeconds * 0.3);
+      }
+    });
+  });
+
+  export function zoom(factor: number) {
+    const anchor = Math.min(Math.max(currentTime, scrollX), scrollX + visibleSeconds);
+    const anchorX = xOf(anchor);
+    userZoomed = true;
+    pxPerSec = Math.max(MIN_PX, Math.min(MAX_PX, pxPerSec * factor));
+    scrollX = clampScroll(anchor - (anchorX - GUTTER) / pxPerSec);
+  }
+
+  export function fit() {
+    userZoomed = false;
+    fittedFor = 0;
+    pxPerSec = Math.max(MIN_PX, Math.min(160, rollWidth / (totalSeconds * 1.02)));
+    scrollX = 0;
+  }
+
+  // --------------------------------------------------------------- drawing
+
+  interface Palette {
+    paper: string;
+    raised: string;
+    sunk: string;
+    ink: string;
+    ink2: string;
+    ink3: string;
+    rule: string;
+    accent: string;
+    note: string;
+    chord: string;
+  }
+  let palette: Palette | null = null;
+
+  function readPalette(): Palette {
+    const cs = getComputedStyle(container);
+    const v = (name: string) => cs.getPropertyValue(name).trim() || '#888';
+    return {
+      paper: v('--paper'),
+      raised: v('--paper-raised'),
+      sunk: v('--paper-sunk'),
+      ink: v('--ink'),
+      ink2: v('--ink-2'),
+      ink3: v('--ink-3'),
+      rule: v('--rule'),
+      accent: v('--accent'),
+      note: v('--note'),
+      chord: v('--chord'),
+    };
+  }
+
+  function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+    const radius = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    if (typeof ctx.roundRect === 'function') {
+      ctx.roundRect(x, y, w, h, radius);
+    } else {
+      ctx.rect(x, y, w, h);
+    }
+  }
+
+  function gridStep(): number {
+    for (const step of [0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120]) {
+      if (step * pxPerSec >= 56) return step;
+    }
+    return 300;
+  }
+
+  function draw() {
+    if (!canvas || !container || width <= 0 || height <= 0) return;
+    void themeVersion;
+    palette ??= readPalette();
+    const c = palette;
+    const dpr = window.devicePixelRatio || 1;
+    const pw = Math.round(width * dpr);
+    const ph = Math.round(height * dpr);
+    if (canvas.width !== pw || canvas.height !== ph) {
+      canvas.width = pw;
+      canvas.height = ph;
+    }
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = c.paper;
+    ctx.fillRect(0, 0, width, height);
+
+    const { lo, hi } = range;
+    const t0 = scrollX;
+    const t1 = scrollX + visibleSeconds;
+
+    // Pitch rows.
+    for (let p = lo; p <= hi; p++) {
+      const y = yOf(p);
+      if (isBlackKey(p)) {
+        ctx.fillStyle = c.sunk;
+        ctx.fillRect(GUTTER, y, rollWidth, rowH);
+      }
+      if (pitchClass(p) === 0) {
+        ctx.fillStyle = c.rule;
+        ctx.fillRect(GUTTER, y + rowH - 0.5, rollWidth, 1);
+      }
+    }
+
+    // Time grid + ruler.
+    const step = gridStep();
+    ctx.font = '10px -apple-system, system-ui, sans-serif';
+    ctx.textBaseline = 'middle';
+    for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
+      const x = Math.round(xOf(t)) + 0.5;
+      ctx.fillStyle = c.rule;
+      ctx.fillRect(x, TOP, 1, height - TOP);
+      ctx.fillStyle = c.ink3;
+      ctx.fillText(step < 1 ? t.toFixed(2).replace(/\.?0+$/, '') + 's' : formatClock(t), x + 3, CHORD_LANE + RULER / 2);
+    }
+    ctx.fillStyle = c.rule;
+    ctx.fillRect(GUTTER, TOP - 0.5, rollWidth, 1);
+
+    // Chord lane.
+    ctx.font = '600 13px ui-serif, "New York", Georgia, serif';
+    for (const chord of chords) {
+      if (chord.endTime < t0 || chord.startTime > t1) continue;
+      const active = currentTime >= chord.startTime && currentTime < chord.endTime;
+      const x0 = Math.max(GUTTER, xOf(chord.startTime));
+      const x1 = Math.min(width, xOf(chord.endTime));
+      ctx.fillStyle = active ? c.accent : c.chord;
+      ctx.globalAlpha = 0.35;
+      ctx.fillRect(x0, CHORD_LANE - 4, Math.max(1, x1 - x0 - 3), 2);
+      ctx.globalAlpha = 1;
+      ctx.fillText(chord.symbol, x0 + 2, CHORD_LANE / 2 - 1);
+    }
+
+    // Notes.
+    const sounding = new Set<number>();
+    const h = Math.max(2, rowH - 1.5);
+    for (let i = 0; i < notes.length; i++) {
+      const n = dragPreview?.index === i ? dragPreview.note : notes[i];
+      if (n.endTime < t0 || n.startTime > t1 || n.pitch < lo || n.pitch > hi) continue;
+      const x = xOf(n.startTime);
+      const w = Math.max(2, (n.endTime - n.startTime) * pxPerSec - 1);
+      const y = yOf(n.pitch) + 0.75;
+      const active = currentTime >= n.startTime && currentTime < n.endTime;
+      if (active) sounding.add(n.pitch);
+      ctx.globalAlpha = 0.4 + 0.6 * Math.min(1, n.confidence ?? 1);
+      ctx.fillStyle = active ? c.accent : c.note;
+      roundRect(ctx, x, y, w, h, 3);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      if (editing && i === selected) {
+        ctx.strokeStyle = c.accent;
+        ctx.lineWidth = 2;
+        roundRect(ctx, x - 1, y - 1, w + 2, h + 2, 4);
+        ctx.stroke();
+        // Resize grips.
+        ctx.fillStyle = c.paper;
+        ctx.fillRect(x + w - 4, y + h / 2 - Math.min(5, h / 3), 2, Math.min(10, (h * 2) / 3));
+      }
+    }
+
+    // Playhead.
+    if (currentTime >= t0 && currentTime <= t1) {
+      const x = Math.round(xOf(currentTime)) + 0.5;
+      ctx.fillStyle = c.accent;
+      ctx.fillRect(x - 1, CHORD_LANE, 2, height - CHORD_LANE);
+      ctx.beginPath();
+      ctx.moveTo(x - 5, CHORD_LANE);
+      ctx.lineTo(x + 5, CHORD_LANE);
+      ctx.lineTo(x, CHORD_LANE + 6);
+      ctx.fill();
+    }
+
+    // Keyboard gutter (fixed).
+    ctx.fillStyle = c.raised;
+    ctx.fillRect(0, 0, GUTTER, height);
+    ctx.font = '9px -apple-system, system-ui, sans-serif';
+    for (let p = lo; p <= hi; p++) {
+      const y = yOf(p);
+      const lit = sounding.has(p);
+      if (isBlackKey(p)) {
+        ctx.fillStyle = lit ? c.accent : c.ink;
+        ctx.globalAlpha = lit ? 1 : 0.78;
+        ctx.fillRect(0, y + 0.5, GUTTER * 0.6, Math.max(1, rowH - 1));
+        ctx.globalAlpha = 1;
+      } else {
+        if (lit) {
+          ctx.fillStyle = c.accent;
+          ctx.globalAlpha = 0.55;
+          ctx.fillRect(0, y, GUTTER, rowH);
+          ctx.globalAlpha = 1;
+        }
+        const below = p - 1;
+        if (!isBlackKey(below)) {
+          ctx.fillStyle = c.rule;
+          ctx.fillRect(0, y + rowH - 0.5, GUTTER, 1);
+        }
+      }
+      if (pitchClass(p) === 0 && rowH >= 6) {
+        ctx.fillStyle = c.ink3;
+        ctx.textBaseline = 'middle';
+        ctx.fillText(noteName(p), GUTTER - 18, y + rowH / 2);
+      }
+    }
+    ctx.fillStyle = c.rule;
+    ctx.fillRect(GUTTER - 0.5, 0, 1, height);
+  }
+
+  $effect(() => {
+    draw();
+  });
+
+  // ---------------------------------------------------------- interaction
+
+  type Mode = 'pending' | 'pan' | 'move' | 'start' | 'end';
+  interface Drag {
+    pointerId: number;
+    mode: Mode;
+    index: number | null;
+    startX: number;
+    startY: number;
+    startScroll: number;
+    original: PianoNote | null;
+    moved: boolean;
+  }
+  const pointers = new Map<number, { x: number; y: number }>();
+  let drag: Drag | null = null;
+  let pinch: { dist: number; px: number; centerT: number } | null = null;
+  let lastTap = { time: 0, x: 0, y: 0 };
+
+  function local(e: PointerEvent | WheelEvent) {
+    const rect = canvas.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+
+  function hitNote(x: number, y: number): { index: number; mode: Mode } | null {
+    if (y < TOP || x < GUTTER) return null;
+    const pitch = pitchOf(y);
+    const t = tOf(x);
+    const slop = 6 / pxPerSec;
+    for (let i = notes.length - 1; i >= 0; i--) {
+      const n = notes[i];
+      if (n.pitch !== pitch || t < n.startTime - slop || t > n.endTime + slop) continue;
+      const xs = xOf(n.startTime);
+      const xe = xOf(n.endTime);
+      const edge = Math.min(14, (xe - xs) / 3);
+      const mode: Mode = x >= xe - edge ? 'end' : x <= xs + edge && xe - xs > 30 ? 'start' : 'move';
+      return { index: i, mode };
+    }
+    return null;
+  }
+
+  function onPointerDown(e: PointerEvent) {
+    const p = local(e);
+    canvas.setPointerCapture(e.pointerId);
+    pointers.set(e.pointerId, p);
+    if (pointers.size === 2) {
+      const [a, b] = [...pointers.values()];
+      pinch = {
+        dist: Math.max(10, Math.abs(a.x - b.x)),
+        px: pxPerSec,
+        centerT: tOf((a.x + b.x) / 2),
+      };
+      drag = null;
+      dragPreview = null;
+      return;
+    }
+    if (p.x < GUTTER && p.y > TOP) {
+      onpreview?.(pitchOf(p.y));
+      return;
+    }
+    if (editing) {
+      const hit = hitNote(p.x, p.y);
+      if (hit) {
+        selected = hit.index;
+        drag = {
+          pointerId: e.pointerId,
+          mode: hit.mode,
+          index: hit.index,
+          startX: p.x,
+          startY: p.y,
+          startScroll: scrollX,
+          original: notes[hit.index],
+          moved: false,
+        };
+        onpreview?.(notes[hit.index].pitch);
+        return;
+      }
+    }
+    drag = {
+      pointerId: e.pointerId,
+      mode: 'pending',
+      index: null,
+      startX: p.x,
+      startY: p.y,
+      startScroll: scrollX,
+      original: null,
+      moved: false,
+    };
+  }
+
+  function onPointerMove(e: PointerEvent) {
+    if (!pointers.has(e.pointerId)) return;
+    const p = local(e);
+    pointers.set(e.pointerId, p);
+    if (pinch && pointers.size >= 2) {
+      const [a, b] = [...pointers.values()];
+      const dist = Math.max(10, Math.abs(a.x - b.x));
+      userZoomed = true;
+      pxPerSec = Math.max(MIN_PX, Math.min(MAX_PX, (pinch.px * dist) / pinch.dist));
+      scrollX = clampScroll(pinch.centerT - ((a.x + b.x) / 2 - GUTTER) / pxPerSec);
+      userScrollUntil = performance.now() + 2500;
+      return;
+    }
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    const dx = p.x - drag.startX;
+    const dy = p.y - drag.startY;
+    if (!drag.moved && Math.hypot(dx, dy) < 5) return;
+    drag.moved = true;
+
+    if (drag.mode === 'pending' || drag.mode === 'pan') {
+      drag.mode = 'pan';
+      scrollX = clampScroll(drag.startScroll - dx / pxPerSec);
+      userScrollUntil = performance.now() + 2500;
+      return;
+    }
+
+    const o = drag.original!;
+    const dt = snap(dx / pxPerSec);
+    let next: PianoNote;
+    if (drag.mode === 'move') {
+      const dp = -Math.round(dy / rowH);
+      next = { ...o, pitch: o.pitch + dp, startTime: o.startTime + dt, endTime: o.endTime + dt };
+      if (next.startTime < 0) {
+        next.endTime -= next.startTime;
+        next.startTime = 0;
+      }
+    } else if (drag.mode === 'end') {
+      next = { ...o, endTime: Math.max(o.startTime + 0.03, o.endTime + dt) };
+    } else {
+      next = { ...o, startTime: Math.max(0, Math.min(o.endTime - 0.03, o.startTime + dt)) };
+    }
+    next = normalizeNote(next, totalSeconds + 30);
+    const previousPitch = dragPreview?.note.pitch ?? o.pitch;
+    dragPreview = { index: drag.index!, note: next };
+    if (next.pitch !== previousPitch) onpreview?.(next.pitch);
+  }
+
+  function onPointerUp(e: PointerEvent) {
+    pointers.delete(e.pointerId);
+    if (pinch) {
+      if (pointers.size < 2) pinch = null;
+      drag = null;
+      return;
+    }
+    const d = drag;
+    if (!d || d.pointerId !== e.pointerId) return;
+    drag = null;
+
+    if (d.mode === 'move' || d.mode === 'start' || d.mode === 'end') {
+      const preview = dragPreview;
+      dragPreview = null;
+      if (d.moved && preview) {
+        const next = notes.slice();
+        next[preview.index] = preview.note;
+        onchange?.(next, preview.note);
+      }
+      return;
+    }
+    if (d.moved) return;
+
+    const t = tOf(d.startX);
+    if (editing && d.startY > TOP) {
+      const now = performance.now();
+      const isDouble = now - lastTap.time < 380 && Math.hypot(d.startX - lastTap.x, d.startY - lastTap.y) < 24;
+      lastTap = { time: isDouble ? 0 : now, x: d.startX, y: d.startY };
+      if (isDouble) {
+        const pitch = pitchOf(d.startY);
+        const start = snap(Math.max(0, t));
+        const added = normalizeNote({ pitch, startTime: start, endTime: start + 0.4, velocity: 80, confidence: 1 });
+        onchange?.([...notes, added], added);
+        onpreview?.(pitch);
+      } else {
+        selected = null;
+      }
+      return;
+    }
+    if (d.startX >= GUTTER) onseek?.(Math.max(0, Math.min(totalSeconds, t)));
+  }
+
+  function onPointerCancel(e: PointerEvent) {
+    pointers.delete(e.pointerId);
+    drag = null;
+    dragPreview = null;
+    if (pointers.size < 2) pinch = null;
+  }
+
+  function onWheel(e: WheelEvent) {
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      const p = local(e);
+      const anchor = tOf(p.x);
+      userZoomed = true;
+      pxPerSec = Math.max(MIN_PX, Math.min(MAX_PX, pxPerSec * Math.exp(-e.deltaY * 0.01)));
+      scrollX = clampScroll(anchor - (p.x - GUTTER) / pxPerSec);
+      return;
+    }
+    // Horizontal scrolling only; vertical wheel keeps scrolling the page.
+    const dx = e.shiftKey ? e.deltaY : e.deltaX;
+    if (Math.abs(dx) > Math.abs(e.deltaY) || e.shiftKey) {
+      e.preventDefault();
+      scrollX = clampScroll(scrollX + dx / pxPerSec);
+      userScrollUntil = performance.now() + 2500;
+    }
+  }
+
+  function onKeyDown(e: KeyboardEvent) {
+    if (!editing || selected === null || selected >= notes.length) return;
+    const n = notes[selected];
+    let next: PianoNote | null = null;
+    switch (e.key) {
+      case 'Delete':
+      case 'Backspace':
+        e.preventDefault();
+        onchange?.(notes.filter((_, i) => i !== selected), null);
+        selected = null;
+        return;
+      case 'ArrowUp':
+        next = { ...n, pitch: n.pitch + (e.shiftKey ? 12 : 1) };
+        break;
+      case 'ArrowDown':
+        next = { ...n, pitch: n.pitch - (e.shiftKey ? 12 : 1) };
+        break;
+      case 'ArrowLeft':
+        next = e.altKey ? { ...n, endTime: n.endTime - 0.05 } : { ...n, startTime: n.startTime - 0.05, endTime: n.endTime - 0.05 };
+        break;
+      case 'ArrowRight':
+        next = e.altKey ? { ...n, endTime: n.endTime + 0.05 } : { ...n, startTime: n.startTime + 0.05, endTime: n.endTime + 0.05 };
+        break;
+      case 'Escape':
+        selected = null;
+        return;
+      default:
+        return;
+    }
+    e.preventDefault();
+    if (next.startTime < 0) {
+      next.endTime -= next.startTime;
+      next.startTime = 0;
+    }
+    const normalized = normalizeNote(next, totalSeconds + 30);
+    const updated = notes.slice();
+    updated[selected] = normalized;
+    onchange?.(updated, normalized);
+    if (normalized.pitch !== n.pitch) onpreview?.(normalized.pitch);
+  }
+
+  onMount(() => {
+    const observer = new ResizeObserver(([entry]) => {
+      width = entry.contentRect.width;
+      height = entry.contentRect.height;
+    });
+    observer.observe(container);
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const onTheme = () => {
+      palette = null;
+      themeVersion++;
+    };
+    media.addEventListener('change', onTheme);
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    return () => {
+      observer.disconnect();
+      media.removeEventListener('change', onTheme);
+      canvas.removeEventListener('wheel', onWheel);
+    };
+  });
+</script>
+
+<div class="roll" bind:this={container}>
+  <canvas
+    bind:this={canvas}
+    tabindex="0"
+    aria-label={editing ? 'Piano roll editor' : 'Piano roll'}
+    style:touch-action={editing ? 'none' : 'pan-y'}
+    onpointerdown={onPointerDown}
+    onpointermove={onPointerMove}
+    onpointerup={onPointerUp}
+    onpointercancel={onPointerCancel}
+    onkeydown={onKeyDown}
+  ></canvas>
+</div>
+
+<style>
+  .roll {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    min-height: 180px;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    border: 1px solid var(--rule);
+    background: var(--paper);
+  }
+
+  canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    outline: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
+
+  canvas:focus-visible {
+    box-shadow: inset 0 0 0 2px var(--accent);
+  }
+</style>

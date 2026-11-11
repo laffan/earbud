@@ -1,0 +1,14 @@
+"$schema" = "schemas/schema.json"
+
+[default]
+description = "Allows recording, audio extraction and sharing through the native capture engine."
+permissions = [
+  "allow-capabilities",
+  "allow-check-permissions",
+  "allow-request-permissions",
+  "allow-open-app-settings",
+  "allow-start-recording",
+  "allow-stop-recording",
+  "allow-extract-analysis-audio",
+  "allow-share-files",
+]
