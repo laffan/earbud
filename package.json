@@ -5,7 +5,9 @@
   "description": "Earbud: an offline-first musical sketchbook for pianists",
   "type": "module",
   "scripts": {
+    "predev": "node scripts/copy-model.mjs",
     "dev": "vite",
+    "prebuild": "node scripts/copy-model.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
@@ -13,7 +15,9 @@
     "test:watch": "vitest",
     "copy-model": "node scripts/copy-model.mjs",
     "postinstall": "node scripts/copy-model.mjs",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "smoke:browser": "node scripts/browser-smoke.cjs",
+    "smoke:tauri": "node scripts/tauri-webdriver-smoke.mjs"
   },
   "license": "MIT",
   "dependencies": {

@@ -49,6 +49,7 @@
   let sourceIndex = $state(0);
   let mediaNotice = $state<string | null>(null);
   let blobUrl: string | null = null;
+  const BLOB_FALLBACK_LIMIT = 200 * 1024 * 1024;
   let raf = 0;
   const synth = new NoteSynth();
 
@@ -191,8 +192,11 @@
     // retry from an in-memory blob, then fall back to the analysis audio.
     if (sources[sourceIndex] === original && !original.startsWith('blob:')) {
       try {
-        const response = await fetch(original);
-        if (response.ok) {
+        // Only buffer files that comfortably fit in memory.
+        const probe = await fetch(original, { headers: { Range: 'bytes=0-0' } });
+        const size = Number(probe.headers.get('content-range')?.split('/')[1] ?? NaN);
+        const response = size < BLOB_FALLBACK_LIMIT ? await fetch(original) : null;
+        if (response?.ok) {
           blobUrl = URL.createObjectURL(await response.blob());
           sources = [...sources, blobUrl];
           sourceIndex = sources.length - 1;
