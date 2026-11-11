@@ -48,8 +48,12 @@ const screenshot = async (name) =>
   writeFileSync(`${OUT}/${name}.png`, Buffer.from(await wd('GET', `/session/${sid}/screenshot`), 'base64'));
 
 try {
-  await sleep(1500);
-  const title = await run(async () => document.querySelector('h1')?.textContent);
+  // The first launch after a build can be slow under a virtual display.
+  let title = null;
+  for (let i = 0; i < 40 && title !== 'Earbud'; i++) {
+    await sleep(500);
+    title = await run(async () => document.querySelector('h1')?.textContent ?? null);
+  }
   if (title !== 'Earbud') throw new Error(`app did not render (h1=${title})`);
   const caps = await run(async () => window.__TAURI_INTERNALS__.invoke('plugin:capture|capabilities'));
   console.log('capabilities', caps);

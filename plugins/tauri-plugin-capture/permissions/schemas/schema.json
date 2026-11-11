@@ -331,6 +331,18 @@
           "markdownDescription": "Denies the extract_analysis_audio command without any pre-configured scope."
         },
         {
+          "description": "Enables the get_diagnostics command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-diagnostics",
+          "markdownDescription": "Enables the get_diagnostics command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_diagnostics command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-diagnostics",
+          "markdownDescription": "Denies the get_diagnostics command without any pre-configured scope."
+        },
+        {
           "description": "Enables the open_app_settings command without any pre-configured scope.",
           "type": "string",
           "const": "allow-open-app-settings",
@@ -353,6 +365,18 @@
           "type": "string",
           "const": "deny-request-permissions",
           "markdownDescription": "Denies the request_permissions command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the reset_capture command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-reset-capture",
+          "markdownDescription": "Enables the reset_capture command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the reset_capture command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-reset-capture",
+          "markdownDescription": "Denies the reset_capture command without any pre-configured scope."
         },
         {
           "description": "Enables the share_files command without any pre-configured scope.",
@@ -391,10 +415,10 @@
           "markdownDescription": "Denies the stop_recording command without any pre-configured scope."
         },
         {
-          "description": "Allows recording, audio extraction and sharing through the native capture engine.\n#### This default permission set includes:\n\n- `allow-capabilities`\n- `allow-check-permissions`\n- `allow-request-permissions`\n- `allow-open-app-settings`\n- `allow-start-recording`\n- `allow-stop-recording`\n- `allow-extract-analysis-audio`\n- `allow-share-files`",
+          "description": "Allows recording, audio extraction and sharing through the native capture engine.\n#### This default permission set includes:\n\n- `allow-capabilities`\n- `allow-check-permissions`\n- `allow-request-permissions`\n- `allow-open-app-settings`\n- `allow-start-recording`\n- `allow-stop-recording`\n- `allow-reset-capture`\n- `allow-get-diagnostics`\n- `allow-extract-analysis-audio`\n- `allow-share-files`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Allows recording, audio extraction and sharing through the native capture engine.\n#### This default permission set includes:\n\n- `allow-capabilities`\n- `allow-check-permissions`\n- `allow-request-permissions`\n- `allow-open-app-settings`\n- `allow-start-recording`\n- `allow-stop-recording`\n- `allow-extract-analysis-audio`\n- `allow-share-files`"
+          "markdownDescription": "Allows recording, audio extraction and sharing through the native capture engine.\n#### This default permission set includes:\n\n- `allow-capabilities`\n- `allow-check-permissions`\n- `allow-request-permissions`\n- `allow-open-app-settings`\n- `allow-start-recording`\n- `allow-stop-recording`\n- `allow-reset-capture`\n- `allow-get-diagnostics`\n- `allow-extract-analysis-audio`\n- `allow-share-files`"
         }
       ]
     }

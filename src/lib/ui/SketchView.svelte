@@ -125,13 +125,10 @@
 
   onMount(() => {
     void load();
-    // Media playback should ignore the ring/silent switch on iOS.
-    try {
-      const session = (navigator as unknown as { audioSession?: { type: string } }).audioSession;
-      if (session) session.type = 'playback';
-    } catch {
-      // not supported
-    }
+    // Note: do not set `navigator.audioSession.type` here. On iOS it makes
+    // WebKit hold its own (separate-process) playback session, which then
+    // fights the native recorder's session and ends recordings at once. The
+    // native plugin already sets the app's category to `.playback`.
   });
 
   onDestroy(() => {
@@ -140,6 +137,13 @@
     void saveNow();
     cancelAnimationFrame(raf);
     synth.dispose();
+    // Release the media pipeline (and WebKit's audio session) right away
+    // instead of waiting for garbage collection.
+    if (video) {
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+    }
     if (blobUrl) URL.revokeObjectURL(blobUrl);
   });
 

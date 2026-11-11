@@ -12,7 +12,7 @@ import {
   type PlatformCapabilities,
   type RecordingResult,
 } from '../capture';
-import { getLibrary, type Sketch } from '../library';
+import { getLibrary, type Sketch, type SketchLibrary } from '../library';
 import { ProcessingQueue, type JobProgress } from '../pipeline/processingQueue';
 import { errorCode, errorMessage, isIOSLike } from '../platform/tauri';
 import { getTranscriptionEngine, type Sensitivity } from '../transcription';
@@ -27,7 +27,13 @@ export type View = { name: 'home' } | { name: 'sketch'; id: string };
 export interface RecordingState {
   phase: 'starting' | 'recording' | 'saving';
   sketchId: string | null;
+  /** Increments with every start attempt; events from older attempts are ignored. */
+  attempt: number;
+  /** This attempt is the automatic retry of a failed one. */
+  retry: boolean;
   startedAt: number;
+  /** When the stop button becomes active (guards against a double tap). */
+  armedAt: number;
   elapsedMs: number;
   levelDb: number;
   peakDb: number;
@@ -52,6 +58,21 @@ export interface PermissionProblem {
 
 const SETTINGS_KEY = 'earbud.settings.v1';
 
+/** A take that ends on its own sooner than this is treated as a failed start. */
+export const EARLY_FAILURE_MS = 1500;
+/** Stop taps this soon after recording begins are ignored (double-tap guard). */
+export const STOP_GUARD_MS = 600;
+/** Backstop if the capture engine never answers a start request. */
+export const START_TIMEOUT_MS = 15_000;
+
+export interface AppStateOptions {
+  library?: SketchLibrary;
+  /** Override capture backend selection (tests); `null` disables capture. */
+  captureEngine?: CaptureEngine | null;
+  capabilities?: PlatformCapabilities;
+  startTimeoutMs?: number;
+}
+
 const DEFAULT_SETTINGS: Settings = {
   camera: 'back',
   lens: 'wide',
@@ -75,8 +96,8 @@ function viewFromHash(): View {
   return match ? { name: 'sketch', id: match[1] } : { name: 'home' };
 }
 
-class AppState {
-  readonly library = getLibrary();
+export class AppState {
+  readonly library: SketchLibrary;
   capabilities = $state<PlatformCapabilities | null>(null);
   ready = $state(false);
   sketches = $state<Sketch[]>([]);
@@ -92,17 +113,27 @@ class AppState {
   private captureEngine: CaptureEngine | null = null;
   private active: ActiveRecording | null = null;
   private toastId = 0;
+  private attempt = 0;
+  /** A `finished` event that arrived before the start request resolved. */
+  private pendingFinish: RecordingResult | null = null;
+  private captureLog: string[] = [];
+  private readonly options: AppStateOptions;
+  readonly queue: ProcessingQueue;
 
-  readonly queue = new ProcessingQueue({
-    library: this.library,
-    capture: () => this.captureEngine,
-    engine: () => getTranscriptionEngine(this.settings.sensitivity),
-    onProgress: (id, progress) => {
-      if (progress) this.jobs[id] = progress;
-      else delete this.jobs[id];
-    },
-    onSketchChanged: (sketch) => this.upsert(sketch),
-  });
+  constructor(options: AppStateOptions = {}) {
+    this.options = options;
+    this.library = options.library ?? getLibrary();
+    this.queue = new ProcessingQueue({
+      library: this.library,
+      capture: () => this.captureEngine,
+      engine: () => getTranscriptionEngine(this.settings.sensitivity),
+      onProgress: (id, progress) => {
+        if (progress) this.jobs[id] = progress;
+        else delete this.jobs[id];
+      },
+      onSketchChanged: (sketch) => this.upsert(sketch),
+    });
+  }
 
   get canRecord(): boolean {
     return this.captureEngine !== null;
@@ -111,8 +142,11 @@ class AppState {
   async init() {
     if (this.ready) return;
     try {
-      this.capabilities = await detectCapabilities();
-      this.captureEngine = createCaptureEngine(this.capabilities);
+      this.capabilities = this.options.capabilities ?? (await detectCapabilities());
+      this.captureEngine =
+        this.options.captureEngine !== undefined
+          ? this.options.captureEngine
+          : createCaptureEngine(this.capabilities);
       if (!isIOSLike() && !this.capabilities.nativeCapture && !localStorage.getItem(SETTINGS_KEY)) {
         // Desktop webcams face the player.
         this.settings.camera = 'front';
@@ -209,12 +243,51 @@ class AppState {
     this.toasts = this.toasts.filter((t) => t.id !== id);
   }
 
+  // ----------------------------------------------------------- diagnostics
+
+  /** Append a line to the capture log shown in Settings → Diagnostics. */
+  logCapture(message: string) {
+    const d = new Date();
+    const pad = (n: number, width = 2) => String(n).padStart(width, '0');
+    const time = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+    this.captureLog = [...this.captureLog.slice(-299), `${time} [app] ${message}`];
+    console.info('[earbud]', message);
+  }
+
+  /** App and native capture logs merged in time order, as plain text. */
+  async captureDiagnostics(): Promise<string> {
+    const engine = this.captureEngine;
+    const header = [
+      `Earbud capture diagnostics, ${new Date().toString()}`,
+      `backend: ${engine?.id ?? 'none'}; platform: ${this.capabilities?.platform ?? 'unknown'}`,
+      `user agent: ${navigator.userAgent}`,
+    ];
+    let nativeLines: string[] = [];
+    try {
+      const native = await engine?.diagnostics?.();
+      if (native) {
+        header.push(`audio session: ${native.audioSession ?? 'n/a'}`);
+        header.push(`permissions: camera=${native.camera ?? '?'} microphone=${native.microphone ?? '?'}`);
+        nativeLines = native.lines.map((line) => line.replace(/^(\S+) /, '$1 [ios] '));
+      }
+    } catch (error) {
+      header.push(`native log unavailable: ${errorMessage(error)}`);
+    }
+    // Both logs start with a local HH:MM:SS.mmm timestamp.
+    const merged = [...this.captureLog, ...nativeLines].sort((a, b) => a.slice(0, 12).localeCompare(b.slice(0, 12)));
+    return [...header, '', ...merged].join('\n');
+  }
+
   // --------------------------------------------------------------- capture
 
-  /** One tap: permissions (first time only), reserve a sketch, record. */
-  async startRecording() {
+  /**
+   * One tap: permissions (first time only), reserve a sketch, record.
+   * A start that fails, times out, or dies within the first moments is
+   * retried once automatically before the user sees an error.
+   */
+  async startRecording(options: { retry?: boolean } = {}) {
     const engine = this.captureEngine;
-    if (this.recording) return;
+    if (this.recording && !options.retry) return;
     if (!engine) {
       this.toast('Recording is not available on this device.', 'error');
       return;
@@ -225,28 +298,37 @@ class AppState {
       rawAudio: this.settings.rawAudio,
     };
     const wantsVideo = settings.camera !== 'none';
+    const attempt = ++this.attempt;
+    const retry = !!options.retry;
+    this.pendingFinish = null;
     this.recording = {
       phase: 'starting',
       sketchId: null,
+      attempt,
+      retry,
       startedAt: performance.now(),
+      armedAt: Infinity,
       elapsedMs: 0,
       levelDb: -160,
       peakDb: -160,
       hasVideo: wantsVideo,
       nativePreview: engine.nativePreview && wantsVideo,
-      warning: null,
+      warning: retry ? 'Restarting the recording…' : null,
     };
     this.queue.setPaused(true);
+    this.logCapture(`${retry ? 'automatic retry' : 'record tapped'} (attempt ${attempt}, ${engine.id}, camera=${settings.camera})`);
 
     let sketchId: string | null = null;
     try {
       let permissions = await engine.checkPermissions(settings);
       if (permissions.microphone === 'prompt' || (wantsVideo && permissions.camera === 'prompt')) {
+        this.logCapture('asking for permissions');
         permissions = await engine.requestPermissions(settings);
       }
       const micDenied = permissions.microphone === 'denied';
       const camDenied = wantsVideo && permissions.camera === 'denied';
       if (micDenied || camDenied) {
+        this.logCapture(`permission denied (microphone=${permissions.microphone}, camera=${permissions.camera})`);
         this.permissionProblem = { microphone: micDenied, camera: camDenied, canOpenSettings: !!engine.openSettings };
         this.endRecordingUi();
         return;
@@ -259,48 +341,113 @@ class AppState {
         captureBackend: engine.id,
       });
       sketchId = created.id;
-      if (this.recording.nativePreview) document.documentElement.classList.add('native-preview');
+      if (this.recording?.nativePreview) document.documentElement.classList.add('native-preview');
 
       const id = created.id;
-      this.active = await engine.start(
-        { ...created, writeChunk: async (bytes) => void (await this.library.writeFile(id, 'media-chunk', bytes)) },
-        settings,
-        (event) => this.onCaptureEvent(event),
+      const requestedAt = performance.now();
+      const active = await this.withStartTimeout(
+        engine,
+        engine.start(
+          { ...created, writeChunk: async (bytes) => void (await this.library.writeFile(id, 'media-chunk', bytes)) },
+          settings,
+          (event) => this.onCaptureEvent(attempt, event),
+        ),
       );
-      if (this.recording) {
-        this.recording = {
-          ...this.recording,
-          phase: 'recording',
-          sketchId: id,
-          startedAt: performance.now(),
-          hasVideo: this.active.hasVideo,
-          previewStream: this.active.previewStream,
-        };
+      if (attempt !== this.attempt || !this.recording) {
+        // Superseded while starting: release the devices.
+        void active.stop().catch(() => {});
+        return;
+      }
+      this.active = active;
+      const now = performance.now();
+      this.logCapture(`recording started after ${Math.round(now - requestedAt)} ms`);
+      this.recording = {
+        ...this.recording,
+        phase: 'recording',
+        sketchId: id,
+        startedAt: now,
+        armedAt: now + STOP_GUARD_MS,
+        hasVideo: active.hasVideo,
+        previewStream: active.previewStream,
+        warning: null,
+      };
+      const early = this.pendingFinish;
+      if (early) {
+        this.pendingFinish = null;
+        this.recording = { ...this.recording, phase: 'saving' };
+        await this.finishRecording(early, false);
       }
     } catch (error) {
+      if (attempt !== this.attempt) return;
       document.documentElement.classList.remove('native-preview');
       if (sketchId) await this.library.discard(sketchId).catch(() => {});
-      this.endRecordingUi();
       const code = errorCode(error);
       const name = error instanceof DOMException ? error.name : '';
+      this.logCapture(`start failed (${code ?? (name || 'error')}): ${errorMessage(error)}`);
       if (code === 'permission_denied' || name === 'NotAllowedError') {
         this.permissionProblem = { microphone: true, camera: wantsVideo, canOpenSettings: !!engine.openSettings };
-      } else {
-        this.toast(`Could not start recording: ${errorMessage(error)}`, 'error');
+        this.endRecordingUi();
+        return;
       }
+      if (!retry) {
+        await this.startRecording({ retry: true });
+        return;
+      }
+      this.endRecordingUi();
+      this.toast(`Could not start recording: ${errorMessage(error)} Details: Settings → Diagnostics.`, 'error');
     }
+  }
+
+  /** Reject the start if the engine never answers, and reset the engine. */
+  private withStartTimeout(engine: CaptureEngine, start: Promise<ActiveRecording>): Promise<ActiveRecording> {
+    const ms = this.options.startTimeoutMs ?? START_TIMEOUT_MS;
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        this.logCapture(`no answer from the capture engine after ${ms} ms; resetting it`);
+        void engine.reset?.().catch(() => {});
+        // A late success must not leave the camera running.
+        start.then(
+          (late) => void late.stop().catch(() => {}),
+          () => {},
+        );
+        reject(Object.assign(new Error('The camera did not start in time.'), { code: 'start_timeout' }));
+      }, ms);
+      start.then(
+        (value) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (error) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+    });
   }
 
   async stopRecording() {
     const recording = this.recording;
     const active = this.active;
     if (!recording || recording.phase !== 'recording' || !active) return;
+    if (performance.now() < recording.armedAt) {
+      this.logCapture('ignored a stop tap right after recording started');
+      return;
+    }
     this.recording = { ...recording, phase: 'saving' };
+    this.logCapture('stop tapped');
     let result: RecordingResult;
     try {
       result = await active.stop();
     } catch (error) {
       // The file on disk is still the source of truth; try to save it.
+      this.logCapture(`stop failed: ${errorMessage(error)}`);
       result = {
         ok: false,
         durationMs: performance.now() - recording.startedAt,
@@ -308,7 +455,7 @@ class AppState {
         message: errorMessage(error),
       };
     }
-    await this.finishRecording(result);
+    await this.finishRecording(result, true);
   }
 
   openPermissionSettings() {
@@ -316,7 +463,12 @@ class AppState {
     this.permissionProblem = null;
   }
 
-  private onCaptureEvent(event: CaptureEvent) {
+  private onCaptureEvent(attempt: number, event: CaptureEvent) {
+    if (event.type === 'log') return; // native lines are read from the native log
+    if (attempt !== this.attempt) {
+      this.logCapture(`ignored a late '${event.type}' event from attempt ${attempt}`);
+      return;
+    }
     const recording = this.recording;
     if (!recording) return;
     switch (event.type) {
@@ -326,29 +478,57 @@ class AppState {
         recording.elapsedMs = event.elapsedMs;
         break;
       case 'interrupted':
-        recording.warning = 'Recording was interrupted.';
+        this.logCapture(`interrupted: ${event.reason}`);
+        recording.warning = `Interrupted: ${event.reason}`;
         break;
       case 'error':
+        this.logCapture(`capture error: ${event.message}`);
         recording.warning = event.message;
         break;
-      case 'finished':
-        // Ended without a stop request (call, app backgrounded, disk full).
-        if (recording.phase === 'recording') {
+      case 'finished': {
+        const reason = event.interruption ?? event.message;
+        this.logCapture(
+          `capture ended without a stop request after ${Math.round(event.durationMs)} ms${reason ? ` (${reason})` : ''}`,
+        );
+        if (recording.phase === 'starting') {
+          // Arrived before the start request resolved; handle it right after.
+          this.pendingFinish = event;
+        } else if (recording.phase === 'recording') {
           this.recording = { ...recording, phase: 'saving' };
-          void this.finishRecording(event);
+          void this.finishRecording(event, false);
         }
         break;
+      }
     }
   }
 
-  private async finishRecording(result: RecordingResult) {
-    const id = this.recording?.sketchId;
+  private async finishRecording(result: RecordingResult, userStopped: boolean) {
+    const recording = this.recording;
+    const id = recording?.sketchId;
     this.active = null;
     document.documentElement.classList.remove('native-preview');
     if (!id) {
       this.endRecordingUi();
       return;
     }
+
+    if (!userStopped && result.durationMs < EARLY_FAILURE_MS) {
+      // Not a take: the recorder died as it started. Discard and retry.
+      const reason = result.interruption ?? result.message;
+      this.logCapture(`discarding a ${Math.round(result.durationMs)} ms take that ended on its own`);
+      await this.library.discard(id).catch(() => {});
+      if (!recording?.retry) {
+        await this.startRecording({ retry: true });
+        return;
+      }
+      this.endRecordingUi();
+      this.toast(
+        `Recording stopped as soon as it started${reason ? ` (${reason})` : ''}. Details: Settings → Diagnostics.`,
+        'error',
+      );
+      return;
+    }
+
     try {
       const sketch = await this.library.finalize({
         id,
@@ -357,13 +537,16 @@ class AppState {
         videoWidth: result.width ?? null,
         videoHeight: result.height ?? null,
       });
+      this.logCapture(`saved ${Math.round(result.durationMs)} ms take${userStopped ? '' : ' (ended on its own)'}`);
       this.upsert(sketch);
-      this.toast(result.ok ? 'Sketch saved.' : 'Recording was interrupted, but the take was saved.', 'info', {
-        label: 'Open',
-        run: () => this.openSketch(id),
-      });
+      this.toast(
+        userStopped || result.ok ? 'Sketch saved.' : 'Recording was interrupted, but the take was saved.',
+        'info',
+        { label: 'Open', run: () => this.openSketch(id) },
+      );
       if (this.settings.autoTranscribe) this.queue.enqueue(id);
     } catch (error) {
+      this.logCapture(`could not save the take: ${errorMessage(error)}`);
       await this.library.discard(id).catch(() => {});
       this.toast(`Nothing was recorded: ${errorMessage(error)}`, 'error');
     } finally {

@@ -3,6 +3,7 @@ import { Channel } from '@tauri-apps/api/core';
 import { invoke } from '../platform/tauri';
 import type {
   ActiveRecording,
+  CaptureDiagnostics,
   CaptureEngine,
   CaptureEvent,
   CapturePermissions,
@@ -35,6 +36,14 @@ export class NativeCaptureEngine implements CaptureEngine {
 
   async openSettings(): Promise<void> {
     await invoke('plugin:capture|open_app_settings');
+  }
+
+  async reset(): Promise<void> {
+    await invoke('plugin:capture|reset_capture');
+  }
+
+  diagnostics(): Promise<CaptureDiagnostics> {
+    return invoke<CaptureDiagnostics>('plugin:capture|get_diagnostics');
   }
 
   async start(

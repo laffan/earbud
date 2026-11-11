@@ -10,6 +10,8 @@ Allows recording, audio extraction and sharing through the native capture engine
 - `allow-open-app-settings`
 - `allow-start-recording`
 - `allow-stop-recording`
+- `allow-reset-capture`
+- `allow-get-diagnostics`
 - `allow-extract-analysis-audio`
 - `allow-share-files`
 
@@ -103,6 +105,32 @@ Denies the extract_analysis_audio command without any pre-configured scope.
 <tr>
 <td>
 
+`capture:allow-get-diagnostics`
+
+</td>
+<td>
+
+Enables the get_diagnostics command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`capture:deny-get-diagnostics`
+
+</td>
+<td>
+
+Denies the get_diagnostics command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `capture:allow-open-app-settings`
 
 </td>
@@ -148,6 +176,32 @@ Enables the request_permissions command without any pre-configured scope.
 <td>
 
 Denies the request_permissions command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`capture:allow-reset-capture`
+
+</td>
+<td>
+
+Enables the reset_capture command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`capture:deny-reset-capture`
+
+</td>
+<td>
+
+Denies the reset_capture command without any pre-configured scope.
 
 </td>
 </tr>

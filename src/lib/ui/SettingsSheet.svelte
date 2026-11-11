@@ -5,6 +5,25 @@
   import type { Sensitivity } from '../transcription';
 
   let { onclose }: { onclose: () => void } = $props();
+
+  let diagnostics = $state<string | null>(null);
+  let copied = $state(false);
+
+  async function showDiagnostics() {
+    diagnostics = 'Loading…';
+    diagnostics = await app.captureDiagnostics();
+  }
+
+  async function copyDiagnostics() {
+    if (!diagnostics) return;
+    try {
+      await navigator.clipboard.writeText(diagnostics);
+      copied = true;
+      setTimeout(() => (copied = false), 2000);
+    } catch {
+      app.toast('Could not copy. Select the text and copy it manually.', 'error');
+    }
+  }
   const native = $derived(app.capabilities?.nativeCapture ?? false);
 
   const cameras: { value: CameraChoice; label: string }[] = [
@@ -81,6 +100,20 @@
     </label>
   </section>
 
+  <section>
+    <h3>Diagnostics</h3>
+    {#if diagnostics === null}
+      <button class="pill-button" onclick={showDiagnostics}>Show recording log</button>
+      <p class="help">Details about recent recording attempts, useful when reporting a problem.</p>
+    {:else}
+      <div class="diag-actions">
+        <button class="pill-button" onclick={copyDiagnostics}>{copied ? 'Copied' : 'Copy'}</button>
+        <button class="pill-button" onclick={showDiagnostics}>Refresh</button>
+      </div>
+      <pre class="diag">{diagnostics}</pre>
+    {/if}
+  </section>
+
   <section class="about">
     <p>
       Everything stays on this device. Recordings are never modified; transcriptions and edits are stored beside
@@ -131,5 +164,25 @@
   }
   .warn {
     color: var(--warn) !important;
+  }
+  .diag-actions {
+    display: flex;
+    gap: 8px;
+  }
+  .diag {
+    width: 100%;
+    max-height: 40vh;
+    overflow: auto;
+    margin: 0;
+    padding: 10px;
+    border-radius: var(--radius-sm);
+    background: var(--paper-sunk);
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
+    user-select: text;
+    -webkit-user-select: text;
   }
 </style>

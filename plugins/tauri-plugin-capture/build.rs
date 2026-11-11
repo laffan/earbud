@@ -8,6 +8,8 @@ const COMMANDS: &[&str] = &[
     "open_app_settings",
     "start_recording",
     "stop_recording",
+    "reset_capture",
+    "get_diagnostics",
     "extract_analysis_audio",
     "share_files",
 ];

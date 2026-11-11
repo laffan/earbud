@@ -4,11 +4,11 @@ Earbud's iOS build uses Tauri 2's iOS support. Recording is done natively by
 `plugins/tauri-plugin-capture` (Swift + AVFoundation). Everything else
 (storage, transcription, UI) is shared with desktop.
 
-> **Status:** the iOS code has not been compiled or run yet. The repository was
-> built in a Linux environment without Xcode. The Rust and TypeScript sides are
-> tested; the Swift plugin follows the Tauri plugin template and Apple's
-> documented APIs. Expect the first Xcode build to possibly need small fixes, and
-> use the [device checklist](#first-run-checklist-on-a-device) below.
+> **Status:** the app builds and runs on iPhone. The first device build had unreliable recording start-up
+> (a take ending as soon as it started, or hanging on "Starting…"). The current version changes the audio
+> session and start-up handling to address that (see [How capture works](#how-capture-works-on-ios)), but the fix
+> has not been confirmed on a device yet. Use the [device checklist](#first-run-checklist-on-a-device) and the
+> [recording log](#troubleshooting-recording).
 
 ## One-time setup (macOS)
 
@@ -125,6 +125,14 @@ No other permissions are used. There is no network access, photo-library access 
 - The audio session uses `.playAndRecord` with `.videoRecording` mode by default. Settings → *Unprocessed
   microphone* switches to `.measurement` mode (no system AGC/EQ; more faithful but quieter). After recording the
   session returns to `.playback`, so review playback ignores the silent switch.
+- The recording session is **mixable** (`.mixWithOthers`). WKWebView plays audio from a separate process with its
+  own audio session; a non-mixable recording session and the web view's session can interrupt each other, which
+  ends the recording the moment it starts. A side effect: music already playing in another app keeps playing
+  (and is picked up by the microphone). Pause it before recording.
+- Start-up is defensive: the recorder waits for the app to be active after the permission alerts, waits for the
+  capture connections to come up before writing, and gives up after 6 s without data instead of hanging. The app
+  retries a failed start once automatically. A take that ends by itself within 1.5 s is not saved and is retried
+  once. Stop taps in the first 0.6 s are ignored, so a double tap on Record does not stop the new take.
 - **Interruptions** (phone call, Control Center camera use, app sent to the background) end the recording.
   AVFoundation still finalizes the file, and Earbud saves it as a sketch.
 - After saving, `extractAnalysisAudio` decodes the movie's audio track with `AVAssetReader` to a 22.05 kHz mono
@@ -145,7 +153,9 @@ These behaviours could not be verified without hardware. Please check them on th
 2. **Permissions**: the first Record tap shows the microphone and camera prompts with Earbud's text.
 3. **Preview**: while recording, the camera image fills the screen behind the timer, level meter and stop button.
    If the screen is black, the webview may not be transparent (see `showPreview` in `CapturePlugin.swift`).
-4. **Saving**: stopping returns to the list with a new card; the duration is right.
+4. **Saving**: stopping returns to the list with a new card; the duration is right. Try ten takes in a row,
+   including one right after reviewing a sketch with sound. Each should start on the first tap. If one does not,
+   copy the recording log (see [Troubleshooting](#troubleshooting-recording)).
 5. **Transcription** completes. The progress percentage moves; a chord progression appears on the card.
 6. **Playback**: opening a sketch plays video *with sound* in the page (not full screen), and the piano roll
    follows. If the video does not load, the app retries from memory and then falls back to the extracted audio.
@@ -160,6 +170,14 @@ To look at what is stored, Safari's Web Inspector console can run:
 ```js
 await window.__TAURI_INTERNALS__.invoke('library_info')
 ```
+
+## Troubleshooting recording
+
+Settings → **Diagnostics** → *Show recording log* shows a timestamped log of recent recording attempts from both
+the app and the native recorder: audio-session category and route, how long the camera took to start,
+interruptions (with the reason iOS gave, e.g. "the microphone was taken by another audio session"), and error codes.
+*Copy* puts it on the clipboard. Please include it when reporting a recording problem. The same lines also go to the
+device console with the prefix `[earbud-capture]` (Xcode console, or Console.app with the phone connected).
 
 ## Storage location
 

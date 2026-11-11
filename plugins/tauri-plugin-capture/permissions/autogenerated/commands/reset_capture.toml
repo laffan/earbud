@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-reset-capture"
+description = "Enables the reset_capture command without any pre-configured scope."
+commands.allow = ["reset_capture"]
+
+[[permission]]
+identifier = "deny-reset-capture"
+description = "Denies the reset_capture command without any pre-configured scope."
+commands.deny = ["reset_capture"]

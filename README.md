@@ -22,7 +22,7 @@ Built with Tauri 2, Svelte 5 + TypeScript, Rust + SQLite, Swift + AVFoundation (
 | Area | State |
 | --- | --- |
 | Home screen, one-tap record, chronological library | Done |
-| iOS synchronized audio/video capture (AVFoundation) | Implemented. **Not yet run on a device**: see [docs/IOS.md](docs/IOS.md) |
+| iOS synchronized audio/video capture (AVFoundation) | Builds and runs on iPhone; start-up reliability fix pending confirmation on a device (see [docs/IOS.md](docs/IOS.md)) |
 | Desktop / browser capture (MediaRecorder) | Done, tested in Chromium |
 | Local storage (SQLite + files), crash recovery | Done, unit tested |
 | Offline Basic Pitch transcription | Done, tested on synthesized two-handed chords |
@@ -116,7 +116,7 @@ See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for module boundaries, data
 ## Testing
 
 ```bash
-npm test                             # Vitest: WAV/resampling, chords, MIDI, real Basic Pitch inference
+npm test                             # Vitest: WAV/resampling, chords, MIDI, capture flow, real Basic Pitch inference
 npm run check                        # svelte-check / TypeScript
 (cd src-tauri && cargo test)         # Sketch Library: storage, immutability, edits, recovery, export
 ```
@@ -136,7 +136,9 @@ Linux; the header of `scripts/tauri-webdriver-smoke.mjs` explains the setup.
 
 ## Known limitations
 
-- **iOS is untested on hardware.** See the checklist in [docs/IOS.md](docs/IOS.md).
+- **iOS has been run on one device so far.** Recording start-up was unreliable in that first build, and the
+  fix has not been confirmed on hardware yet. If recording misbehaves, Settings → Diagnostics shows a recording
+  log; see [docs/IOS.md](docs/IOS.md#troubleshooting-recording).
 - **Transcription accuracy** is that of Basic Pitch: expect occasional ghost notes from strong harmonics,
   octave confusions, and approximate note ends with the sustain pedal down. Velocities are estimated from
   model activations, not measured. Low-confidence notes are drawn fainter.

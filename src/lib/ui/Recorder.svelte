@@ -49,7 +49,7 @@
   <div class="top">
     <div class="status">
       {#if recording.phase === 'starting'}
-        <span class="label">Starting…</span>
+        <span class="label">{recording.retry ? 'Restarting…' : 'Starting…'}</span>
       {:else if recording.phase === 'saving'}
         <span class="label">Saving…</span>
       {:else}
@@ -68,7 +68,7 @@
     <button
       class="stop"
       onclick={() => app.stopRecording()}
-      disabled={recording.phase !== 'recording'}
+      disabled={recording.phase !== 'recording' || now < recording.armedAt}
       aria-label="Stop and save"
     >
       <span class="square"></span>

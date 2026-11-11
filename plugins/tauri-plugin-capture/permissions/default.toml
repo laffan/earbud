@@ -9,6 +9,8 @@ permissions = [
   "allow-open-app-settings",
   "allow-start-recording",
   "allow-stop-recording",
+  "allow-reset-capture",
+  "allow-get-diagnostics",
   "allow-extract-analysis-audio",
   "allow-share-files",
 ]

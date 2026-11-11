@@ -26,12 +26,16 @@ export interface RecordingResult {
   width?: number;
   height?: number;
   message?: string;
+  /** Native diagnostics: why the recording ended, when it was not stopped. */
+  interruption?: string;
+  errorCode?: number;
 }
 
 export type CaptureEvent =
   | { type: 'level'; averageDb: number; peakDb: number; elapsedMs: number }
-  | { type: 'interrupted'; reason: number | string }
+  | { type: 'interrupted'; reason: number | string; code?: number }
   | { type: 'error'; message: string }
+  | { type: 'log'; message: string }
   | ({ type: 'finished' } & RecordingResult);
 
 export type PermissionState = 'granted' | 'prompt' | 'denied';
@@ -63,6 +67,10 @@ export interface CaptureEngine {
   checkPermissions(settings: CaptureSettings): Promise<CapturePermissions>;
   requestPermissions(settings: CaptureSettings): Promise<CapturePermissions>;
   openSettings?(): Promise<void>;
+  /** Abandon any recording or pending start and release the devices. */
+  reset?(): Promise<void>;
+  /** Native capture log and audio-session state, for troubleshooting. */
+  diagnostics?(): Promise<CaptureDiagnostics>;
   start(
     target: RecordingTarget,
     settings: CaptureSettings,
@@ -74,4 +82,11 @@ export interface CaptureEngine {
    * the recording with Web Audio instead.
    */
   extractAnalysisAudio?(mediaPath: string, analysisPath: string): Promise<{ durationMs: number }>;
+}
+
+export interface CaptureDiagnostics {
+  lines: string[];
+  audioSession?: string;
+  camera?: string;
+  microphone?: string;
 }
