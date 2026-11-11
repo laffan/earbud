@@ -98,7 +98,7 @@ pub async fn reset_edits(
 /// Binary upload. The body is raw bytes (no JSON/base64 overhead); routing
 /// information travels in headers:
 /// * `x-sketch-id`: target sketch
-/// * `x-file-kind`: `media-chunk` | `analysis` | `midi`
+/// * `x-file-kind`: `media-chunk` | `analysis` | `midi` | `notes-audio` | `take-audio`
 ///
 /// Returns the absolute path that was written.
 #[tauri::command]
@@ -131,8 +131,9 @@ pub async fn prepare_export(
     library: State<'_, Library>,
     id: String,
     base_name: String,
+    kinds: Vec<ExportKind>,
 ) -> Result<ExportBundle> {
-    library.prepare_export(&id, &base_name)
+    library.prepare_export(&id, &base_name, &kinds)
 }
 
 /// Desktop "Save as…": copy a library file to a path chosen in a native

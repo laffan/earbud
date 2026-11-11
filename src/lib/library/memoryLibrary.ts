@@ -11,6 +11,7 @@ import type {
   CreateSketchArgs,
   CreatedSketch,
   ExportBundle,
+  ExportKind,
   FileKind,
   FinalizeSketchArgs,
   RecoveryReport,
@@ -197,7 +198,7 @@ export class MemoryLibrary implements SketchLibrary {
       entry.chunks.push(bytes.slice());
       return entry.sketch.mediaPath ?? '';
     }
-    const type = kind === 'analysis' ? 'audio/wav' : 'audio/midi';
+    const type = kind === 'midi' ? 'audio/midi' : 'audio/wav';
     const previous = entry.files.get(kind);
     if (previous) URL.revokeObjectURL(previous.url);
     const blob = new Blob([bytes.slice()], { type });
@@ -207,12 +208,21 @@ export class MemoryLibrary implements SketchLibrary {
     return url;
   }
 
-  async prepareExport(id: string, _baseName: string): Promise<ExportBundle> {
+  async prepareExport(id: string, _baseName: string, kinds: ExportKind[]): Promise<ExportBundle> {
     const entry = this.entry(id);
-    return {
-      mediaPath: entry.files.get('media')?.url ?? null,
-      midiPath: entry.files.get('midi')?.url ?? null,
+    const sources: Record<ExportKind, string> = {
+      recording: 'media',
+      audio: 'take-audio',
+      'notes-audio': 'notes-audio',
+      midi: 'midi',
     };
+    const bundle: ExportBundle = { files: [], missing: [] };
+    for (const kind of new Set(kinds)) {
+      const file = entry.files.get(sources[kind]);
+      if (file) bundle.files.push({ kind, path: file.url });
+      else bundle.missing.push(kind);
+    }
+    return bundle;
   }
 
   async copyOut(): Promise<void> {

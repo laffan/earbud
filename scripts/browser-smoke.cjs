@@ -106,6 +106,18 @@ async function findNote(page) {
   await page.waitForTimeout(800);
   const strip = await page.$$eval('.chord-strip .chord', (els) => els.map((e) => e.textContent).join(' '));
   if (strip !== 'C Am F G7') fail(`chord strip was "${strip}"`);
+  // Phone layout: nothing wider than the screen; the video fits the width.
+  const layout = await page.evaluate(() => ({
+    page: document.documentElement.scrollWidth,
+    viewport: document.documentElement.clientWidth,
+    video: document.querySelector('video')?.getBoundingClientRect().width ?? 0,
+    order: [...document.querySelectorAll('.content > section')].map((e) => e.getAttribute('aria-label')).join(' > '),
+  }));
+  console.log(`layout: ${JSON.stringify(layout)}`);
+  if (layout.page > layout.viewport) fail(`page scrolls sideways (${layout.page} > ${layout.viewport})`);
+  if (layout.video === 0 || layout.video > layout.viewport) fail(`video does not fit the width (${layout.video})`);
+  if (!layout.order.startsWith('Transcription > Playback > Recording')) fail(`unexpected order ${layout.order}`);
+
   await page.click('button[aria-label="Play"]');
   await page.waitForTimeout(2000);
   const time = await text(page, '.time');

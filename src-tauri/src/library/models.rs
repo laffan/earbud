@@ -238,10 +238,32 @@ pub struct LibraryInfo {
     pub database_path: String,
 }
 
+/// What the user can choose to export from a sketch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExportKind {
+    /// The original recording (video, or audio-only take), untouched.
+    Recording,
+    /// The take's audio track on its own.
+    Audio,
+    /// The transcribed notes rendered with the built-in synth.
+    NotesAudio,
+    /// The transcribed notes as a Standard MIDI File.
+    Midi,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportedFile {
+    pub kind: ExportKind,
+    /// Friendly-named hard link (or copy) inside the sketch's exports folder.
+    pub path: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportBundle {
-    /// Original recording, hard-linked (or copied) under a friendly name.
-    pub media_path: Option<String>,
-    pub midi_path: Option<String>,
+    pub files: Vec<ExportedFile>,
+    /// Requested kinds that had no source file (e.g. no transcription yet).
+    pub missing: Vec<ExportKind>,
 }

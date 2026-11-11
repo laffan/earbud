@@ -5,6 +5,7 @@ import type {
   CreateSketchArgs,
   CreatedSketch,
   ExportBundle,
+  ExportKind,
   FileKind,
   FinalizeSketchArgs,
   RecoveryReport,
@@ -62,8 +63,8 @@ export class TauriLibrary implements SketchLibrary {
       headers: { 'x-sketch-id': id, 'x-file-kind': kind },
     });
   }
-  prepareExport(id: string, baseName: string) {
-    return invoke<ExportBundle>('prepare_export', { id, baseName });
+  prepareExport(id: string, baseName: string, kinds: ExportKind[]) {
+    return invoke<ExportBundle>('prepare_export', { id, baseName, kinds });
   }
   copyOut(src: string, dest: string) {
     return invoke<void>('copy_out', { src, dest });

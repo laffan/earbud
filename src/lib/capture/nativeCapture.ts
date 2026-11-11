@@ -66,6 +66,10 @@ export class NativeCaptureEngine implements CaptureEngine {
     };
   }
 
+  async exportAudio(mediaPath: string, outputPath: string): Promise<void> {
+    await invoke('plugin:capture|export_audio', { inputPath: mediaPath, outputPath });
+  }
+
   async extractAnalysisAudio(mediaPath: string, analysisPath: string) {
     const result = await invoke<{ durationMs: number }>('plugin:capture|extract_analysis_audio', {
       inputPath: mediaPath,
@@ -80,6 +84,7 @@ export interface NativeCapabilities {
   nativeCapture: boolean;
   nativeAudioExtraction: boolean;
   nativeShare: boolean;
+  nativeAudioExport?: boolean;
   platform: string;
 }
 

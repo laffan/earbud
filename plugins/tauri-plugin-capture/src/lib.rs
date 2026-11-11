@@ -30,6 +30,8 @@ pub struct Capabilities {
     pub native_audio_extraction: bool,
     /// Native share sheet is available.
     pub native_share: bool,
+    /// Native export of the take's audio track to `.m4a` is available.
+    pub native_audio_export: bool,
     pub platform: &'static str,
 }
 
@@ -40,6 +42,7 @@ fn capabilities() -> Capabilities {
         native_capture: ios,
         native_audio_extraction: ios,
         native_share: ios,
+        native_audio_export: ios,
         platform: std::env::consts::OS,
     }
 }

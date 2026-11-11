@@ -110,8 +110,12 @@ Pure TypeScript, no UI or platform dependencies, unit tested.
 - `midi.ts`: Standard MIDI File export via `@tonejs/midi`.
 - `summary.ts`: per-sketch digest (note count, chord progression, pitch range, ≤240 preview notes) stored in
   SQLite so the list can draw mini piano rolls without loading every note.
-- `synth.ts`: Web Audio voice that plays notes in sync with the `<video>` clock (look-ahead scheduling, drift
-  resync), for auditioning the transcription.
+- `synth.ts`: Web Audio piano-ish voice. `NoteSynth` plays notes in sync with the `<video>` clock with look-ahead
+  scheduling. It anchors only once the audio clock is running, schedules from its own smooth clock, ignores
+  disagreements with the video clock under 0.3 s (coarse or jittery media clocks), reschedules immediately on jumps
+  over 1 s (seeks) and only after 0.25 s of persistent drift otherwise. Rescheduling on every small disagreement made
+  a freshly created context retrigger the same note when switching to *Notes* mid-playback.
+  `renderNotesToWav` renders the same voice in an `OfflineAudioContext` for the *Notes audio* export.
 - `notes.ts`: naming, normalization (used by the editor), ranges.
 
 ## 4. Sketch Library (`src-tauri/src/library`, `src/lib/library`)
@@ -126,6 +130,8 @@ Rust owns storage. The frontend talks to it through typed commands (`src-tauri/s
     recording.<mov|mp4|webm|…>   original capture — immutable once saved
     analysis.wav                 derived audio for transcription (re-creatable)
     transcription.mid            current notes as MIDI (re-creatable)
+    take-audio.m4a|wav           the take's audio track, written on share (re-creatable)
+    notes-audio.wav              the notes rendered by the synth, written on share (re-creatable)
     exports/                     friendly-named hard links for sharing
 ```
 
@@ -142,7 +148,8 @@ Guarantees, enforced in Rust and covered by `cargo test`:
   to it again; `discard_sketch` refuses saved sketches.
 - Edits are stored beside the original transcription; *Revert* simply clears them. Re-transcribing replaces both
   (the UI asks first).
-- Uploads carry only a sketch id and a file *kind* (`media-chunk` | `analysis` | `midi`), never a path, and ids
+- Uploads carry only a sketch id and a file *kind* (`media-chunk` | `analysis` | `midi` | `notes-audio` |
+  `take-audio`), never a path, and ids
   are validated as 32-hex strings, so the frontend cannot write outside a sketch folder.
 - Binary uploads use Tauri's raw IPC body (no base64/JSON).
 - Recovery on launch: interrupted recordings with data are kept (flagged *Recovered*), empty ones removed, and
@@ -162,9 +169,28 @@ which makes the whole UI testable in Chromium.
 - `PianoRoll.svelte`: canvas renderer and gesture handling (seek, pan, pinch/ctrl-wheel zoom, select, move,
   resize, double-tap to add, keyboard editing). It follows the playhead, lights sounding notes and keys, and draws
   a chord lane.
-- `SketchView.svelte`: playback with a source fallback chain (`asset://` URL → in-memory blob for files under
+- `SwipeRow.svelte`: list row gestures. A horizontal drag reveals *Share* / *Delete*; vertical drags stay with the
+  browser (`touch-action: pan-y`) so the list scrolls natively. A 500 ms press (or right-click) enters selection mode.
+- `Waveform.svelte`: overview of the take drawn from peaks of the analysis WAV (`src/lib/audio/peaks.ts`, cached per
+  file). Tap or drag to scrub; uses `fastSeek` while dragging. The shaded band is the piano roll's visible window.
+- `SketchView.svelte`: piano roll first, then chords, waveform and transport, then the video. The layout is a single
+  `minmax(0, 1fr)` grid column so wide children (the chord strip) scroll inside themselves instead of widening the
+  page. Playback uses a source fallback chain (`asset://` URL → in-memory blob for files under
   200 MB → extracted analysis audio), the listen mode (take / synthesized notes / both), playback rate, the
   editing toolbar with undo/redo and debounced autosave, notes and export.
+
+## 6. Export (`src/lib/export`)
+
+`prepareExports(ids, kinds)` handles one or many sketches. `kinds` is any of `recording` | `audio` | `notes-audio` | `midi`:
+
+- `midi` and `notes-audio` are rendered from the current notes (edits included) and written into the sketch folder
+  (`transcription.mid`, `notes-audio.wav`).
+- `audio` is the take's sound on its own. On iOS it comes from the native `exportAudio` command (`take-audio.m4a`).
+  Elsewhere it is decoded with Web Audio at full quality (`take-audio.wav`), falling back to the analysis WAV.
+- Rust's `prepare_export(id, baseName, kinds)` then hard-links the chosen files into `exports/` under friendly
+  names (`Title.mov`, `Title (audio).m4a`, `Title (notes).wav`, `Title.mid`) and reports kinds it could not find.
+- `deliverExports` hands the files to the iOS share sheet, a desktop folder picker (with name de-duplication), or
+  browser downloads.
 
 ## Platform isolation
 

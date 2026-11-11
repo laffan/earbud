@@ -94,6 +94,8 @@ body {
 body {
   min-height: 100vh;
   min-height: 100dvh;
+  /* Nothing should ever scroll the page sideways (clip keeps sticky headers working). */
+  overflow-x: clip;
 }
 
 /* While the native camera preview is shown behind the webview. */

@@ -179,13 +179,59 @@ fn export_uses_friendly_names() {
     fs::write(&created.media_path, b"movie").unwrap();
     finalize(&lib, &created.id);
     lib.write_file(&created.id, FileKind::Midi, b"MThd").unwrap();
-    let bundle = lib.prepare_export(&created.id, "Nocturne: idea / take 2").unwrap();
-    let media = bundle.media_path.unwrap();
-    let midi = bundle.midi_path.unwrap();
-    assert!(media.ends_with("Nocturne- idea - take 2.mov"), "{media}");
-    assert!(midi.ends_with("Nocturne- idea - take 2.mid"), "{midi}");
-    assert_eq!(fs::read(media).unwrap(), b"movie");
-    assert_eq!(fs::read(midi).unwrap(), b"MThd");
+    lib.write_file(&created.id, FileKind::NotesAudio, b"RIFFnotes").unwrap();
+    let bundle = lib
+        .prepare_export(
+            &created.id,
+            "Nocturne: idea / take 2",
+            &[ExportKind::Recording, ExportKind::Midi, ExportKind::NotesAudio],
+        )
+        .unwrap();
+    let names: Vec<String> = bundle
+        .files
+        .iter()
+        .map(|f| Path::new(&f.path).file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            "Nocturne- idea - take 2.mov",
+            "Nocturne- idea - take 2.mid",
+            "Nocturne- idea - take 2 (notes).wav",
+        ]
+    );
+    assert_eq!(fs::read(&bundle.files[0].path).unwrap(), b"movie");
+    assert_eq!(fs::read(&bundle.files[1].path).unwrap(), b"MThd");
+    assert!(bundle.missing.is_empty());
+}
+
+#[test]
+fn export_prefers_native_take_audio_and_reports_missing() {
+    let (_tmp, lib) = lib();
+    let created = create(&lib);
+    fs::write(&created.media_path, b"movie").unwrap();
+    finalize(&lib, &created.id);
+
+    // Nothing extracted yet: audio and MIDI are missing.
+    let bundle = lib
+        .prepare_export(&created.id, "Take", &[ExportKind::Audio, ExportKind::Midi])
+        .unwrap();
+    assert!(bundle.files.is_empty());
+    assert_eq!(bundle.missing, vec![ExportKind::Audio, ExportKind::Midi]);
+
+    // Web fallback writes WAV; the native exporter writes M4A next to it.
+    lib.write_file(&created.id, FileKind::TakeAudio, b"RIFFtake").unwrap();
+    let wav = lib
+        .prepare_export(&created.id, "Take", &[ExportKind::Audio])
+        .unwrap();
+    assert!(wav.files[0].path.ends_with("Take (audio).wav"));
+    fs::write(Path::new(&created.dir).join("take-audio.m4a"), b"m4a").unwrap();
+    let m4a = lib
+        .prepare_export(&created.id, "Take", &[ExportKind::Audio, ExportKind::Audio])
+        .unwrap();
+    assert_eq!(m4a.files.len(), 1);
+    assert!(m4a.files[0].path.ends_with("Take (audio).m4a"));
+    assert_eq!(fs::read(&m4a.files[0].path).unwrap(), b"m4a");
 }
 
 #[test]

@@ -54,3 +54,15 @@ describe('resample', () => {
     expect(rms).toBeLessThan(0.05);
   });
 });
+
+describe('peaks', () => {
+  it('finds and normalizes the loud part of a recording', async () => {
+    const { computePeaks } = await import('./peaks');
+    const samples = new Float32Array(1000);
+    for (let i = 500; i < 600; i++) samples[i] = i % 2 ? 0.5 : -0.5;
+    const peaks = computePeaks(samples, 10);
+    expect(peaks).toHaveLength(10);
+    expect(peaks[5]).toBe(1);
+    expect(peaks[0]).toBe(0);
+  });
+});

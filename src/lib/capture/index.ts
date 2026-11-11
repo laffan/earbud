@@ -24,6 +24,7 @@ export async function detectCapabilities(): Promise<PlatformCapabilities> {
     nativeCapture: false,
     nativeAudioExtraction: false,
     nativeShare: false,
+    nativeAudioExport: false,
     platform: 'web',
   };
 }

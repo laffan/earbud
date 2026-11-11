@@ -11,6 +11,7 @@
 //   stopRecording() / resetCapture()
 //   getDiagnostics()
 //   extractAnalysisAudio({ inputPath, outputPath, sampleRate })
+//   exportAudio({ inputPath, outputPath })
 //   shareFiles({ paths })
 //
 // Threading: Tauri delivers commands on its own serial "ipc" queue. All
@@ -40,6 +41,11 @@ struct ExtractAudioArgs: Decodable {
   let inputPath: String
   let outputPath: String
   let sampleRate: Double?
+}
+
+struct ExportAudioArgs: Decodable {
+  let inputPath: String
+  let outputPath: String
 }
 
 struct ShareFilesArgs: Decodable {
@@ -864,6 +870,37 @@ class CapturePlugin: Plugin, AVCaptureFileOutputRecordingDelegate {
       } catch {
         invoke.reject(
           "Audio extraction failed: \(error.localizedDescription)", code: "extract_failed")
+      }
+    }
+  }
+
+  /// Write the recording's audio track as AAC `.m4a` (for sharing the
+  /// take's sound on its own). The original file is only read.
+  @objc func exportAudio(_ invoke: Invoke) throws {
+    let args = try invoke.parseArgs(ExportAudioArgs.self)
+    let output = URL(fileURLWithPath: args.outputPath)
+    let asset = AVURLAsset(url: URL(fileURLWithPath: args.inputPath))
+    guard
+      let exporter = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A)
+    else {
+      invoke.reject("The audio of this recording cannot be exported.", code: "export_unavailable")
+      return
+    }
+    if FileManager.default.fileExists(atPath: output.path) {
+      try FileManager.default.removeItem(at: output)
+    }
+    exporter.outputURL = output
+    exporter.outputFileType = .m4a
+    log("exporting take audio")
+    exporter.exportAsynchronously {
+      if exporter.status == .completed {
+        self.log("take audio exported")
+        let payload: JsonObject = ["path": args.outputPath]
+        invoke.resolve(payload)
+      } else {
+        let message = exporter.error?.localizedDescription ?? "export ended with status \(exporter.status.rawValue)"
+        self.log("take audio export failed: \(message)")
+        invoke.reject("Could not export the audio: \(message)", code: "export_failed")
       }
     }
   }

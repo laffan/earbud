@@ -130,10 +130,16 @@ try {
 
   // 4. Export bundle (friendly-named hard links of the originals).
   const bundle = await run(
-    async (id) => window.__TAURI_INTERNALS__.invoke('prepare_export', { id, baseName: 'Smoke: test/1' }),
+    async (id) =>
+      window.__TAURI_INTERNALS__.invoke('prepare_export', {
+        id,
+        baseName: 'Smoke: test/1',
+        kinds: ['recording', 'audio', 'midi'],
+      }),
     created.id,
   );
-  console.log('export', bundle);
+  console.log('export', JSON.stringify(bundle));
+  if (bundle.files.length !== 2 || bundle.missing.join() !== 'audio') throw new Error('unexpected export bundle');
   await run(async (id) => window.__TAURI_INTERNALS__.invoke('delete_sketch', { id }), created.id);
   console.log('TAURI SMOKE OK');
 } finally {

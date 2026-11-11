@@ -54,7 +54,8 @@ npm run dev
 ```
 
 Open http://localhost:1420. Outside Tauri the app uses an in-memory sketch library and the
-browser's camera and microphone. Sketches disappear on reload.
+browser's camera and microphone. Sketches disappear on reload. Open http://localhost:1420/?demo to start with a
+40-second demo sketch (rendered with the built-in synth) for working on the UI without recording.
 
 ### Desktop app (macOS, Windows, Linux)
 
@@ -85,13 +86,18 @@ APPLE_DEVELOPMENT_TEAM=<your team id> npm run tauri ios dev -- --host
    keyboard) and tap the red button. The screen stays awake while recording.
 2. **Stop**: the take is saved immediately with a timestamp. Name it later if you like.
 3. **Transcribe**: happens automatically. The card shows progress, then the chord progression.
-4. **Review**: open a sketch to play the video with a piano roll that follows the playhead, a chord lane and
-   lit keys. Choose *Take*, *Notes* (a synth plays the transcription) or *Both*, and slow down to 0.75× or 0.5×.
+4. **Review**: open a sketch. From top to bottom: the piano roll (scroll it sideways, pinch to zoom; it follows
+   the playhead and lights the sounding keys), the detected chords (tap one to hear it), a waveform of the take
+   (tap or drag to scrub; the shaded band is what the roll is showing), the transport, then the video. Choose
+   *Take*, *Notes* (a synth plays the transcription) or *Both*, and slow down to 0.75× or 0.5×.
 5. **Edit**: tap *Edit notes*. Tap a note to select it, drag to move it, drag its end to resize it, and
    double-tap to add one. The toolbar transposes, nudges, deletes and undoes. Edits save automatically and can
    be reverted to the original transcription.
-6. **Export**: the share button exports the original recording and a `.mid` file (iOS share sheet, or a
-   folder picker on desktop).
+6. **Share**: the share button (or swiping a sketch left in the list) asks which files to include: the
+   **video** (original take), the **recorded audio** on its own, the **notes audio** (the transcription played by
+   the built-in piano) and **MIDI**. Then it opens the iOS share sheet, or a folder picker on desktop.
+7. **Organise**: in the list, swipe a sketch left for *Share* / *Delete*; press and hold to select several, then
+   share or delete them together.
 
 ## Project layout
 
@@ -102,6 +108,7 @@ src/                         Svelte + TypeScript UI and engines
   lib/music/                 Chords, MIDI, summaries, note helpers, playback synth
   lib/library/               Sketch Library client (Tauri) + in-memory dev backend
   lib/pipeline/              Background processing queue
+  lib/export/                Share/export: picks and prepares files per sketch
   lib/vision/                Future visual analysis / fusion interfaces
   lib/state/                 App state and the capture flow
   lib/ui/                    Components (home, recorder, sketch view, piano roll…)

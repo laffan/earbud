@@ -109,6 +109,8 @@ export class AppState {
   permissionProblem = $state<PermissionProblem | null>(null);
   /** Bumped whenever a sketch changes, so open views can reload. */
   revision = $state<Record<string, number>>({});
+  /** Sketches the export sheet is open for (null when closed). */
+  exportRequest = $state<string[] | null>(null);
 
   private captureEngine: CaptureEngine | null = null;
   private active: ActiveRecording | null = null;
@@ -152,6 +154,10 @@ export class AppState {
         this.settings.camera = 'front';
       }
       const report = await this.library.recover();
+      if (!this.library.persistent && new URLSearchParams(location.search).has('demo')) {
+        const { seedDemo } = await import('../dev/demo');
+        await seedDemo(this.library);
+      }
       this.sketches = await this.library.list();
       if (report.recovered.length > 0) {
         this.toast(
@@ -211,11 +217,28 @@ export class AppState {
   }
 
   async deleteSketch(id: string) {
-    this.queue.cancel(id);
-    await this.library.remove(id);
-    this.sketches = this.sketches.filter((s) => s.id !== id);
-    if (this.view.name === 'sketch' && this.view.id === id) this.goHome();
-    this.toast('Sketch deleted.');
+    await this.deleteSketches([id]);
+  }
+
+  async deleteSketches(ids: string[]) {
+    for (const id of ids) {
+      this.queue.cancel(id);
+      await this.library.remove(id);
+    }
+    const gone = new Set(ids);
+    this.sketches = this.sketches.filter((s) => !gone.has(s.id));
+    if (this.view.name === 'sketch' && gone.has(this.view.id)) this.goHome();
+    this.toast(ids.length === 1 ? 'Sketch deleted.' : `${ids.length} sketches deleted.`);
+  }
+
+  /** Open the export sheet for one or more sketches. */
+  shareSketches(ids: string[]) {
+    if (ids.length > 0) this.exportRequest = [...ids];
+  }
+
+  /** Dependencies for the exporter (storage + native capture helpers). */
+  exportDeps() {
+    return { library: this.library, capture: this.captureEngine };
   }
 
   transcribe(id: string) {

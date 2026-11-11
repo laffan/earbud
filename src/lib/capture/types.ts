@@ -82,6 +82,8 @@ export interface CaptureEngine {
    * the recording with Web Audio instead.
    */
   extractAnalysisAudio?(mediaPath: string, analysisPath: string): Promise<{ durationMs: number }>;
+  /** Write the take's audio track to `outputPath` (`.m4a`), natively. */
+  exportAudio?(mediaPath: string, outputPath: string): Promise<void>;
 }
 
 export interface CaptureDiagnostics {

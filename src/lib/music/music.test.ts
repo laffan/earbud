@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PianoNote } from '../transcription/types';
-import { chordProgression, detectChords } from './chords';
+import { chordProgression, chordTones, chordVoicing, detectChords } from './chords';
 import { midiToNotes, notesToMidi } from './midi';
 import { normalizeNote, noteName } from './notes';
 import { summarize } from './summary';
@@ -84,5 +84,23 @@ describe('notes', () => {
     expect(summary.noteCount).toBe(400);
     expect(summary.preview.length).toBeLessThanOrEqual(240);
     expect(summary.pitchRange).toEqual([60, 71]);
+  });
+});
+
+describe('chord voicing for playback', () => {
+  it('replays the chord tones that were struck, ignoring the melody', () => {
+    const notes = [
+      ...chord([45, 57, 60, 64], 1, 2),
+      { pitch: 74, startTime: 1.05, endTime: 1.3, velocity: 90 }, // passing D in the melody
+    ];
+    const [am] = detectChords(notes);
+    expect(am.symbol).toBe('Am');
+    expect(chordVoicing(am, notes)).toEqual([45, 57, 60, 64]);
+  });
+
+  it('builds a voicing from the symbol when the notes are not there', () => {
+    const g7 = { startTime: 0, endTime: 1, symbol: 'G7', root: 7, bass: 7, quality: '7', confidence: 1 };
+    expect(chordTones(g7).sort((a, b) => a - b)).toEqual([2, 5, 7, 11]);
+    expect(chordVoicing(g7, [])).toEqual([55, 67, 71, 74, 77]);
   });
 });

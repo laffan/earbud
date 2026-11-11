@@ -23,6 +23,10 @@
     onseek?: (time: number) => void;
     onchange?: (notes: PianoNote[], focus: PianoNote | null) => void;
     onpreview?: (pitch: number) => void;
+    /** A chord in the chord lane was tapped. */
+    onchordtap?: (chord: ChordSegment) => void;
+    /** Visible time window changed (seconds). */
+    onviewchange?: (start: number, end: number) => void;
   }
 
   let {
@@ -36,6 +40,8 @@
     onseek,
     onchange,
     onpreview,
+    onchordtap,
+    onviewchange,
   }: Props = $props();
 
   const GUTTER = 40;
@@ -92,19 +98,26 @@
   const pitchOf = (y: number) =>
     Math.max(range.lo, Math.min(range.hi, range.hi - Math.floor((y - TOP) / rowH)));
   const snap = (t: number) => Math.round(t * 100) / 100;
-  const clampScroll = (s: number) => Math.max(0, Math.min(s, Math.max(0, totalSeconds - visibleSeconds * 0.85)));
+  // Allow a little room past the last note, not a screen of empty paper.
+  const clampScroll = (s: number) => Math.max(0, Math.min(s, Math.max(0, totalSeconds - visibleSeconds + 0.5)));
 
   // ------------------------------------------------------------------ view
 
   /** Fit short sketches entirely; long ones at a readable zoom. */
+  let fittedWidth = 0;
   $effect(() => {
     const total = totalSeconds;
     const available = rollWidth;
     untrack(() => {
-      if (available <= 0 || userZoomed) return;
-      if (Math.abs(total - fittedFor) / Math.max(1, fittedFor) < 0.2) return;
-      fittedFor = total;
-      pxPerSec = Math.max(25, Math.min(160, available / (total * 1.02)));
+      if (available <= 0) return;
+      const lengthChanged = Math.abs(total - fittedFor) / Math.max(1, fittedFor) >= 0.2;
+      const widthChanged = Math.abs(available - fittedWidth) > 1;
+      if (!userZoomed && (lengthChanged || widthChanged)) {
+        // Refit on load, when the length becomes known, and on rotation/resize.
+        fittedFor = total;
+        fittedWidth = available;
+        pxPerSec = Math.max(25, Math.min(160, available / (total * 1.02)));
+      }
       scrollX = clampScroll(scrollX);
     });
   });
@@ -132,6 +145,45 @@
     userZoomed = true;
     pxPerSec = Math.max(MIN_PX, Math.min(MAX_PX, pxPerSec * factor));
     scrollX = clampScroll(anchor - (anchorX - GUTTER) / pxPerSec);
+  }
+
+  $effect(() => {
+    onviewchange?.(scrollX, scrollX + visibleSeconds);
+  });
+
+  // ------------------------------------------------------------ momentum
+
+  /** Recent pan positions, for a fling when the finger lifts. */
+  let panSamples: { t: number; scroll: number }[] = [];
+  let flingFrame = 0;
+
+  function stopFling() {
+    cancelAnimationFrame(flingFrame);
+    flingFrame = 0;
+  }
+
+  function startFling() {
+    const now = performance.now();
+    const recent = panSamples.filter((s) => now - s.t < 100);
+    panSamples = [];
+    if (recent.length < 2) return;
+    const first = recent[0];
+    const last = recent[recent.length - 1];
+    let velocity = (last.scroll - first.scroll) / Math.max(0.016, (last.t - first.t) / 1000); // s per s
+    if (Math.abs(velocity * pxPerSec) < 120) return; // slow release: no fling
+    let previous = now;
+    const step = (frameTime: number) => {
+      const dt = Math.min(0.05, (frameTime - previous) / 1000);
+      previous = frameTime;
+      const next = clampScroll(scrollX + velocity * dt);
+      const hitEdge = next === scrollX;
+      scrollX = next;
+      userScrollUntil = performance.now() + 2500;
+      velocity *= Math.exp(-dt * 3.5);
+      if (!hitEdge && Math.abs(velocity * pxPerSec) > 15) flingFrame = requestAnimationFrame(step);
+      else flingFrame = 0;
+    };
+    flingFrame = requestAnimationFrame(step);
   }
 
   export function fit() {
@@ -294,6 +346,17 @@
       ctx.fill();
     }
 
+    // Scroll indicator, so it is clear the roll extends beyond the screen.
+    if (totalSeconds > visibleSeconds * 1.02 && rollWidth > 40) {
+      const w = Math.max(24, (visibleSeconds / totalSeconds) * rollWidth);
+      const x = GUTTER + (scrollX / Math.max(0.001, totalSeconds - visibleSeconds)) * (rollWidth - w);
+      ctx.globalAlpha = 0.45;
+      ctx.fillStyle = c.ink3;
+      roundRect(ctx, Math.min(x, width - w - 2), height - 5, w, 3, 1.5);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+
     // Keyboard gutter (fixed).
     ctx.fillStyle = c.raised;
     ctx.fillRect(0, 0, GUTTER, height);
@@ -374,6 +437,8 @@
   }
 
   function onPointerDown(e: PointerEvent) {
+    stopFling();
+    panSamples = [];
     const p = local(e);
     canvas.setPointerCapture(e.pointerId);
     pointers.set(e.pointerId, p);
@@ -445,6 +510,8 @@
       drag.mode = 'pan';
       scrollX = clampScroll(drag.startScroll - dx / pxPerSec);
       userScrollUntil = performance.now() + 2500;
+      panSamples.push({ t: performance.now(), scroll: scrollX });
+      if (panSamples.length > 12) panSamples.shift();
       return;
     }
 
@@ -490,9 +557,20 @@
       }
       return;
     }
-    if (d.moved) return;
+    if (d.moved) {
+      if (d.mode === 'pan') startFling();
+      return;
+    }
 
     const t = tOf(d.startX);
+    // Tap in the chord lane: hand the chord to the parent (e.g. to play it).
+    if (d.startY < CHORD_LANE && d.startX >= GUTTER && onchordtap) {
+      const chord = chords.find((c) => t >= c.startTime && t < c.endTime);
+      if (chord) {
+        onchordtap(chord);
+        return;
+      }
+    }
     if (editing && d.startY > TOP) {
       const now = performance.now();
       const isDouble = now - lastTap.time < 380 && Math.hypot(d.startX - lastTap.x, d.startY - lastTap.y) < 24;
@@ -592,6 +670,7 @@
     media.addEventListener('change', onTheme);
     canvas.addEventListener('wheel', onWheel, { passive: false });
     return () => {
+      stopFling();
       observer.disconnect();
       media.removeEventListener('change', onTheme);
       canvas.removeEventListener('wheel', onWheel);

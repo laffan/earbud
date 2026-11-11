@@ -310,3 +310,38 @@ export function chordProgression(segments: ChordSegment[], limit = 8): string[] 
   }
   return out;
 }
+
+/** Pitch classes of a detected chord (root + chord tones). */
+export function chordTones(chord: Pick<ChordSegment, 'root' | 'quality'>): number[] {
+  const quality = QUALITIES.find((q) => q.type === chord.quality);
+  const intervals = quality?.intervals ?? [0, 4, 7];
+  return intervals.map((i) => (chord.root + i) % 12);
+}
+
+/**
+ * Notes to play when a chord is tapped: the chord tones that were actually
+ * struck at that moment (so it sounds like the take), or a plain voicing
+ * built from the chord symbol when too few were found.
+ */
+export function chordVoicing(chord: ChordSegment, notes: PianoNote[]): number[] {
+  const tones = new Set(chordTones(chord));
+  const t0 = chord.startTime;
+  const struck = notes.filter((n) => n.startTime >= t0 - 0.05 && n.startTime < t0 + 0.2);
+  const sounding = notes.filter((n) => n.startTime <= t0 + 0.1 && n.endTime > t0 + 0.1);
+  const source = struck.length >= 3 ? struck : [...struck, ...sounding];
+  const pitches = [...new Set(source.filter((n) => tones.has(pitchClass(n.pitch))).map((n) => n.pitch))];
+  if (new Set(pitches.map(pitchClass)).size >= Math.min(3, tones.size)) {
+    return pitches.sort((a, b) => a - b);
+  }
+  // Fallback: bass note in octave 3, chord tones stacked from middle C.
+  const voicing = [48 + chord.bass];
+  let previous = 59;
+  for (const pc of chordTones(chord)) {
+    let pitch = 60 + pc;
+    while (pitch <= previous) pitch += 12;
+    while (pitch - 12 > previous) pitch -= 12;
+    voicing.push(pitch);
+    previous = pitch;
+  }
+  return voicing;
+}

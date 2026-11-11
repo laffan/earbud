@@ -95,12 +95,16 @@ export interface RecoveryReport {
   requeued: string[];
 }
 
+/** What can be exported from a sketch. */
+export type ExportKind = 'recording' | 'audio' | 'notes-audio' | 'midi';
+
 export interface ExportBundle {
-  mediaPath: string | null;
-  midiPath: string | null;
+  files: { kind: ExportKind; path: string }[];
+  /** Requested kinds that had no source file. */
+  missing: ExportKind[];
 }
 
-export type FileKind = 'media-chunk' | 'analysis' | 'midi';
+export type FileKind = 'media-chunk' | 'analysis' | 'midi' | 'notes-audio' | 'take-audio';
 
 /** Storage backend. Implemented by Rust/SQLite in the app, in memory in dev. */
 export interface SketchLibrary {
@@ -119,11 +123,17 @@ export interface SketchLibrary {
   resetEdits(id: string, summary: SketchSummary | null): Promise<SketchDetail>;
   /** Raw byte upload into the sketch directory; returns the written path. */
   writeFile(id: string, kind: FileKind, bytes: Uint8Array): Promise<string>;
-  prepareExport(id: string, baseName: string): Promise<ExportBundle>;
+  /** Friendly-named copies (hard links) of the requested files, for sharing. */
+  prepareExport(id: string, baseName: string, kinds: ExportKind[]): Promise<ExportBundle>;
   copyOut(src: string, dest: string): Promise<void>;
 }
 
 /** Where the derived analysis WAV for a recording lives. */
 export function analysisPathFor(mediaPath: string): string {
   return mediaPath.replace(/[^/\\]+$/, 'analysis.wav');
+}
+
+/** Where the native exporter writes the take's audio track. */
+export function takeAudioPathFor(mediaPath: string): string {
+  return mediaPath.replace(/[^/\\]+$/, 'take-audio.m4a');
 }

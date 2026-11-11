@@ -319,6 +319,18 @@
           "markdownDescription": "Denies the check_permissions command without any pre-configured scope."
         },
         {
+          "description": "Enables the export_audio command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-export-audio",
+          "markdownDescription": "Enables the export_audio command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the export_audio command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-export-audio",
+          "markdownDescription": "Denies the export_audio command without any pre-configured scope."
+        },
+        {
           "description": "Enables the extract_analysis_audio command without any pre-configured scope.",
           "type": "string",
           "const": "allow-extract-analysis-audio",
@@ -415,10 +427,10 @@
           "markdownDescription": "Denies the stop_recording command without any pre-configured scope."
         },
         {
-          "description": "Allows recording, audio extraction and sharing through the native capture engine.\n#### This default permission set includes:\n\n- `allow-capabilities`\n- `allow-check-permissions`\n- `allow-request-permissions`\n- `allow-open-app-settings`\n- `allow-start-recording`\n- `allow-stop-recording`\n- `allow-reset-capture`\n- `allow-get-diagnostics`\n- `allow-extract-analysis-audio`\n- `allow-share-files`",
+          "description": "Allows recording, audio extraction and sharing through the native capture engine.\n#### This default permission set includes:\n\n- `allow-capabilities`\n- `allow-check-permissions`\n- `allow-request-permissions`\n- `allow-open-app-settings`\n- `allow-start-recording`\n- `allow-stop-recording`\n- `allow-reset-capture`\n- `allow-get-diagnostics`\n- `allow-extract-analysis-audio`\n- `allow-export-audio`\n- `allow-share-files`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Allows recording, audio extraction and sharing through the native capture engine.\n#### This default permission set includes:\n\n- `allow-capabilities`\n- `allow-check-permissions`\n- `allow-request-permissions`\n- `allow-open-app-settings`\n- `allow-start-recording`\n- `allow-stop-recording`\n- `allow-reset-capture`\n- `allow-get-diagnostics`\n- `allow-extract-analysis-audio`\n- `allow-share-files`"
+          "markdownDescription": "Allows recording, audio extraction and sharing through the native capture engine.\n#### This default permission set includes:\n\n- `allow-capabilities`\n- `allow-check-permissions`\n- `allow-request-permissions`\n- `allow-open-app-settings`\n- `allow-start-recording`\n- `allow-stop-recording`\n- `allow-reset-capture`\n- `allow-get-diagnostics`\n- `allow-extract-analysis-audio`\n- `allow-export-audio`\n- `allow-share-files`"
         }
       ]
     }

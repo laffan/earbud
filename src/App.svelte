@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { app } from './lib/state/app.svelte';
+  import ExportSheet from './lib/ui/ExportSheet.svelte';
   import Home from './lib/ui/Home.svelte';
   import PermissionSheet from './lib/ui/PermissionSheet.svelte';
   import Recorder from './lib/ui/Recorder.svelte';
@@ -25,6 +26,10 @@
 
 {#if app.recording}
   <Recorder recording={app.recording} />
+{/if}
+
+{#if app.exportRequest}
+  <ExportSheet ids={app.exportRequest} onclose={() => (app.exportRequest = null)} />
 {/if}
 
 {#if app.permissionProblem}

@@ -4,7 +4,7 @@
   import MiniRoll from './MiniRoll.svelte';
   import { displayTitle, formatDuration, formatTimeOfDay } from './format';
 
-  let { sketch, job, onopen }: { sketch: Sketch; job?: JobProgress; onopen: () => void } = $props();
+  let { sketch, job, selected = false }: { sketch: Sketch; job?: JobProgress; selected?: boolean } = $props();
 
   const status = $derived.by(() => {
     if (sketch.status === 'recording') return { label: 'Recording…', kind: 'accent' };
@@ -20,7 +20,7 @@
   });
 </script>
 
-<button class="card" onclick={onopen}>
+<div class="card" class:selected>
   <div class="roll">
     {#if sketch.summary && sketch.summary.preview.length > 0}
       <MiniRoll preview={sketch.summary.preview} range={sketch.summary.pitchRange} />
@@ -46,7 +46,7 @@
       {#if sketch.textNotes.trim()}<span class="chip">Notes</span>{/if}
     </div>
   </div>
-</button>
+</div>
 
 <style>
   .card {
@@ -61,11 +61,9 @@
     border: 1px solid var(--rule);
     align-items: center;
   }
-  .card:hover {
-    border-color: var(--rule-strong);
-  }
-  .card:active {
-    background: var(--paper-sunk);
+  .card.selected {
+    border-color: var(--accent);
+    background: var(--accent-soft);
   }
   .roll {
     height: 56px;

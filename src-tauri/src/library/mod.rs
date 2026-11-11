@@ -9,6 +9,8 @@
 //!     recording.mov|mp4|webm  original capture, never modified after save
 //!     analysis.wav            derived 22.05 kHz mono PCM for transcription
 //!     transcription.mid       latest MIDI rendering of the notes
+//!     notes-audio.wav         notes rendered with the synth (on export)
+//!     take-audio.m4a|wav      the take's audio track (on export)
 //!     exports/                friendly-named hard links handed to share/save
 //! ```
 //!
@@ -32,6 +34,10 @@ use models::*;
 pub const MEDIA_STEM: &str = "recording";
 pub const ANALYSIS_FILE: &str = "analysis.wav";
 pub const MIDI_FILE: &str = "transcription.mid";
+/// Synthesized rendering of the current notes.
+pub const NOTES_AUDIO_FILE: &str = "notes-audio.wav";
+/// The take's audio track: `.m4a` from the native exporter, `.wav` otherwise.
+pub const TAKE_AUDIO_STEM: &str = "take-audio";
 const EXPORTS_DIR: &str = "exports";
 const DB_FILE: &str = "earbud.sqlite3";
 
@@ -46,6 +52,10 @@ pub enum FileKind {
     Analysis,
     /// Replace the MIDI rendering of the current notes.
     Midi,
+    /// Replace the synthesized rendering of the notes (WAV).
+    NotesAudio,
+    /// Replace the take's audio track (WAV; used where no native exporter exists).
+    TakeAudio,
 }
 
 impl FileKind {
@@ -54,6 +64,8 @@ impl FileKind {
             "media-chunk" => Ok(FileKind::MediaChunk),
             "analysis" => Ok(FileKind::Analysis),
             "midi" => Ok(FileKind::Midi),
+            "notes-audio" => Ok(FileKind::NotesAudio),
+            "take-audio" => Ok(FileKind::TakeAudio),
             other => Err(Error::Invalid(format!("unknown file kind '{other}'"))),
         }
     }
@@ -525,6 +537,8 @@ impl Library {
             }
             FileKind::Analysis => dir.join(ANALYSIS_FILE),
             FileKind::Midi => dir.join(MIDI_FILE),
+            FileKind::NotesAudio => dir.join(NOTES_AUDIO_FILE),
+            FileKind::TakeAudio => dir.join(format!("{TAKE_AUDIO_STEM}.wav")),
         };
         // Write-then-rename so readers never see a half-written file.
         let tmp = path.with_extension("partial");
@@ -533,10 +547,15 @@ impl Library {
         Ok(path)
     }
 
-    /// Create friendly-named copies of the recording and MIDI file for
-    /// sharing. Uses hard links where possible so large videos are not
-    /// duplicated on disk.
-    pub fn prepare_export(&self, id: &str, base_name: &str) -> Result<ExportBundle> {
+    /// Create friendly-named copies of the requested files for sharing. Uses
+    /// hard links where possible so large videos are not duplicated on disk.
+    /// Kinds without a source file are reported in `missing`.
+    pub fn prepare_export(
+        &self,
+        id: &str,
+        base_name: &str,
+        kinds: &[ExportKind],
+    ) -> Result<ExportBundle> {
         validate_id(id)?;
         let dir = self.sketch_dir(id);
         let exports = dir.join(EXPORTS_DIR);
@@ -552,34 +571,50 @@ impl Library {
             }
             Ok(())
         };
-
-        let media = self.media_path(id)?;
-        let media_out = if media.is_file() {
-            let ext = media
-                .extension()
+        let extension = |path: &Path, fallback: &str| -> String {
+            path.extension()
                 .and_then(|e| e.to_str())
-                .unwrap_or("mov")
-                .to_string();
-            let dest = exports.join(format!("{stem}.{ext}"));
-            link_or_copy(&media, &dest)?;
-            Some(dest.display().to_string())
-        } else {
-            None
+                .unwrap_or(fallback)
+                .to_ascii_lowercase()
         };
 
-        let midi = dir.join(MIDI_FILE);
-        let midi_out = if midi.is_file() {
-            let dest = exports.join(format!("{stem}.mid"));
-            link_or_copy(&midi, &dest)?;
-            Some(dest.display().to_string())
-        } else {
-            None
-        };
-
-        Ok(ExportBundle {
-            media_path: media_out,
-            midi_path: midi_out,
-        })
+        let mut files = Vec::new();
+        let mut missing = Vec::new();
+        let mut seen = Vec::new();
+        for &kind in kinds {
+            if seen.contains(&kind) {
+                continue;
+            }
+            seen.push(kind);
+            let source = match kind {
+                ExportKind::Recording => Some(self.media_path(id)?),
+                ExportKind::Audio => {
+                    let m4a = dir.join(format!("{TAKE_AUDIO_STEM}.m4a"));
+                    let wav = dir.join(format!("{TAKE_AUDIO_STEM}.wav"));
+                    Some(if m4a.is_file() { m4a } else { wav })
+                }
+                ExportKind::NotesAudio => Some(dir.join(NOTES_AUDIO_FILE)),
+                ExportKind::Midi => Some(dir.join(MIDI_FILE)),
+            }
+            .filter(|p| p.is_file());
+            let Some(source) = source else {
+                missing.push(kind);
+                continue;
+            };
+            let name = match kind {
+                ExportKind::Recording => format!("{stem}.{}", extension(&source, "mov")),
+                ExportKind::Audio => format!("{stem} (audio).{}", extension(&source, "m4a")),
+                ExportKind::NotesAudio => format!("{stem} (notes).wav"),
+                ExportKind::Midi => format!("{stem}.mid"),
+            };
+            let dest = exports.join(name);
+            link_or_copy(&source, &dest)?;
+            files.push(ExportedFile {
+                kind,
+                path: dest.display().to_string(),
+            });
+        }
+        Ok(ExportBundle { files, missing })
     }
 
     /// Copy a file that lives inside the library to a user-chosen destination

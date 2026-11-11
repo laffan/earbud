@@ -11,6 +11,7 @@ const COMMANDS: &[&str] = &[
     "reset_capture",
     "get_diagnostics",
     "extract_analysis_audio",
+    "export_audio",
     "share_files",
 ];
 

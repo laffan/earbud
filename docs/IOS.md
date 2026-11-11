@@ -140,7 +140,9 @@ No other permissions are used. There is no network access, photo-library access 
   AVFoundation still finalizes the file, and Earbud saves it as a sketch.
 - After saving, `extractAnalysisAudio` decodes the movie's audio track with `AVAssetReader` to a 22.05 kHz mono
   16-bit WAV (`analysis.wav`) for transcription. The `.mov` is only read.
-- Export uses the native share sheet (`UIActivityViewController`): AirDrop, Files, Mail, etc.
+- Export uses the native share sheet (`UIActivityViewController`): AirDrop, Files, Mail, etc. *Recorded audio* is
+  written by `exportAudio` with `AVAssetExportSession` (Apple M4A preset), which reads the `.mov` and writes AAC
+  `.m4a`.
 
 Lens choice: Settings → Camera → *Ultra wide* uses the 0.5× camera on devices that have one (iPhone 13 Pro
 does), which fits a full keyboard from closer up.
@@ -166,7 +168,11 @@ These behaviours could not be verified without hardware. Please check them on th
 7. **Silent switch**: playback is audible with the ring/silent switch on silent.
 8. **Rotation**: recording in landscape produces a correctly oriented video.
 9. **Interruption**: start recording and press the Home/lock button. On return, the take should be in the list.
-10. **Export**: the share button offers the `.mov` and `.mid` files.
+10. **Share**: the share button first asks which files to include. Try all four: the share sheet should offer a
+    `.mov`, `<title> (audio).m4a`, `<title> (notes).wav` and a `.mid`.
+11. **List gestures**: swiping a sketch left reveals *Share* and *Delete*; vertical scrolling still works when the
+    finger starts on a card; pressing and holding a card enters selection mode without opening the iOS text
+    selection or callout.
 
 To look at what is stored, Safari's Web Inspector console can run:
 
@@ -191,6 +197,8 @@ earbud.sqlite3
 sketches/<id>/recording.mov      original (immutable)
 sketches/<id>/analysis.wav       derived audio for transcription
 sketches/<id>/transcription.mid  current notes as MIDI
+sketches/<id>/take-audio.m4a     the take's audio track (written when you share it)
+sketches/<id>/notes-audio.wav    the notes rendered by the synth (written when you share it)
 sketches/<id>/exports/           friendly-named hard links used for sharing
 ```
 

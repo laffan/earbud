@@ -12,5 +12,6 @@ permissions = [
   "allow-reset-capture",
   "allow-get-diagnostics",
   "allow-extract-analysis-audio",
+  "allow-export-audio",
   "allow-share-files",
 ]

@@ -13,6 +13,7 @@ Allows recording, audio extraction and sharing through the native capture engine
 - `allow-reset-capture`
 - `allow-get-diagnostics`
 - `allow-extract-analysis-audio`
+- `allow-export-audio`
 - `allow-share-files`
 
 ## Permission Table
@@ -72,6 +73,32 @@ Enables the check_permissions command without any pre-configured scope.
 <td>
 
 Denies the check_permissions command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`capture:allow-export-audio`
+
+</td>
+<td>
+
+Enables the export_audio command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`capture:deny-export-audio`
+
+</td>
+<td>
+
+Denies the export_audio command without any pre-configured scope.
 
 </td>
 </tr>

@@ -1,19 +1,19 @@
 <script lang="ts">
   import { onDestroy, onMount, untrack } from 'svelte';
-  import { shareFiles } from '../capture';
   import type { SketchDetail } from '../library/types';
-  import { detectChords } from '../music/chords';
+  import { chordVoicing, detectChords, type ChordSegment } from '../music/chords';
   import { notesToMidi } from '../music/midi';
   import { normalizeNote, notesEndTime, sortNotes } from '../music/notes';
   import { summarize } from '../music/summary';
   import { NoteSynth } from '../music/synth';
-  import { errorMessage, fileUrl, isTauri } from '../platform/tauri';
+  import { errorMessage, fileUrl } from '../platform/tauri';
   import { app } from '../state/app.svelte';
   import type { PianoNote } from '../transcription/types';
   import Icon from './Icon.svelte';
   import PianoRoll from './PianoRoll.svelte';
   import Sheet from './Sheet.svelte';
-  import { displayTitle, exportBaseName, formatClock, formatDate, formatDuration, formatTimeOfDay } from './format';
+  import Waveform from './Waveform.svelte';
+  import { displayTitle, formatClock, formatDate, formatDuration, formatTimeOfDay } from './format';
 
   let { id }: { id: string } = $props();
 
@@ -56,7 +56,9 @@
   // --------------------------------------------------------------- ui
   let roll = $state<ReturnType<typeof PianoRoll> | null>(null);
   let showMenu = $state(false);
-  let exporting = $state(false);
+  /** What the piano roll currently shows (drawn on the waveform). */
+  let viewStart = $state(0);
+  let viewEnd = $state(0);
   let confirmation = $state<{
     title: string;
     message: string;
@@ -236,10 +238,21 @@
     }
   }
 
-  function seek(t: number) {
+  function seek(t: number, scrubbing = false) {
     currentTime = t;
-    if (video) video.currentTime = t;
-    if (playing && listen !== 'recording') void synth.start(t, video?.playbackRate ?? 1);
+    if (video) {
+      // While dragging, jump to the nearest keyframe (fast); land exactly on release.
+      const fast = (video as HTMLVideoElement & { fastSeek?: (t: number) => void }).fastSeek;
+      if (scrubbing && typeof fast === 'function') fast.call(video, t);
+      else video.currentTime = t;
+    }
+    if (!scrubbing && playing && listen !== 'recording') void synth.start(t, video?.playbackRate ?? 1);
+  }
+
+  /** Tapping a chord plays it (the voicing from the take where possible). */
+  function playChord(chord: ChordSegment) {
+    synth.playChord(chordVoicing(chord, notes));
+    if (!playing) seek(chord.startTime);
   }
 
   function cycleRate() {
@@ -443,52 +456,10 @@
     };
   }
 
-  function mediaExtension(mime: string | null): string {
-    if (!mime) return '.mov';
-    if (mime.includes('quicktime')) return '.mov';
-    if (mime.includes('webm')) return mime.startsWith('audio') ? '.weba' : '.webm';
-    if (mime.startsWith('audio/mp4')) return '.m4a';
-    return '.mp4';
-  }
-
   async function exportSketch() {
-    if (!detail) return;
-    exporting = true;
-    try {
-      await saveNow();
-      if (notes.length > 0) {
-        await app.library.writeFile(id, 'midi', notesToMidi(notes, { title: displayTitle({ title, createdAt: detail.createdAt }) }));
-      }
-      const base = exportBaseName({ title, createdAt: detail.createdAt });
-      const bundle = await app.library.prepareExport(id, base);
-      const files = [bundle.mediaPath, bundle.midiPath].filter((f): f is string => !!f);
-      if (app.capabilities?.nativeShare) {
-        await shareFiles(files);
-      } else if (isTauri()) {
-        const [{ open }, { basename, join }] = await Promise.all([
-          import('@tauri-apps/plugin-dialog'),
-          import('@tauri-apps/api/path'),
-        ]);
-        const dir = await open({ directory: true, title: 'Export sketch to folder' });
-        if (typeof dir === 'string') {
-          for (const file of files) await app.library.copyOut(file, await join(dir, await basename(file)));
-          app.toast(`Exported ${files.length === 2 ? 'recording and MIDI' : 'recording'} to ${dir}`);
-        }
-      } else {
-        // Browser preview: download the files.
-        const names = [`${base}${mediaExtension(detail.mediaMime)}`, `${base}.mid`];
-        files.forEach((href, i) => {
-          const a = document.createElement('a');
-          a.href = href;
-          a.download = names[i];
-          a.click();
-        });
-      }
-    } catch (error) {
-      app.toast(`Export failed: ${errorMessage(error)}`, 'error');
-    } finally {
-      exporting = false;
-    }
+    // Make sure the latest edits are in the MIDI / notes audio.
+    await saveNow();
+    app.shareSketches([id]);
   }
 
   function onKey(e: KeyboardEvent) {
@@ -522,7 +493,7 @@
         onblur={saveTitle}
         onkeydown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
       />
-      <button class="icon-button" onclick={exportSketch} disabled={exporting} aria-label="Export recording and MIDI">
+      <button class="icon-button" onclick={exportSketch} aria-label="Share">
         <Icon name="share" />
       </button>
       <div class="menu-anchor">
@@ -548,52 +519,8 @@
     <p class="notice">This sketch could not be opened: {loadError}</p>
   {:else if detail}
     <div class="content">
-      <div class="media-col">
-        <div class="media" class:audio-only={!detail.hasVideo || mediaNotice !== null}>
-          {#if sources.length > 0}
-            <!-- svelte-ignore a11y_media_has_caption -->
-            <video
-              bind:this={video}
-              src={sources[sourceIndex]}
-              playsinline
-              preload="auto"
-              onloadedmetadata={onMetadata}
-              ondurationchange={() => video && Number.isFinite(video.duration) && (mediaDuration = video.duration)}
-              onplay={onPlay}
-              onpause={onPause}
-              onended={onPause}
-              onseeked={() => video && (currentTime = video.currentTime)}
-              ontimeupdate={() => !playing && video && (currentTime = video.currentTime)}
-              onerror={onMediaError}
-              onclick={togglePlay}
-            ></video>
-          {/if}
-          {#if !detail.hasVideo || mediaNotice}
-            <div class="audio-badge"><Icon name="mic" size={16} /> Audio</div>
-          {/if}
-        </div>
-        {#if mediaNotice}<p class="notice small">{mediaNotice}</p>{/if}
-
-        <div class="transport">
-          <button class="play" onclick={togglePlay} aria-label={playing ? 'Pause' : 'Play'}>
-            <Icon name={playing ? 'pause' : 'play'} size={22} />
-          </button>
-          <span class="time tabular">{formatClock(currentTime)} <span class="dim">/ {formatClock(duration)}</span></span>
-          <span class="spacer"></span>
-          <div class="segmented" role="group" aria-label="Listen to">
-            <button aria-pressed={listen === 'recording'} onclick={() => setListen('recording')}>Take</button>
-            <button aria-pressed={listen === 'notes'} onclick={() => setListen('notes')} disabled={notes.length === 0}
-              >Notes</button
-            >
-            <button aria-pressed={listen === 'both'} onclick={() => setListen('both')} disabled={notes.length === 0}
-              >Both</button
-            >
-          </div>
-          <button class="pill-button rate tabular" onclick={cycleRate} aria-label="Playback speed">{rate}×</button>
-        </div>
-      </div>
-
-      <div class="roll-col">
+      <!-- 1. Notes: status, piano roll, editing, chords -->
+      <section class="roll-section" aria-label="Transcription">
         {#if transcribing}
           <div class="banner">
             <span>
@@ -642,9 +569,14 @@
             {playing}
             {editing}
             bind:selected
-            onseek={seek}
+            onseek={(t) => seek(t)}
             onchange={commit}
             onpreview={(pitch) => synth.preview(pitch)}
+            onchordtap={playChord}
+            onviewchange={(start, end) => {
+              viewStart = start;
+              viewEnd = end;
+            }}
           />
         </div>
 
@@ -673,19 +605,79 @@
         {/if}
 
         {#if chords.length > 0}
-          <div class="chord-strip" aria-label="Chords">
+          <div class="chord-strip" aria-label="Chords (tap to hear)">
             {#each chords as chord, i (i)}
               <button
                 class="chord serif"
                 class:current={chord === currentChord}
-                onclick={() => seek(chord.startTime)}
+                onclick={() => playChord(chord)}
                 title="{formatClock(chord.startTime)} · confidence {Math.round(chord.confidence * 100)}%"
                 >{chord.symbol}</button
               >
             {/each}
           </div>
         {/if}
+      </section>
 
+      <!-- 2. Waveform scrubber + transport -->
+      <section class="playback" aria-label="Playback">
+        <Waveform
+          path={detail.analysisPath}
+          {duration}
+          {currentTime}
+          {viewStart}
+          {viewEnd}
+          onseek={(t, scrubbing) => seek(t, scrubbing)}
+        />
+        <div class="transport">
+          <button class="play" onclick={togglePlay} aria-label={playing ? 'Pause' : 'Play'}>
+            <Icon name={playing ? 'pause' : 'play'} size={22} />
+          </button>
+          <span class="time tabular">{formatClock(currentTime)}<span class="dim"> / {formatClock(duration)}</span></span>
+          <span class="spacer"></span>
+          <div class="segmented" role="group" aria-label="Listen to">
+            <button aria-pressed={listen === 'recording'} onclick={() => setListen('recording')}>Take</button>
+            <button aria-pressed={listen === 'notes'} onclick={() => setListen('notes')} disabled={notes.length === 0}
+              >Notes</button
+            >
+            <button aria-pressed={listen === 'both'} onclick={() => setListen('both')} disabled={notes.length === 0}
+              >Both</button
+            >
+          </div>
+          <button class="pill-button rate tabular" onclick={cycleRate} aria-label="Playback speed">{rate}×</button>
+        </div>
+      </section>
+
+      <!-- 3. The take -->
+      <section class="take" aria-label="Recording">
+        <div class="media" class:audio-only={!detail.hasVideo || mediaNotice !== null}>
+          {#if sources.length > 0}
+            <!-- svelte-ignore a11y_media_has_caption -->
+            <video
+              bind:this={video}
+              src={sources[sourceIndex]}
+              playsinline
+              preload="auto"
+              onloadedmetadata={onMetadata}
+              ondurationchange={() => video && Number.isFinite(video.duration) && (mediaDuration = video.duration)}
+              onplay={onPlay}
+              onpause={onPause}
+              onended={onPause}
+              onseeked={() => video && (currentTime = video.currentTime)}
+              ontimeupdate={() => !playing && video && (currentTime = video.currentTime)}
+              onerror={onMediaError}
+              onclick={togglePlay}
+            ></video>
+          {/if}
+          {#if !detail.hasVideo || mediaNotice}
+            <div class="audio-badge"><Icon name="mic" size={16} /> Audio-only take</div>
+          {/if}
+        </div>
+        {#if mediaNotice}<p class="notice small">{mediaNotice}</p>{/if}
+      </section>
+
+      <!-- 4. Notes and details -->
+      <section class="about" aria-label="Notes and details">
         <label class="notes-field">
           <span class="label">Notes</span>
           <textarea
@@ -705,7 +697,7 @@
           {/if}
           {#if detail.recovered}<div><dt>Status</dt><dd>Recovered after an interruption</dd></div>{/if}
         </dl>
-      </div>
+      </section>
     </div>
   {/if}
 </div>
@@ -735,6 +727,7 @@
   .sketch-view {
     min-height: 100vh;
     min-height: 100dvh;
+    width: 100%;
   }
   .bar {
     position: sticky;
@@ -742,8 +735,8 @@
     z-index: 10;
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: calc(var(--safe-top) + 6px) calc(var(--safe-right) + 8px) 6px calc(var(--safe-left) + 6px);
+    gap: 2px;
+    padding: calc(var(--safe-top) + 6px) calc(var(--safe-right) + 6px) 6px calc(var(--safe-left) + 6px);
     background: color-mix(in srgb, var(--paper) 94%, transparent);
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
@@ -752,12 +745,13 @@
   .title-input {
     flex: 1;
     min-width: 0;
-    font-size: 1.2rem;
+    font-size: 1.15rem;
     font-weight: 600;
     border: none;
     background: transparent;
     padding: 6px 8px;
     border-radius: var(--radius-sm);
+    text-overflow: ellipsis;
   }
   .title-input:hover,
   .title-input:focus {
@@ -770,12 +764,13 @@
   }
   .menu-anchor {
     position: relative;
+    flex: none;
   }
   .menu {
     position: absolute;
     right: 0;
     top: 44px;
-    min-width: 220px;
+    width: min(240px, calc(100vw - 24px));
     display: grid;
     padding: 6px;
     border-radius: var(--radius);
@@ -798,82 +793,20 @@
     color: var(--accent);
   }
 
+  /* One column on phones. Every track is minmax(0, …) so wide content
+     (a long chord strip, the toolbar) scrolls inside itself instead of
+     widening the page. */
   .content {
     display: grid;
-    gap: 14px;
-    max-width: 1280px;
-    margin: 0 auto;
-    padding: 12px calc(var(--safe-right) + 14px) calc(var(--safe-bottom) + 40px) calc(var(--safe-left) + 14px);
-  }
-  .media {
-    position: relative;
-    border-radius: var(--radius);
-    overflow: hidden;
-    background: #000;
-    display: grid;
-    place-items: center;
-  }
-  .media video {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
     width: 100%;
-    max-height: 38vh;
-    display: block;
-    object-fit: contain;
-    background: #000;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 10px calc(var(--safe-right) + 12px) calc(var(--safe-bottom) + 40px) calc(var(--safe-left) + 12px);
   }
-  .media.audio-only {
-    background: var(--paper-sunk);
-    min-height: 56px;
-  }
-  .media.audio-only video {
-    height: 0;
-    max-height: 0;
-  }
-  .audio-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 16px;
-    color: var(--ink-3);
-    font-size: 0.9rem;
-  }
-  .transport {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-top: 10px;
-    flex-wrap: wrap;
-  }
-  .play {
-    flex: none;
-    width: 44px;
-    height: 44px;
-    border-radius: 50%;
-    display: grid;
-    place-items: center;
-    background: var(--ink);
-    color: var(--paper);
-  }
-  .time {
-    font-size: 0.95rem;
-  }
-  .dim {
-    color: var(--ink-3);
-  }
-  .spacer {
-    flex: 1;
-  }
-  .rate {
-    min-width: 46px;
-    padding: 0 8px;
-    justify-content: center;
-  }
-  .transport .segmented button {
-    padding: 0 9px;
-  }
-  @media (max-width: 400px) {
-    .time .dim {
-      display: none;
-    }
+  .content > section {
+    min-width: 0;
   }
 
   .banner {
@@ -910,6 +843,7 @@
     display: flex;
     align-items: center;
     gap: 2px;
+    min-width: 0;
   }
   .chord-now {
     font-size: 1.4rem;
@@ -917,9 +851,12 @@
     color: var(--chord);
     min-width: 3ch;
     padding-left: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .roll-wrap {
-    height: clamp(240px, 46vh, 560px);
+    height: clamp(240px, 44vh, 560px);
     margin-top: 4px;
   }
   .roll-wrap.editing {
@@ -949,26 +886,122 @@
   .chord-strip {
     display: flex;
     gap: 6px;
+    max-width: 100%;
     overflow-x: auto;
+    overscroll-behavior-x: contain;
     padding: 10px 2px 4px;
     scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .chord-strip::-webkit-scrollbar {
+    display: none;
   }
   .chord {
     flex: none;
+    min-width: 44px;
+    min-height: 36px;
     padding: 4px 10px;
     border-radius: 8px;
     border: 1px solid var(--rule);
     color: var(--chord);
     font-weight: 600;
   }
+  .chord:active {
+    background: var(--paper-sunk);
+  }
   .chord.current {
     border-color: var(--accent);
     color: var(--accent);
   }
+
+  .playback {
+    display: grid;
+    gap: 8px;
+  }
+  .transport {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+  .play {
+    flex: none;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: var(--ink);
+    color: var(--paper);
+  }
+  .time {
+    font-size: 0.95rem;
+    white-space: nowrap;
+  }
+  .dim {
+    color: var(--ink-3);
+  }
+  .spacer {
+    flex: 1;
+  }
+  .rate {
+    min-width: 46px;
+    padding: 0 8px;
+    justify-content: center;
+  }
+  .transport .segmented button {
+    padding: 0 9px;
+  }
+  @media (max-width: 400px) {
+    .transport .segmented button {
+      padding: 0 7px;
+      font-size: 0.8rem;
+    }
+    .rate {
+      min-width: 40px;
+      padding: 0 6px;
+    }
+  }
+
+  .media {
+    position: relative;
+    width: 100%;
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: #000;
+    display: grid;
+    place-items: center;
+  }
+  .media video {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    max-height: 50vh;
+    object-fit: contain;
+    background: #000;
+  }
+  .media.audio-only {
+    background: var(--paper-sunk);
+    min-height: 48px;
+  }
+  .media.audio-only video {
+    height: 0;
+    max-height: 0;
+  }
+  .audio-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 14px;
+    color: var(--ink-3);
+    font-size: 0.9rem;
+  }
+
   .notes-field {
     display: grid;
     gap: 6px;
-    margin-top: 16px;
   }
   .label {
     font-size: 0.78rem;
@@ -998,7 +1031,7 @@
   }
   .details {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
     gap: 10px 16px;
     margin: 18px 0 0;
     font-size: 0.85rem;
@@ -1026,23 +1059,43 @@
     gap: 8px;
   }
 
-  /* Side by side on wide screens and on phones in landscape. */
-  @media (min-width: 900px), (orientation: landscape) and (max-height: 540px) {
-    .content {
-      grid-template-columns: minmax(280px, 40%) 1fr;
-      align-items: start;
-    }
-    .media-col {
-      position: sticky;
-      top: 70px;
-    }
-    .media video {
-      max-height: 62vh;
+  @media (max-width: 380px) {
+    .time .dim {
+      display: none;
     }
   }
+
+  /* Wide screens: the take and the notes side by side under the roll. */
+  @media (min-width: 900px) {
+    .content {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      grid-template-areas:
+        'roll roll'
+        'playback playback'
+        'take about';
+      align-items: start;
+    }
+    .roll-section {
+      grid-area: roll;
+    }
+    .playback {
+      grid-area: playback;
+    }
+    .take {
+      grid-area: take;
+    }
+    .about {
+      grid-area: about;
+    }
+  }
+
+  /* Phones in landscape: give the roll most of the height. */
   @media (orientation: landscape) and (max-height: 540px) {
     .roll-wrap {
-      height: 66vh;
+      height: 62vh;
+    }
+    .media video {
+      max-height: 70vh;
     }
   }
 </style>

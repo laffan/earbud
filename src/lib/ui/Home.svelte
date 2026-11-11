@@ -3,10 +3,52 @@
   import Icon from './Icon.svelte';
   import RecordButton from './RecordButton.svelte';
   import SettingsSheet from './SettingsSheet.svelte';
+  import Sheet from './Sheet.svelte';
   import SketchCard from './SketchCard.svelte';
-  import { groupByDay } from './format';
+  import SwipeRow from './SwipeRow.svelte';
+  import { displayTitle, groupByDay } from './format';
 
   let showSettings = $state(false);
+  /** Row whose swipe actions are revealed (only one at a time). */
+  let openRow = $state<string | null>(null);
+  let selecting = $state(false);
+  let selectedIds = $state<string[]>([]);
+  let pendingDelete = $state<string[] | null>(null);
+
+  function startSelecting(id: string) {
+    openRow = null;
+    selecting = true;
+    selectedIds = [id];
+  }
+
+  function toggle(id: string) {
+    selectedIds = selectedIds.includes(id) ? selectedIds.filter((x) => x !== id) : [...selectedIds, id];
+  }
+
+  function stopSelecting() {
+    selecting = false;
+    selectedIds = [];
+  }
+
+  function share(ids: string[]) {
+    openRow = null;
+    app.shareSketches(ids);
+  }
+
+  async function confirmDelete() {
+    const ids = pendingDelete ?? [];
+    pendingDelete = null;
+    openRow = null;
+    await app.deleteSketches(ids);
+    stopSelecting();
+  }
+
+  /** A tap anywhere outside the open row closes it. */
+  function closeOpenRow(e: PointerEvent) {
+    if (!openRow) return;
+    const row = (e.target as HTMLElement).closest('[data-sketch-id]');
+    if (row?.getAttribute('data-sketch-id') !== openRow) openRow = null;
+  }
   const groups = $derived(groupByDay(app.sketches));
   const captureHint = $derived(
     app.settings.camera === 'none'
@@ -21,16 +63,39 @@
 
 <div class="home">
   <header>
-    <div class="brand">
-      <h1 class="serif">Earbud</h1>
-      <span class="tagline">musical sketchbook</span>
-    </div>
-    <button class="icon-button" onclick={() => (showSettings = true)} aria-label="Settings">
-      <Icon name="settings" />
-    </button>
+    {#if selecting}
+      <button class="pill-button" onclick={stopSelecting}>Cancel</button>
+      <span class="count">{selectedIds.length} selected</span>
+      <div class="select-actions">
+        <button
+          class="pill-button"
+          onclick={() => (selectedIds = selectedIds.length === app.sketches.length ? [] : app.sketches.map((s) => s.id))}
+          >{selectedIds.length === app.sketches.length ? 'None' : 'All'}</button
+        >
+        <button class="icon-button" onclick={() => share(selectedIds)} disabled={selectedIds.length === 0} aria-label="Share selected">
+          <Icon name="share" />
+        </button>
+        <button
+          class="icon-button danger"
+          onclick={() => (pendingDelete = [...selectedIds])}
+          disabled={selectedIds.length === 0}
+          aria-label="Delete selected"
+        >
+          <Icon name="trash" />
+        </button>
+      </div>
+    {:else}
+      <div class="brand">
+        <h1 class="serif">Earbud</h1>
+        <span class="tagline">musical sketchbook</span>
+      </div>
+      <button class="icon-button" onclick={() => (showSettings = true)} aria-label="Settings">
+        <Icon name="settings" />
+      </button>
+    {/if}
   </header>
 
-  <main>
+  <main onpointerdowncapture={closeOpenRow}>
     {#if app.ready && app.sketches.length === 0}
       <div class="empty">
         <p class="serif lead">An empty page.</p>
@@ -46,14 +111,32 @@
         <h2>{group.label}</h2>
         <div class="list">
           {#each group.items as sketch (sketch.id)}
-            <SketchCard {sketch} job={app.jobs[sketch.id]} onopen={() => app.openSketch(sketch.id)} />
+            <div data-sketch-id={sketch.id}>
+              <SwipeRow
+                label={displayTitle(sketch)}
+                {selecting}
+                selected={selectedIds.includes(sketch.id)}
+                open={openRow === sketch.id}
+                onopenchange={(open) => (openRow = open ? sketch.id : null)}
+                onactivate={() => (selecting ? toggle(sketch.id) : app.openSketch(sketch.id))}
+                onlongpress={() => startSelecting(sketch.id)}
+                onshare={() => share([sketch.id])}
+                ondelete={() => (pendingDelete = [sketch.id])}
+              >
+                <SketchCard {sketch} job={app.jobs[sketch.id]} selected={selecting && selectedIds.includes(sketch.id)} />
+              </SwipeRow>
+            </div>
           {/each}
         </div>
       </section>
     {/each}
+
+    {#if app.sketches.length > 0 && !selecting}
+      <p class="gesture-hint">Swipe a sketch left to share or delete it. Press and hold to select several.</p>
+    {/if}
   </main>
 
-  <footer class="dock">
+  <footer class="dock" class:hidden={selecting}>
     <RecordButton
       onclick={() => app.startRecording()}
       disabled={!app.ready || !app.canRecord || app.recording !== null}
@@ -72,6 +155,20 @@
 
 {#if showSettings}
   <SettingsSheet onclose={() => (showSettings = false)} />
+{/if}
+
+{#if pendingDelete}
+  {@const n = pendingDelete.length}
+  <Sheet title={n === 1 ? 'Delete this sketch?' : `Delete ${n} sketches?`} onclose={() => (pendingDelete = null)}>
+    <p class="confirm">
+      {n === 1 ? 'The recording, its transcription and your notes' : 'The recordings, their transcriptions and your notes'}
+      will be permanently removed from this device.
+    </p>
+    <div class="confirm-actions">
+      <button class="pill-button danger" onclick={confirmDelete}>Delete</button>
+      <button class="pill-button" onclick={() => (pendingDelete = null)}>Cancel</button>
+    </div>
+  </Sheet>
 {/if}
 
 <style>
@@ -157,6 +254,34 @@
   }
   .dock > :global(*) {
     pointer-events: auto;
+  }
+  .count {
+    font-weight: 600;
+  }
+  .select-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+  .icon-button.danger {
+    color: var(--accent);
+  }
+  .gesture-hint {
+    margin: 18px 4px 0;
+    text-align: center;
+    font-size: 0.78rem;
+    color: var(--ink-3);
+  }
+  .dock.hidden {
+    display: none;
+  }
+  .confirm {
+    margin: 0 0 16px;
+    color: var(--ink-2);
+  }
+  .confirm-actions {
+    display: flex;
+    gap: 8px;
   }
   .hint {
     display: inline-flex;
