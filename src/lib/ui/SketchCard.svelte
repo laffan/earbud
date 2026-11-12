@@ -3,6 +3,7 @@
   import type { JobProgress } from '../pipeline/processingQueue';
   import MiniRoll from './MiniRoll.svelte';
   import { displayTitle, formatDuration, formatTimeOfDay } from './format';
+  import { WATCH_CAPTURE_BACKEND } from '../watch/types';
 
   let { sketch, job, selected = false }: { sketch: Sketch; job?: JobProgress; selected?: boolean } = $props();
 
@@ -41,6 +42,7 @@
     {/if}
     <div class="chips">
       {#if status}<span class="chip {status.kind}">{status.label}</span>{/if}
+      {#if sketch.captureBackend === WATCH_CAPTURE_BACKEND}<span class="chip">Apple Watch</span>{/if}
       {#if sketch.recovered}<span class="chip">Recovered</span>{/if}
       {#if sketch.hasEdits}<span class="chip">Edited</span>{/if}
       {#if sketch.textNotes.trim()}<span class="chip">Notes</span>{/if}

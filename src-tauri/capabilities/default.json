@@ -6,6 +6,7 @@
   "permissions": [
     "core:default",
     "dialog:default",
-    "capture:default"
+    "capture:default",
+    "watch-link:default"
   ]
 }

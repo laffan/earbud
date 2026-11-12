@@ -174,6 +174,22 @@ pub struct CreateSketchArgs {
     pub title: Option<String>,
 }
 
+/// A finished recording made elsewhere (the Apple Watch companion) that is
+/// moved into the library as a saved sketch.
+#[derive(Debug, Clone)]
+pub struct ImportRecordingArgs {
+    /// Sketch id (32 hex characters). Imports reuse the sender's recording id,
+    /// so a recording delivered twice is only imported once.
+    pub id: String,
+    pub title: String,
+    /// When the recording started (milliseconds since the Unix epoch).
+    pub created_at: i64,
+    pub duration_ms: Option<i64>,
+    pub media_extension: String,
+    pub media_mime: String,
+    pub capture_backend: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreatedSketch {
@@ -239,6 +255,8 @@ pub struct LibraryInfo {
     pub root: String,
     pub sketches_dir: String,
     pub database_path: String,
+    /// Where recordings received from the Apple Watch wait to be imported.
+    pub inbox_dir: String,
 }
 
 /// What the user can choose to export from a sketch.

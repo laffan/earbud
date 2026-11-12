@@ -11,6 +11,7 @@ use tauri::State;
 use crate::error::{Error, Result};
 use crate::library::models::*;
 use crate::library::{FileKind, Library};
+use crate::watch_link::{ImportReport, WatchLink, WatchLinkStatus};
 
 #[tauri::command]
 pub async fn library_info(library: State<'_, Library>) -> Result<LibraryInfo> {
@@ -151,4 +152,59 @@ pub async fn prepare_export(
 #[tauri::command]
 pub async fn copy_out(library: State<'_, Library>, src: String, dest: String) -> Result<()> {
     library.copy_out(&PathBuf::from(src), &PathBuf::from(dest))
+}
+
+// ------------------------------------------------------------- Apple Watch
+
+#[tauri::command]
+pub async fn watch_link_status(watch: State<'_, WatchLink>) -> Result<WatchLinkStatus> {
+    Ok(watch.status())
+}
+
+#[tauri::command]
+pub async fn watch_link_set_enabled(watch: State<'_, WatchLink>, enabled: bool) -> Result<WatchLinkStatus> {
+    watch.set_enabled(enabled)
+}
+
+#[tauri::command]
+pub async fn watch_link_set_name(watch: State<'_, WatchLink>, name: String) -> Result<WatchLinkStatus> {
+    watch.set_display_name(&name)
+}
+
+#[tauri::command]
+pub async fn watch_link_begin_pairing(watch: State<'_, WatchLink>) -> Result<WatchLinkStatus> {
+    watch.begin_pairing()
+}
+
+#[tauri::command]
+pub async fn watch_link_end_pairing(watch: State<'_, WatchLink>) -> Result<WatchLinkStatus> {
+    Ok(watch.end_pairing())
+}
+
+/// Bluetooth pairing happens in the Swift plugin; it reports back here.
+#[tauri::command]
+pub async fn watch_link_record_pairing(
+    watch: State<'_, WatchLink>,
+    watch_name: String,
+    via: String,
+) -> Result<WatchLinkStatus> {
+    Ok(watch.record_pairing(&watch_name, &via))
+}
+
+#[tauri::command]
+pub async fn watch_link_reset(watch: State<'_, WatchLink>) -> Result<WatchLinkStatus> {
+    watch.reset_pairing()
+}
+
+#[tauri::command]
+pub async fn watch_link_resume(watch: State<'_, WatchLink>) -> Result<WatchLinkStatus> {
+    Ok(watch.resume())
+}
+
+#[tauri::command]
+pub async fn import_watch_inbox(
+    library: State<'_, Library>,
+    watch: State<'_, WatchLink>,
+) -> Result<ImportReport> {
+    watch.import_inbox(&library)
 }

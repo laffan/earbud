@@ -7,6 +7,12 @@
   <string>Earbud records video of your hands at the piano so you can review what you played.</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>Earbud records the sound of your piano so it can save and transcribe your musical ideas.</string>
+  <!-- Receiving recordings from the Earbud Apple Watch app over Bluetooth LE
+       (plugins/tauri-plugin-watch-link). Asked only when "Receive recordings from
+       Apple Watch" is switched on. The Wi-Fi receiver only accepts incoming
+       connections, which needs no Local Network permission. -->
+  <key>NSBluetoothAlwaysUsageDescription</key>
+  <string>Earbud receives the recordings you make on your Apple Watch over Bluetooth, without needing Wi-Fi.</string>
   <!-- Allow the phone to be propped up in any orientation above the keys. -->
   <key>UISupportedInterfaceOrientations</key>
   <array>

@@ -12,6 +12,8 @@
 //!     notes-audio.wav         notes rendered with the synth (on export)
 //!     take-audio.m4a|wav      the take's audio track (on export)
 //!     exports/                friendly-named hard links handed to share/save
+//!   inbox/                    recordings received from the Apple Watch,
+//!                             waiting to be imported as sketches
 //! ```
 //!
 //! The library is deliberately free of Tauri types so it can be unit tested
@@ -40,6 +42,8 @@ pub const NOTES_AUDIO_FILE: &str = "notes-audio.wav";
 pub const TAKE_AUDIO_STEM: &str = "take-audio";
 const EXPORTS_DIR: &str = "exports";
 const DB_FILE: &str = "earbud.sqlite3";
+/// Received recordings waiting to be imported (see `crate::watch_link::inbox`).
+pub const INBOX_DIR: &str = "inbox";
 
 /// What a raw byte upload from the frontend is for. Uploads never carry a
 /// path, so the frontend cannot write outside a sketch directory.
@@ -155,7 +159,12 @@ impl Library {
             root: self.root.display().to_string(),
             sketches_dir: self.root.join("sketches").display().to_string(),
             database_path: self.root.join(DB_FILE).display().to_string(),
+            inbox_dir: self.inbox_dir().display().to_string(),
         }
+    }
+
+    pub fn inbox_dir(&self) -> PathBuf {
+        self.root.join(INBOX_DIR)
     }
 
     pub fn sketch_dir(&self, id: &str) -> PathBuf {
@@ -227,6 +236,60 @@ impl Library {
             return Err(Error::NotFound(args.id));
         }
         Ok(self.get(&args.id)?.sketch)
+    }
+
+    /// Move a finished recording made elsewhere into the library as a saved
+    /// sketch. `source` is moved, not copied, when it is on the same volume.
+    ///
+    /// Returns `Ok(None)` if a sketch with this id already exists (the same
+    /// recording delivered twice); `source` is then left untouched.
+    pub fn import_recording(&self, args: ImportRecordingArgs, source: &Path) -> Result<Option<Sketch>> {
+        validate_id(&args.id)?;
+        validate_extension(&args.media_extension)?;
+        let exists: Option<String> = self
+            .conn()
+            .query_row("SELECT id FROM sketches WHERE id = ?1", [&args.id], |r| r.get(0))
+            .optional()?;
+        if exists.is_some() {
+            return Ok(None);
+        }
+        let size = fs::metadata(source)?.len();
+        if size == 0 {
+            return Err(Error::Invalid(format!("received recording {} is empty", args.id)));
+        }
+        let dir = self.sketch_dir(&args.id);
+        fs::create_dir_all(&dir)?;
+        let media_file = format!("{MEDIA_STEM}.{}", args.media_extension.to_ascii_lowercase());
+        let dest = dir.join(&media_file);
+        if fs::rename(source, &dest).is_err() {
+            // Different volume: copy, then remove the original.
+            fs::copy(source, &dest)?;
+            fs::remove_file(source)?;
+        }
+        let inserted = self.conn().execute(
+            "INSERT INTO sketches (id, title, created_at, updated_at, status, duration_ms,
+                                   media_file, media_mime, has_video, capture_backend)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9)",
+            params![
+                args.id,
+                args.title.trim(),
+                args.created_at,
+                now_ms(),
+                SketchStatus::Saved.as_str(),
+                args.duration_ms,
+                media_file,
+                args.media_mime,
+                args.capture_backend,
+            ],
+        );
+        if let Err(error) = inserted {
+            // Put the file back so the import can be retried.
+            if fs::rename(&dest, source).is_ok() {
+                let _ = fs::remove_dir_all(&dir);
+            }
+            return Err(error.into());
+        }
+        Ok(Some(self.get(&args.id)?.sketch))
     }
 
     /// Remove a sketch whose recording never produced data. Refuses to touch

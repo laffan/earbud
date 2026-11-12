@@ -704,6 +704,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 name = "earbud"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "rusqlite",
  "serde",
  "serde_json",
@@ -711,6 +712,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-capture",
  "tauri-plugin-dialog",
+ "tauri-plugin-watch-link",
  "tempfile",
  "thiserror 2.0.21",
  "uuid",
@@ -3479,6 +3481,15 @@ dependencies = [
  "thiserror 2.0.21",
  "toml 1.2.1+spec-1.1.0",
  "url",
+]
+
+[[package]]
+name = "tauri-plugin-watch-link"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tauri",
+ "tauri-plugin",
 ]
 
 [[package]]

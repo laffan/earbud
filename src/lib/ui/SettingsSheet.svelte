@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app } from '../state/app.svelte';
   import Sheet from './Sheet.svelte';
+  import WatchSettings from './WatchSettings.svelte';
   import type { CameraChoice, LensChoice } from '../capture/types';
   import type { Sensitivity } from '../transcription';
 
@@ -100,11 +101,15 @@
     </label>
   </section>
 
+  {#if app.watch}
+    <WatchSettings watch={app.watch} />
+  {/if}
+
   <section>
     <h3>Diagnostics</h3>
     {#if diagnostics === null}
       <button class="pill-button" onclick={showDiagnostics}>Show diagnostics log</button>
-      <p class="help">Recent recording and playback events, useful when reporting a problem.</p>
+      <p class="help">Recent recording, playback and Apple Watch events, useful when reporting a problem.</p>
     {:else}
       <div class="diag-actions">
         <button class="pill-button" onclick={copyDiagnostics}>{copied ? 'Copied' : 'Copy'}</button>

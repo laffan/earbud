@@ -11,6 +11,7 @@ import { notesToMidi } from '../music/midi';
 import { summarize } from '../music/summary';
 import { fileUrl, errorMessage } from '../platform/tauri';
 import { TranscriptionAbortedError, type TranscriptionEngine } from '../transcription/types';
+import { WATCH_CAPTURE_BACKEND } from '../watch/types';
 
 export type JobStage = 'queued' | 'audio' | 'transcribing' | 'saving';
 
@@ -95,11 +96,23 @@ export class ProcessingQueue {
       if (!analysisPath) {
         onProgress(id, { stage: 'audio', fraction: 0 });
         const capture = this.options.capture();
-        let durationMs: number;
-        if (capture?.extractAnalysisAudio && sketch.captureBackend === capture.id) {
-          analysisPath = analysisPathFor(sketch.mediaPath);
-          ({ durationMs } = await capture.extractAnalysisAudio(sketch.mediaPath, analysisPath));
-        } else {
+        let durationMs = 0;
+        // The native decoder (AVFoundation on iOS) reads its own recordings and
+        // the Watch's AAC files; anything else, or a native failure, goes
+        // through the webview's decoder.
+        const native =
+          capture?.extractAnalysisAudio &&
+          (sketch.captureBackend === capture.id || sketch.captureBackend === WATCH_CAPTURE_BACKEND);
+        if (native) {
+          try {
+            const path = analysisPathFor(sketch.mediaPath);
+            ({ durationMs } = await capture.extractAnalysisAudio!(sketch.mediaPath, path));
+            analysisPath = path;
+          } catch (error) {
+            console.warn(`[earbud] native audio extraction failed for ${id}; trying the web decoder`, error);
+          }
+        }
+        if (!analysisPath) {
           const decoded = await decodeMediaToAnalysisWav(fileUrl(sketch.mediaPath));
           analysisPath = await library.writeFile(id, 'analysis', decoded.wav);
           durationMs = decoded.durationMs;

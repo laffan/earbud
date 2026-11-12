@@ -16,6 +16,9 @@ import { getLibrary, type Sketch, type SketchLibrary } from '../library';
 import { ProcessingQueue, type JobProgress } from '../pipeline/processingQueue';
 import { errorCode, errorMessage, isIOSLike } from '../platform/tauri';
 import { getTranscriptionEngine, type Sensitivity } from '../transcription';
+import { WatchReceiver } from '../watch/receiver.svelte';
+import { TauriWatchLink } from '../watch/tauriWatchLink';
+import type { WatchLinkClient } from '../watch/types';
 
 export interface Settings extends CaptureSettings {
   sensitivity: Sensitivity;
@@ -71,6 +74,8 @@ export interface AppStateOptions {
   captureEngine?: CaptureEngine | null;
   capabilities?: PlatformCapabilities;
   startTimeoutMs?: number;
+  /** Override the Apple Watch link (tests); `null` disables it. */
+  watchLink?: WatchLinkClient | null;
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -111,6 +116,8 @@ export class AppState {
   revision = $state<Record<string, number>>({});
   /** Sketches the export sheet is open for (null when closed). */
   exportRequest = $state<string[] | null>(null);
+  /** Receiving recordings from the Apple Watch app (null in the browser preview). */
+  watch = $state<WatchReceiver | null>(null);
 
   private captureEngine: CaptureEngine | null = null;
   private active: ActiveRecording | null = null;
@@ -171,12 +178,43 @@ export class AppState {
           if (sketch.status === 'saved' && sketch.transcriptionStatus === 'pending') this.queue.enqueue(sketch.id);
         }
       }
+      this.startWatchLink();
     } catch (error) {
       this.toast(`Could not open the sketch library: ${errorMessage(error)}`, 'error');
     } finally {
       this.view = viewFromHash();
       window.addEventListener('popstate', () => (this.view = viewFromHash()));
       this.ready = true;
+    }
+  }
+
+  // ----------------------------------------------------------- apple watch
+
+  private startWatchLink() {
+    const client =
+      this.options.watchLink !== undefined
+        ? this.options.watchLink
+        : this.capabilities?.tauri
+          ? new TauriWatchLink()
+          : null;
+    if (!client) return;
+    const receiver = new WatchReceiver(client, {
+      onSketches: (sketches) => this.addReceived(sketches),
+      toast: (message, kind) => this.toast(message, kind),
+    });
+    this.watch = receiver;
+    void receiver.init().catch((error) => this.logCapture(`watch link unavailable: ${errorMessage(error)}`));
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') void receiver.resume().catch(() => {});
+    });
+  }
+
+  /** Sketches that arrived from the Watch: list them and transcribe, oldest first. */
+  addReceived(sketches: Sketch[]) {
+    const oldestFirst = [...sketches].sort((a, b) => a.createdAt - b.createdAt);
+    for (const sketch of oldestFirst) {
+      this.upsert(sketch);
+      if (this.settings.autoTranscribe && sketch.transcriptionStatus === 'pending') this.queue.enqueue(sketch.id);
     }
   }
 
@@ -296,8 +334,8 @@ export class AppState {
     } catch (error) {
       header.push(`native log unavailable: ${errorMessage(error)}`);
     }
-    // Both logs start with a local HH:MM:SS.mmm timestamp.
-    const merged = [...this.captureLog, ...nativeLines].sort((a, b) => a.slice(0, 12).localeCompare(b.slice(0, 12)));
+    // All logs start with a local HH:MM:SS.mmm timestamp.
+    const merged = [...this.captureLog, ...nativeLines, ...(this.watch?.log ?? [])].sort((a, b) => a.slice(0, 12).localeCompare(b.slice(0, 12)));
     return [...header, '', ...merged].join('\n');
   }
 

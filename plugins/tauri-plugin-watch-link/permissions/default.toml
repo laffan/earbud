@@ -1,0 +1,12 @@
+"$schema" = "schemas/schema.json"
+
+[default]
+description = "Allows receiving recordings from the Apple Watch app."
+permissions = [
+  "allow-available",
+  "allow-start",
+  "allow-stop",
+  "allow-begin-pairing",
+  "allow-end-pairing",
+  "allow-status",
+]
