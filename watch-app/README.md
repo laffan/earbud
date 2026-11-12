@@ -197,17 +197,19 @@ steps against the desktop app through WebDriver (Linux; setup in the script's he
    (watchOS 10+).
 2. **Earbud on iPhone builds** with the new `tauri-plugin-watch-link`, whose Swift package depends
    on `watch-app/Packages/EarbudLink` by relative path.
-3. **Pairing over Bluetooth**: with Wi-Fi off on the Watch, pair with a code. The Watch should show
+3. **Pairing keypad**: on the smallest Watch you have, the five code boxes, all four keypad rows and the
+   delete key (bottom right) are visible below the title, and delete removes the last digit.
+4. **Pairing over Bluetooth**: with Wi-Fi off on the Watch, pair with a code. The Watch should show
    the iPhone's name; Earbud shows "Paired with …".
-4. **Pairing over Wi-Fi**: Watch and receiver on the same Wi-Fi, iPhone Bluetooth off. Pairing
+5. **Pairing over Wi-Fi**: Watch and receiver on the same Wi-Fi, iPhone Bluetooth off. Pairing
    either works or fails within a few seconds with "No device showed that code". The second case
    means watchOS blocked the connection (TN3135).
-5. **Sending**: a 30-second recording arrives in Earbud, plays, and gets transcribed. Note which
+6. **Sending**: a 30-second recording arrives in Earbud, plays, and gets transcribed. Note which
    route the Watch reports (open the recording: "Bluetooth, 10:42").
-6. **Paired iPhone**: with Earbud closed on the iPhone, record on the Watch. The recording shows
+7. **Paired iPhone**: with Earbud closed on the iPhone, record on the Watch. The recording shows
    *Waiting for …*; opening Earbud adds it. This needs iOS to see the Watch app as Earbud's
    companion (Settings → Apple Watch in Earbud says whether it does).
-7. **Mac**: Earbud on a Mac, pair over Wi-Fi. If the macOS firewall is on, it asks whether Earbud may
+8. **Mac**: Earbud on a Mac, pair over Wi-Fi. If the macOS firewall is on, it asks whether Earbud may
    accept incoming connections; allow it.
 
 The Watch's Settings → *Activity* lists recent connection attempts and errors.
