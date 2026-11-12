@@ -213,6 +213,39 @@ reload during playback, aborted play, crop stop/loop, and throttled animation fr
 - `deliverExports` hands the files to the iOS share sheet, a desktop folder picker (with name de-duplication), or
   browser downloads.
 
+## 8. Apple Watch link (`src-tauri/src/watch_link`, `plugins/tauri-plugin-watch-link`, `src/lib/watch`, `watch-app/`)
+
+A second way in for recordings: the Watch app records AAC audio and sends it to one paired device
+running Earbud. The protocol comes from Woods Whisper (5-digit pairing code → receiver name, stable
+device id and secret); `watch-app/README.md` specifies it.
+
+```
+Watch (watch-app/EarbudWatch + Packages/EarbudLink)
+   │ Wi-Fi (TCP 50720)          │ Bluetooth LE            │ WatchConnectivity
+   ▼                            ▼                         ▼
+src-tauri/src/watch_link    tauri-plugin-watch-link (Swift, iOS only)
+ server.rs (std::net)        BluetoothReceiver · PhoneSessionLink
+   │                            │                         │
+   └──────────► library/inbox/<id>.m4a + <id>.json ◄──────┘
+                         │ WatchLink::import_inbox
+                         ▼
+                Library::import_recording → sketch (capture backend "apple-watch")
+                         │ "watch-link" event / import_watch_inbox
+                         ▼
+                src/lib/watch/receiver.svelte.ts → AppState.addReceived → processing queue
+```
+
+- **Identity** (name, device id, secret, paired watches) lives in Rust (`library/watch-link.json`). The
+  iOS plugin is (re)started with it whenever it changes, so every transport answers with the same name and
+  id and checks the same secret.
+- **The inbox** decouples transports from the library: Swift writes files, Rust imports them. A sidecar
+  written last marks an entry complete. The sketch id is the recording's UUID, so duplicates collapse.
+- **Transcription** of Watch recordings goes through the usual queue. On iOS the native extractor
+  (AVAssetReader) decodes the `.m4a`; elsewhere, or if that fails, the webview's decoder does.
+- `WatchLinkClient` (`src/lib/watch/types.ts`) is the seam for tests: `receiver.test.ts` drives the
+  receiver with a fake client. The Rust tests run pairing and transfers over real sockets and decode the
+  same JSON fixtures as the Swift package's tests.
+
 ## Platform isolation
 
 | Concern | iOS | Desktop | Browser (dev) |

@@ -1,0 +1,57 @@
+# XcodeGen spec for the Earbud Apple Watch app. Generate the Xcode project with:
+#
+#   brew install xcodegen
+#   cd watch-app && xcodegen
+#   open EarbudWatch.xcodeproj
+#
+# See README.md in this folder.
+name: EarbudWatch
+options:
+  bundleIdPrefix: com.earbud
+  deploymentTarget:
+    watchOS: "10.0"
+  createIntermediateGroups: true
+
+packages:
+  EarbudLink:
+    path: Packages/EarbudLink
+
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    # Your Apple team id (the same one used for the Earbud iPhone app).
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    # Earbud's identifier (`identifier` in src-tauri/tauri.conf.json). Change both together if
+    # you change it there; the Watch app's id is this plus `.watchkitapp`.
+    EARBUD_COMPANION_BUNDLE_ID: com.earbud.sketchbook
+
+targets:
+  EarbudWatch:
+    type: application
+    platform: watchOS
+    sources:
+      - path: EarbudWatch
+    dependencies:
+      - package: EarbudLink
+    settings:
+      base:
+        PRODUCT_NAME: Earbud
+        PRODUCT_BUNDLE_IDENTIFIER: $(EARBUD_COMPANION_BUNDLE_ID).watchkitapp
+        INFOPLIST_FILE: EarbudWatch/Resources/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        WATCHOS_DEPLOYMENT_TARGET: "10.0"
+        TARGETED_DEVICE_FAMILY: "4"
+
+schemes:
+  EarbudWatch:
+    build:
+      targets:
+        EarbudWatch: all
+    run:
+      config: Debug
+    archive:
+      config: Release

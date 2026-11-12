@@ -29,10 +29,11 @@ Built with Tauri 2, Svelte 5 + TypeScript, Rust + SQLite, Swift + AVFoundation (
 | Chord names, MIDI export | Done, unit tested |
 | Piano roll, synchronized playback, note editing | Done, tested end to end in Chromium and in the Linux desktop app |
 | Titles, text notes, export/share | Done |
+| Apple Watch companion: record on the Watch, send to a paired device | Written; receiver tested over TCP, Watch and iOS Swift not yet compiled (see [watch-app/README.md](watch-app/README.md)) |
 | Core ML transcription backend, Apple Vision finger tracking, cloud processing | Deferred (interfaces in place) |
 
-"Tested" means automated checks in this repository passed. The Swift code could not be compiled
-here (no macOS/Xcode in the build environment), so the first iOS build may need small fixes.
+"Tested" means automated checks in this repository passed. The Swift code (iOS plugins, Watch app) could not
+be compiled here (no macOS/Xcode in the build environment), so the first build may need small fixes.
 [docs/IOS.md](docs/IOS.md) lists what to check on a device.
 
 ## Quick start
@@ -100,6 +101,9 @@ APPLE_DEVELOPMENT_TEAM=<your team id> npm run tauri ios dev -- --host
    the built-in piano) and **MIDI**. Then it opens the iOS share sheet, or a folder picker on desktop.
 7. **Organise**: in the list, swipe a sketch left for *Share* / *Delete*; press and hold to select several, then
    share or delete them together.
+8. **Apple Watch**: record on the Watch and the take arrives here as a sketch tagged *Apple Watch*. Pair once
+   with Settings → *Apple Watch* → *Pair Apple Watch*, which shows a code to type on the Watch; the Watch then
+   shows which device it sends to. Setup and details: [watch-app/README.md](watch-app/README.md).
 
 ## Project layout
 
@@ -113,9 +117,12 @@ src/                         Svelte + TypeScript UI and engines
   lib/export/                Share/export: picks and prepares files per sketch
   lib/vision/                Future visual analysis / fusion interfaces
   lib/state/                 App state and the capture flow
+  lib/watch/                 Receiving recordings from the Apple Watch app
   lib/ui/                    Components (home, recorder, sketch view, piano roll…)
-src-tauri/                   Rust app: Sketch Library (SQLite + files) and IPC commands
+src-tauri/                   Rust app: Sketch Library (SQLite + files), Watch receiver, IPC commands
 plugins/tauri-plugin-capture Native capture plugin (Swift/AVFoundation on iOS)
+plugins/tauri-plugin-watch-link  Apple Watch receivers on iOS (Bluetooth LE, WatchConnectivity)
+watch-app/                   Apple Watch app (SwiftUI) and the EarbudLink protocol package
 docs/                        Architecture and iOS guides
 scripts/                     Model copy, test-audio generator, end-to-end smoke tests
 ```
@@ -127,7 +134,7 @@ See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for module boundaries, data
 ```bash
 npm test                             # Vitest: WAV/resampling, chords, MIDI, capture flow, real Basic Pitch inference
 npm run check                        # svelte-check / TypeScript
-(cd src-tauri && cargo test)         # Sketch Library: storage, immutability, edits, recovery, export
+(cd src-tauri && cargo test)         # Sketch Library and Watch receiver (pairing, transfers over TCP, import)
 ```
 
 End-to-end smoke tests (optional, need Playwright's Chromium or `tauri-driver`):
@@ -165,6 +172,9 @@ Linux; the header of `scripts/tauri-webdriver-smoke.mjs` explains the setup.
   WebKitGTK build.
 - **Background recording** is not supported: iOS stops the camera when the app leaves the foreground. The take
   up to that point is saved automatically.
+- **Apple Watch**: Wi-Fi and Bluetooth delivery need Earbud open on the receiving device. watchOS may block the
+  Watch's direct Wi-Fi connections (Apple TN3135); the Watch then falls back to Bluetooth or its paired iPhone.
+  See [watch-app/README.md](watch-app/README.md).
 - No notation, quantization or tempo detection yet. MIDI is exported in real time (120 BPM header).
 
 ## License

@@ -11,3 +11,5 @@ public/models/basic-pitch/
 # Test artifacts
 test-results/
 playwright-report/
+# scripts/fake-watch.mjs pairing
+fake-watch-link.json

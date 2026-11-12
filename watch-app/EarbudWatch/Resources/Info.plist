@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>$(DEVELOPMENT_LANGUAGE)</string>
+    <key>CFBundleExecutable</key>
+    <string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundleIdentifier</key>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>$(PRODUCT_NAME)</string>
+    <key>CFBundleDisplayName</key>
+    <string>Earbud</string>
+    <key>CFBundlePackageType</key>
+    <string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+    <key>CFBundleShortVersionString</key>
+    <string>$(MARKETING_VERSION)</string>
+    <key>CFBundleVersion</key>
+    <string>$(CURRENT_PROJECT_VERSION)</string>
+
+    <!-- A single-target SwiftUI watch app. -->
+    <key>WKApplication</key>
+    <true/>
+    <!-- The iPhone app it belongs to (Earbud's Tauri identifier). WatchConnectivity uses this
+         to connect the two. -->
+    <key>WKCompanionAppBundleIdentifier</key>
+    <string>$(EARBUD_COMPANION_BUNDLE_ID)</string>
+    <!-- Installed and run on its own: the Earbud iPhone app is built by Tauri, separately. -->
+    <key>WKRunsIndependentlyOfCompanionApp</key>
+    <true/>
+
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Earbud records your piano on the Watch and sends the recording to Earbud on your iPhone, iPad or Mac.</string>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Earbud sends your recordings over Bluetooth to the device you paired with, when there is no Wi-Fi.</string>
+
+    <!-- Keep recording when the wrist is lowered and the screen turns off. -->
+    <key>WKBackgroundModes</key>
+    <array>
+        <string>audio</string>
+    </array>
+</dict>
+</plist>

@@ -99,7 +99,7 @@
 
     {#if status.pairing}
       <div class="pairing" aria-live="polite">
-        <p class="help">On the Watch, open Earbud → Settings → Pair, and enter:</p>
+        <p class="help">On the Watch, open Earbud, tap <em>Pair with Earbud</em> (or Settings → <em>Pair with a code</em>), and enter:</p>
         <div class="code tabular" aria-label="Pairing code {status.pairing.code.split('').join(' ')}">
           {#each status.pairing.code.split('') as digit, i (i)}<span>{digit}</span>{/each}
         </div>

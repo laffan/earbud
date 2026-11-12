@@ -107,10 +107,31 @@ The app asks for **Microphone** and **Camera** the first time you tap Record. Th
 | `NSCameraUsageDescription` | Recording your hands at the keys |
 | `UISupportedInterfaceOrientations` | Portrait and both landscape orientations, so the phone can be propped up either way |
 
+| `NSBluetoothAlwaysUsageDescription` | Receiving recordings from the Apple Watch app over Bluetooth |
+
 If access was denied, Earbud shows an **Open Settings** button that takes you to the app's page in Settings.
 If only the camera is denied, you can record audio-only sketches.
 
-No other permissions are used. There is no network access, photo-library access or background mode.
+Bluetooth is asked for only when you switch on Settings → Apple Watch → *Receive recordings from Apple Watch*
+(or tap *Pair Apple Watch*). The Wi-Fi receiver only accepts incoming connections, which needs no Local
+Network permission ([TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy)),
+so iOS does not ask for it. There is no outgoing network access, photo-library access or background mode.
+
+## Apple Watch
+
+The Watch app and the protocol are described in [watch-app/README.md](../watch-app/README.md). On the iPhone
+side:
+
+- `src-tauri/src/watch_link` (Rust) listens on TCP port 50720 while receiving is on, answers pairing codes and
+  imports received recordings. It reopens its socket whenever the app returns to the foreground, because iOS
+  may close listening sockets of suspended apps.
+- `plugins/tauri-plugin-watch-link` (Swift) adds the Bluetooth LE peripheral and the WatchConnectivity
+  receiver. WatchConnectivity is activated at every launch, so recordings the Watch queued while Earbud was
+  closed are delivered when it opens. Both write into `library/inbox/`, which the app imports.
+- Receiving over Wi-Fi and Bluetooth works while Earbud is open; there is no background mode.
+- Whether the Watch can send through its paired iPhone depends on iOS treating the separately installed
+  Watch app as Earbud's companion (matching bundle ids, same team). Settings → Apple Watch shows what iOS
+  reports. Pairing with a code (Wi-Fi or Bluetooth) does not depend on it.
 
 ## How capture works on iOS
 
@@ -151,7 +172,7 @@ does), which fits a full keyboard from closer up.
 
 These behaviours could not be verified without hardware. Please check them on the first device build:
 
-1. **Build**: the `tauri-plugin-capture` Swift package compiles. Likely trouble spots, if any: AVFoundation
+1. **Build**: the `tauri-plugin-capture` and `tauri-plugin-watch-link` Swift packages compile. Likely trouble spots, if any: AVFoundation
    API deprecations treated as errors in newer Xcode versions (`videoOrientation`, `tracks(withMediaType:)`), or
    Swift 6 strict-concurrency warnings promoted to errors. The package declares Swift tools 5.5, so it builds in
    Swift 5 mode.
@@ -177,6 +198,8 @@ These behaviours could not be verified without hardware. Please check them on th
     piano roll moves with the video, and no error toast appears. Drag the waveform's bracket handles to crop;
     playback stops at the crop end (or loops with the loop button). If anything is off, Settings → Diagnostics now
     also records playback events (`[playback]` lines).
+13. **Apple Watch** (if you use it): see the checklist in [watch-app/README.md](../watch-app/README.md#what-to-check-on-a-device).
+    The new `tauri-plugin-watch-link` Swift package must compile as part of the iOS build.
 
 To look at what is stored, Safari's Web Inspector console can run:
 
@@ -204,6 +227,8 @@ sketches/<id>/transcription.mid  current notes as MIDI
 sketches/<id>/take-audio.m4a     the take's audio track (written when you share it)
 sketches/<id>/notes-audio.wav    the notes rendered by the synth (written when you share it)
 sketches/<id>/exports/           friendly-named hard links used for sharing
+inbox/                           recordings from the Apple Watch waiting to be imported
+watch-link.json                  this device's name, id and pairing secret for the Watch
 ```
 
 The folder is included in device backups. Deleting a sketch in the app removes its folder.
