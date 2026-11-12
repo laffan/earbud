@@ -11,11 +11,15 @@ import { detectChords } from '../music/chords';
 import {
   BASIC_PITCH_SAMPLE_RATE,
   BASIC_PITCH_VERSION,
+  DEFAULT_BASIC_PITCH_PARAMS,
   loadModel,
   notesFromModelOutput,
   runModel,
   selectBackend,
+  TakeCache,
+  transcribeSamples,
 } from './basicPitchCore';
+import { transcriptionParams } from './settings';
 
 const modelDir = join(__dirname, '../../../public/models/basic-pitch');
 let model: GraphModel;
@@ -72,5 +76,44 @@ describe('Basic Pitch transcription', () => {
   it('returns no notes for silence', async () => {
     const output = await runModel(model, new Float32Array(BASIC_PITCH_SAMPLE_RATE * 2));
     expect(notesFromModelOutput(output)).toEqual([]);
+  });
+
+  it('transcribes a take again with other settings without running the model again', async () => {
+    const samples = synthesize(
+      [
+        { pitch: 48, start: 0.2, end: 2.6 },
+        { pitch: 64, start: 0.8, end: 1.4 },
+        { pitch: 67, start: 1.6, end: 2.2 },
+      ],
+      BASIC_PITCH_SAMPLE_RATE,
+      3,
+    );
+    const cache = new TakeCache();
+    const progress: number[] = [];
+    const base = { environment: 'room', custom: { noiseGateDb: null, requireStrike: false, strikeOnset: 0.5, minNoteLengthMs: 127.7 } } as const;
+    const first = await transcribeSamples(model, samples, { ...DEFAULT_BASIC_PITCH_PARAMS, ...transcriptionParams({ ...base, heldNotes: 'off' }) }, {
+      key: 'take',
+      cache,
+      onProgress: (f) => progress.push(f),
+    });
+    const windows = progress.length;
+    expect(windows).toBeGreaterThan(1);
+
+    const again = await transcribeSamples(model, samples, { ...DEFAULT_BASIC_PITCH_PARAMS, ...transcriptionParams({ ...base, heldNotes: 'join' }) }, {
+      key: 'take',
+      cache,
+      onProgress: (f) => progress.push(f),
+    });
+    // Only the final "done" report: the model did not run.
+    expect(progress.slice(windows)).toEqual([1]);
+    expect(again.map((n) => n.pitch).sort()).toEqual([...new Set(first.map((n) => n.pitch))].sort());
+
+    // A different take (other length) under the same key runs the model again.
+    await transcribeSamples(model, samples.subarray(0, samples.length - 512), DEFAULT_BASIC_PITCH_PARAMS, {
+      key: 'take',
+      cache,
+      onProgress: (f) => progress.push(f),
+    });
+    expect(progress.length - windows - 1).toBeGreaterThan(1);
   });
 });

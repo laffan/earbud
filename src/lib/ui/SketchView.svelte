@@ -4,15 +4,18 @@
   import { chordVoicing, detectChords, type ChordSegment } from '../music/chords';
   import { notesToMidi } from '../music/midi';
   import { normalizeNote, notesEndTime, sortNotes } from '../music/notes';
+  import { canJoin, joinNotes, shiftNotes, type NoteShift } from '../music/selection';
   import { summarize } from '../music/summary';
   import { NoteSynth } from '../music/synth';
   import { MediaTransport } from '../playback/transport';
   import { errorMessage, fileUrl } from '../platform/tauri';
   import { app } from '../state/app.svelte';
+  import { environmentName, type Environment, type HeldNotes } from '../transcription/settings';
   import type { PianoNote } from '../transcription/types';
   import Icon from './Icon.svelte';
   import PianoRoll from './PianoRoll.svelte';
   import Sheet from './Sheet.svelte';
+  import TranscriptionSettings from './TranscriptionSettings.svelte';
   import Waveform from './Waveform.svelte';
   import { displayTitle, formatClock, formatDate, formatDuration, formatTimeOfDay } from './format';
 
@@ -29,7 +32,8 @@
 
   // ---------------------------------------------------------- editing
   let editing = $state(false);
-  let selected = $state<number | null>(null);
+  /** Indices (into `notes`) of the notes selected in the editor. */
+  let selection = $state<number[]>([]);
   let undoStack: PianoNote[][] = [];
   let redoStack: PianoNote[][] = [];
   let canUndo = $state(false);
@@ -95,9 +99,10 @@
   // --------------------------------------------------------------- ui
   let roll = $state<ReturnType<typeof PianoRoll> | null>(null);
   let showMenu = $state(false);
-  /** What the piano roll currently shows (drawn on the waveform). */
-  let viewStart = $state(0);
-  let viewEnd = $state(0);
+  /** The "Transcribe again" sheet (environment and held-note choices). */
+  let showRetranscribe = $state(false);
+  /** Transcribing again would discard note corrections (shown in that sheet). */
+  let retranscribeDiscards = $state(false);
   let confirmation = $state<{
     title: string;
     message: string;
@@ -149,7 +154,8 @@
       detail = d;
       if (!dirty) {
         notes = workingNotes(d);
-        if (selected !== null && selected >= notes.length) selected = null;
+        // An autosave lands here with the same notes: keep the selection.
+        selection = selection.filter((i) => i < notes.length);
         synth.setNotes(notes);
       }
     } catch {
@@ -323,14 +329,17 @@
     saveTimer = window.setTimeout(() => void saveNow(), 700);
   }
 
-  function commit(next: PianoNote[], focus: PianoNote | null) {
+  /** Apply an edit; `focus` are the notes that stay selected afterwards. */
+  function commit(next: PianoNote[], focus: PianoNote[]) {
     undoStack.push(notes);
     if (undoStack.length > 200) undoStack.shift();
     redoStack = [];
     const sorted = sortNotes(next);
-    const index = focus ? sorted.indexOf(focus) : -1;
+    const wanted = new Set(focus);
+    const indices: number[] = [];
+    if (wanted.size > 0) sorted.forEach((n, i) => wanted.has(n) && indices.push(i));
     notes = sorted;
-    selected = index >= 0 ? index : null;
+    selection = indices;
     afterChange();
   }
 
@@ -339,7 +348,7 @@
     if (!previous) return;
     redoStack.push(notes);
     notes = previous;
-    selected = null;
+    selection = [];
     afterChange();
   }
 
@@ -348,39 +357,50 @@
     if (!next) return;
     undoStack.push(notes);
     notes = next;
-    selected = null;
+    selection = [];
     afterChange();
   }
 
-  function modifySelected(change: (n: PianoNote) => PianoNote) {
-    if (selected === null || !notes[selected]) return;
-    const original = notes[selected];
-    const changed = change(original);
-    if (changed.startTime < 0) {
-      changed.endTime -= changed.startTime;
-      changed.startTime = 0;
-    }
-    const n = normalizeNote(changed, duration + 30);
+  const selectedIndices = $derived(selection.filter((i) => i < notes.length));
+  const hasSelection = $derived(selectedIndices.length > 0);
+  const joinable = $derived(canJoin(notes, selectedIndices));
+
+  /** Move, transpose or resize every selected note by the same amount. */
+  function modifySelected(shift: NoteShift) {
+    const indices = selectedIndices;
+    if (indices.length === 0) return;
+    const originals = indices.map((i) => notes[i]);
+    const changed = shiftNotes(originals, shift, duration + 30);
     const next = notes.slice();
-    next[selected] = n;
-    commit(next, n);
-    if (n.pitch !== original.pitch) synth.preview(n.pitch);
+    indices.forEach((index, k) => (next[index] = changed[k]));
+    commit(next, changed);
+    if (changed.length === 1 && changed[0].pitch !== originals[0].pitch) synth.preview(changed[0].pitch);
   }
 
   function deleteSelected() {
-    if (selected === null) return;
-    const index = selected;
+    const gone = new Set(selectedIndices);
+    if (gone.size === 0) return;
     commit(
-      notes.filter((_, i) => i !== index),
-      null,
+      notes.filter((_, i) => !gone.has(i)),
+      [],
     );
+  }
+
+  /** Turn selected fragments of the same pitch into one note each. */
+  function joinSelected() {
+    const result = joinNotes(notes, selectedIndices);
+    if (result) commit(result.notes, result.selected);
+  }
+
+  function selectAll() {
+    selection = notes.map((_, i) => i);
   }
 
   function addNote() {
     const sounding = notes.filter((n) => n.startTime <= currentTime && n.endTime > currentTime);
     const pitch = sounding.length ? Math.max(...sounding.map((n) => n.pitch)) + 2 : 60;
     const n = normalizeNote({ pitch, startTime: currentTime, endTime: currentTime + 0.5, velocity: 80, confidence: 1 });
-    commit([...notes, n], n);
+    commit([...notes, n], [n]);
     synth.preview(n.pitch);
   }
 
@@ -405,7 +425,7 @@
   function toggleEditing() {
     editing = !editing;
     if (!editing) {
-      selected = null;
+      selection = [];
       void saveNow();
     }
   }
@@ -435,26 +455,41 @@
     }, 600);
   }
 
+  /** Start a (new) transcription with the current settings. */
   function retranscribe() {
     showMenu = false;
-    const go = () => {
-      editing = false;
-      dirty = false;
-      undoStack = [];
-      redoStack = [];
-      updateHistory();
-      app.transcribe(id);
-    };
-    if (detail?.hasEdits || dirty) {
-      confirmation = {
-        title: 'Transcribe again?',
-        message:
-          'A new transcription replaces your note corrections. The recording itself is never changed.',
-        action: 'Transcribe again',
-        run: go,
-      };
-    } else go();
+    showRetranscribe = false;
+    editing = false;
+    selection = [];
+    dirty = false;
+    window.clearTimeout(saveTimer);
+    undoStack = [];
+    redoStack = [];
+    updateHistory();
+    app.transcribe(id);
   }
+
+  /** Transcribing again first asks where the take was recorded. */
+  function askRetranscribe() {
+    showMenu = false;
+    if (hasTranscription) {
+      retranscribeDiscards = !!detail?.hasEdits || dirty;
+      showRetranscribe = true;
+    } else retranscribe();
+  }
+
+  /** How the current notes were made, e.g. "Noisy room, held notes joined". */
+  const transcribedWith = $derived.by(() => {
+    const params = detail?.transcription?.params;
+    if (!params) return '';
+    const parts: string[] = [];
+    const environment = params.environment as Environment | undefined;
+    if (environment) parts.push(environmentName(environment));
+    const heldNotes = params.heldNotes as HeldNotes | undefined;
+    if (heldNotes === 'join') parts.push('held notes joined');
+    else if (heldNotes === 'strong') parts.push('held notes joined (more)');
+    return parts.join(', ');
+  });
 
   function revertEdits() {
     showMenu = false;
@@ -474,7 +509,7 @@
         notes = sortNotes(original);
         undoStack = [];
         redoStack = [];
-        selected = null;
+        selection = [];
         updateHistory();
         synth.setNotes(notes);
         await app.library.writeFile(id, 'midi', notesToMidi(notes, { title: title || undefined }));
@@ -539,7 +574,7 @@
         </button>
         {#if showMenu}
           <div class="menu" role="menu">
-            <button role="menuitem" onclick={retranscribe} disabled={transcribing}>
+            <button role="menuitem" onclick={askRetranscribe} disabled={transcribing}>
               <Icon name="refresh" size={18} /> {hasTranscription ? 'Transcribe again' : 'Transcribe'}
             </button>
             {#if detail.hasEdits}
@@ -607,15 +642,11 @@
             {currentTime}
             {playing}
             {editing}
-            bind:selected
+            bind:selection
             onseek={(t) => seek(t)}
             onchange={commit}
             onpreview={(pitch) => synth.preview(pitch)}
             onchordtap={playChord}
-            onviewchange={(start, end) => {
-              viewStart = start;
-              viewEnd = end;
-            }}
           />
         </div>
 
@@ -625,22 +656,40 @@
             <button class="icon-button" onclick={redo} disabled={!canRedo} aria-label="Redo"><Icon name="redo" /></button>
             <span class="sep"></span>
             <button class="icon-button" onclick={addNote} aria-label="Add note at playhead"><Icon name="plus" /></button>
-            <button class="icon-button" onclick={deleteSelected} disabled={selected === null} aria-label="Delete note"
+            <button class="icon-button" onclick={deleteSelected} disabled={!hasSelection} aria-label="Delete selected notes"
               ><Icon name="trash" /></button
             >
+            <button
+              class="pill-button join"
+              onclick={joinSelected}
+              disabled={!joinable}
+              title="Join selected notes of the same pitch into one"
+              aria-label="Join selected notes of the same pitch">Join</button
+            >
             <span class="sep"></span>
-            <button class="icon-button" onclick={() => modifySelected((n) => ({ ...n, pitch: n.pitch + 1 }))} disabled={selected === null} aria-label="Semitone up"><Icon name="up" /></button>
-            <button class="icon-button" onclick={() => modifySelected((n) => ({ ...n, pitch: n.pitch - 1 }))} disabled={selected === null} aria-label="Semitone down"><Icon name="down" /></button>
-            <button class="icon-button" onclick={() => modifySelected((n) => ({ ...n, startTime: n.startTime - 0.05, endTime: n.endTime - 0.05 }))} disabled={selected === null} aria-label="Earlier"><Icon name="left" /></button>
-            <button class="icon-button" onclick={() => modifySelected((n) => ({ ...n, startTime: n.startTime + 0.05, endTime: n.endTime + 0.05 }))} disabled={selected === null} aria-label="Later"><Icon name="right" /></button>
-            <button class="icon-button" onclick={() => modifySelected((n) => ({ ...n, endTime: n.endTime - 0.1 }))} disabled={selected === null} aria-label="Shorter"><Icon name="shorter" /></button>
-            <button class="icon-button" onclick={() => modifySelected((n) => ({ ...n, endTime: n.endTime + 0.1 }))} disabled={selected === null} aria-label="Longer"><Icon name="longer" /></button>
+            <button class="icon-button" onclick={() => modifySelected({ pitch: 1 })} disabled={!hasSelection} aria-label="Semitone up"><Icon name="up" /></button>
+            <button class="icon-button" onclick={() => modifySelected({ pitch: -1 })} disabled={!hasSelection} aria-label="Semitone down"><Icon name="down" /></button>
+            <button class="icon-button" onclick={() => modifySelected({ time: -0.05 })} disabled={!hasSelection} aria-label="Earlier"><Icon name="left" /></button>
+            <button class="icon-button" onclick={() => modifySelected({ time: 0.05 })} disabled={!hasSelection} aria-label="Later"><Icon name="right" /></button>
+            <button class="icon-button" onclick={() => modifySelected({ end: -0.1 })} disabled={!hasSelection} aria-label="Shorter"><Icon name="shorter" /></button>
+            <button class="icon-button" onclick={() => modifySelected({ end: 0.1 })} disabled={!hasSelection} aria-label="Longer"><Icon name="longer" /></button>
             <span class="spacer"></span>
             <span class="save-state">
               {#if saveState === 'saving'}Saving…{:else if saveState === 'saved'}Saved{:else if saveState === 'error'}Not saved{/if}
             </span>
           </div>
-          <p class="edit-help">Tap a note to select it. Drag to move, drag its end to resize, double-tap to add.</p>
+          <p class="edit-help">
+            {#if hasSelection}
+              <span class="selection-count" aria-live="polite"
+                >{selectedIndices.length} {selectedIndices.length === 1 ? 'note' : 'notes'} selected</span
+              >
+              <button class="link" onclick={() => (selection = [])}>Deselect</button>
+              {#if selectedIndices.length < notes.length}<button class="link" onclick={selectAll}>Select all</button>{/if}
+            {:else}
+              Tap a note to select it, or drag across the roll to select several. Drag a selected note to move the
+              selection, drag an end to resize, double-tap to add. Scroll with two fingers or by dragging the time ruler.
+            {/if}
+          </p>
         {/if}
 
         {#if chords.length > 0}
@@ -664,8 +713,6 @@
           path={detail.analysisPath}
           {duration}
           {currentTime}
-          {viewStart}
-          {viewEnd}
           {cropStart}
           {cropEnd}
           onseek={(t) => seek(t)}
@@ -750,6 +797,7 @@
           <div><dt>Notes</dt><dd class="tabular">{notes.length}{detail.hasEdits ? ' (edited)' : ''}</dd></div>
           {#if detail.transcription}
             <div><dt>Transcribed by</dt><dd>{detail.transcription.engine} {detail.transcription.engineVersion}</dd></div>
+            {#if transcribedWith}<div><dt>Transcribed for</dt><dd>{transcribedWith}</dd></div>{/if}
           {/if}
           {#if detail.recovered}<div><dt>Status</dt><dd>Recovered after an interruption</dd></div>{/if}
         </dl>
@@ -757,6 +805,23 @@
     </div>
   {/if}
 </div>
+
+{#if showRetranscribe}
+  <Sheet title="Transcribe again" onclose={() => (showRetranscribe = false)}>
+    <div class="retranscribe">
+      <TranscriptionSettings />
+      {#if retranscribeDiscards}
+        <p class="confirm-text">
+          A new transcription replaces your note corrections. The recording itself is never changed.
+        </p>
+      {/if}
+      <div class="confirm-actions">
+        <button class="pill-button primary" onclick={retranscribe}>Transcribe again</button>
+        <button class="pill-button" onclick={() => (showRetranscribe = false)}>Cancel</button>
+      </div>
+    </div>
+  </Sheet>
+{/if}
 
 {#if confirmation}
   {@const c = confirmation}
@@ -935,9 +1000,23 @@
     padding-right: 6px;
   }
   .edit-help {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 12px;
     margin: 2px 4px 0;
+    min-height: 1.6em;
     font-size: 0.8rem;
     color: var(--ink-3);
+  }
+  .selection-count {
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .join {
+    min-height: 32px;
+    padding: 0 10px;
+    font-size: 0.85rem;
   }
   .chord-strip {
     display: flex;
@@ -1139,6 +1218,13 @@
   .confirm-actions {
     display: flex;
     gap: 8px;
+  }
+  .retranscribe {
+    display: grid;
+    gap: 16px;
+  }
+  .retranscribe .confirm-text {
+    margin: 0;
   }
 
   @media (max-width: 430px) {

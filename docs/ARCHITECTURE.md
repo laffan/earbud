@@ -86,7 +86,25 @@ in `src/lib/transcription/index.ts` is the single place that picks one.
   main thread with WebGL instead, because CPU inference would be several times slower.
 - The model (`model.json` + one 742 KB weight shard) is copied from `node_modules` into `public/models/` at install
   time and loaded from the app bundle, so nothing is fetched from the network.
-- Sensitivity presets (Settings) map to onset/frame thresholds and the minimum note length.
+- `noteCleanup.ts` runs after Basic Pitch's own decoding (`outputToNotesPoly`), on its frame indices:
+  - **Held notes.** A note held under other notes loses frame activation (masking) and comes back as separate
+    notes. A later note of the same pitch within `joinMaxGapMs` is joined to the earlier one unless it is a new
+    strike: onset activation ≥ `restrikeOnset` within ±2 frames of its start and, in *Join more*, frame
+    activation ≥ `restrikeAttack` in its first ~140 ms (an octave struck above a held note produces an onset at
+    the held pitch but no attack).
+  - **Background sounds.** `dropUnstruck` removes notes whose start has no onset ≥ `strikeOnset` (voices and hum
+    swell in). The level gate (`noiseGateDb`) measures each note in the analysis audio (Goertzel on its first
+    three partials, about a semitone wide, during the attack) and drops notes that many dB below the 80th
+    percentile of struck notes, so it adapts to how loud the take is.
+- `settings.ts` maps the user's choices (environment *quiet* / *room* / *noisy* / *custom*, held notes *off* /
+  *join* / *strong*) to those parameters. They are stored with each transcription (`params.environment`,
+  `params.heldNotes`) and shown under the sketch's details.
+- Engines for different settings share one runner (worker + loaded model). The runner keeps the last take's
+  activations and audio (`TakeCache`, takes up to 5 minutes, keyed by the analysis WAV path and its length), so
+  *Transcribe again* with other settings only repeats the decoding.
+- Tests: `noteCleanup.test.ts` covers the rules on painted activations and on activations recorded from the
+  model for a held note under chords and for repeated notes (`fixtures/`), so joining is checked against what
+  the model really outputs.
 
 **Adding another engine** (e.g. a newer piano-specific model): implement `TranscriptionEngine`, return it from
 `getTranscriptionEngine`, and bump `id`/`version`. Stored transcriptions record which engine produced them.
@@ -168,11 +186,14 @@ which makes the whole UI testable in Chromium.
   `transcription_status = failed`.
 - `PianoRoll.svelte`: canvas renderer and gesture handling (seek, pan, pinch/ctrl-wheel zoom, select, move,
   resize, double-tap to add, keyboard editing). It follows the playhead, lights sounding notes and keys, and draws
-  a chord lane.
+  a chord lane. In edit mode the selection is a list of note indices: a one-finger drag on empty space draws a
+  selection rectangle (Shift adds; the view scrolls when the rectangle reaches an edge), dragging a selected note
+  moves or resizes the whole selection rigidly, and panning moves to two fingers, the wheel and the time ruler.
+  Group operations (`shiftNotes`, `joinNotes`) live in `src/lib/music/selection.ts`.
 - `SwipeRow.svelte`: list row gestures. A horizontal drag reveals *Share* / *Delete*; vertical drags stay with the
   browser (`touch-action: pan-y`) so the list scrolls natively. A 500 ms press (or right-click) enters selection mode.
 - `Waveform.svelte`: overview of the take drawn from peaks of the analysis WAV (`src/lib/audio/peaks.ts`, cached per
-  file). Tap or drag to scrub; uses `fastSeek` while dragging. The shaded band is the piano roll's visible window.
+  file). Tap or drag to scrub. Outside the crop handles is dimmed; between them only the waveform is drawn.
 - `SketchView.svelte`: piano roll first, then chords, waveform and transport, then the video. The layout is a single
   `minmax(0, 1fr)` grid column so wide children (the chord strip) scroll inside themselves instead of widening the
   page. Playback uses a source fallback chain (`asset://` URL → in-memory blob for files under

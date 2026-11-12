@@ -9,6 +9,7 @@
  */
 import * as tf from '@tensorflow/tfjs';
 import { BasicPitch, noteFramesToTime, outputToNotesPoly } from '@spotify/basic-pitch';
+import { cleanupNotes } from './noteCleanup';
 import type { PianoNote } from './types';
 import { TranscriptionAbortedError } from './types';
 import {
@@ -18,6 +19,7 @@ import {
   type BasicPitchParams,
   type ModelArtifacts,
   type ModelOutput,
+  type TakeCache,
 } from './basicPitchParams';
 
 export * from './basicPitchParams';
@@ -111,31 +113,35 @@ const round = (value: number, digits = 3) => {
   return Math.round(value * f) / f;
 };
 
-/** Turn model activations into notes. Cheap; can be re-run with new params. */
+/**
+ * Turn model activations into notes: Basic Pitch's own decoding, then the
+ * piano-specific clean-up. Cheap; can be re-run with new params. `samples`
+ * is the audio the activations came from (needed only for the level gate).
+ */
 export function notesFromModelOutput(
   output: ModelOutput,
   params: BasicPitchParams = DEFAULT_BASIC_PITCH_PARAMS,
+  samples?: Float32Array,
 ): PianoNote[] {
   if (output.frames.length === 0) return [];
   // outputToNotesPoly mutates its inputs; keep the cached output intact.
   const frames = output.frames.map((row) => row.slice());
   const onsets = output.onsets.map((row) => row.slice());
   const minNoteFrames = Math.max(1, Math.round((params.minNoteLengthMs / 1000) * FRAMES_PER_SECOND));
-  const events = noteFramesToTime(
-    outputToNotesPoly(
-      frames,
-      onsets,
-      params.onsetThreshold,
-      params.frameThreshold,
-      minNoteFrames,
-      true,
-      null,
-      null,
-      params.melodiaTrick,
-      params.energyTolerance,
-    ),
+  const decoded = outputToNotesPoly(
+    frames,
+    onsets,
+    params.onsetThreshold,
+    params.frameThreshold,
+    minNoteFrames,
+    true,
+    null,
+    null,
+    params.melodiaTrick,
+    params.energyTolerance,
   );
-  return events
+  const { notes } = cleanupNotes(decoded, output, params, samples);
+  return noteFramesToTime(notes)
     .map((event): PianoNote => {
       const amplitude = Math.min(1, Math.max(0, event.amplitude));
       const start = Math.max(0, event.startTimeSeconds);
@@ -150,4 +156,26 @@ export function notesFromModelOutput(
     })
     .filter((n) => n.pitch >= params.minPitch && n.pitch <= params.maxPitch)
     .sort((a, b) => a.startTime - b.startTime || a.pitch - b.pitch);
+}
+
+/**
+ * Audio to notes. Runs the model unless `cache` already holds this take's
+ * activations (same `key`, same audio length), in which case only the note
+ * decoding is repeated with the given params.
+ */
+export async function transcribeSamples(
+  model: tf.GraphModel,
+  samples: Float32Array,
+  params: BasicPitchParams,
+  options: { key?: string; cache?: TakeCache; onProgress?: (fraction: number) => void; signal?: AbortSignal } = {},
+): Promise<PianoNote[]> {
+  const { key, cache, onProgress, signal } = options;
+  let take = key && cache ? cache.get(key, samples.length) : null;
+  if (!take) {
+    take = { output: await runModel(model, samples, onProgress, signal), samples };
+    if (key && cache) cache.set(key, take);
+  } else {
+    onProgress?.(1);
+  }
+  return notesFromModelOutput(take.output, params, take.samples);
 }

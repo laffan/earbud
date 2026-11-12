@@ -5,9 +5,9 @@
  */
 import {
   loadModel,
-  notesFromModelOutput,
-  runModel,
   selectBackend,
+  TakeCache,
+  transcribeSamples,
   type BasicPitchParams,
   type ModelArtifacts,
 } from './basicPitchCore';
@@ -15,7 +15,14 @@ import type { GraphModel } from '@tensorflow/tfjs';
 
 export type WorkerRequest =
   | { type: 'init'; model: ModelArtifacts; backends: string[] }
-  | { type: 'transcribe'; id: number; samples: Float32Array; params: BasicPitchParams };
+  | {
+      type: 'transcribe';
+      id: number;
+      /** Identifies the take (its analysis audio path), for the activation cache. */
+      key: string;
+      samples: Float32Array;
+      params: BasicPitchParams;
+    };
 
 export type WorkerResponse =
   | { type: 'ready'; backend: string }
@@ -25,6 +32,7 @@ export type WorkerResponse =
 
 const scope = self as unknown as DedicatedWorkerGlobalScope;
 let model: GraphModel | null = null;
+const cache = new TakeCache();
 
 scope.onmessage = async (event: MessageEvent<WorkerRequest>) => {
   const message = event.data;
@@ -35,10 +43,13 @@ scope.onmessage = async (event: MessageEvent<WorkerRequest>) => {
       scope.postMessage({ type: 'ready', backend } satisfies WorkerResponse);
     } else if (message.type === 'transcribe') {
       if (!model) throw new Error('Model not loaded');
-      const output = await runModel(model, message.samples, (fraction) => {
-        scope.postMessage({ type: 'progress', id: message.id, fraction } satisfies WorkerResponse);
+      const notes = await transcribeSamples(model, message.samples, message.params, {
+        key: message.key,
+        cache,
+        onProgress: (fraction) => {
+          scope.postMessage({ type: 'progress', id: message.id, fraction } satisfies WorkerResponse);
+        },
       });
-      const notes = notesFromModelOutput(output, message.params);
       scope.postMessage({ type: 'result', id: message.id, notes } satisfies WorkerResponse);
     }
   } catch (error) {

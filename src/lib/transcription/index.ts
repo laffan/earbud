@@ -4,29 +4,31 @@
  * model (or a native Core ML backend) is a one-line change here.
  */
 import { BasicPitchEngine } from './basicPitchEngine';
-import type { BasicPitchParams } from './basicPitchParams';
+import { DEFAULT_TRANSCRIPTION_SETTINGS, transcriptionParams, type TranscriptionSettings } from './settings';
 import type { TranscriptionEngine } from './types';
 
 export type { PianoNote, TranscriptionEngine, TranscribeOptions } from './types';
 export { TranscriptionAbortedError } from './types';
 export { DEFAULT_BASIC_PITCH_PARAMS, type BasicPitchParams } from './basicPitchParams';
+export * from './settings';
 
-/** Sensitivity presets exposed in Settings. */
-export type Sensitivity = 'conservative' | 'balanced' | 'sensitive';
+const engines = new Map<string, TranscriptionEngine>();
 
-export const SENSITIVITY_PARAMS: Record<Sensitivity, Partial<BasicPitchParams>> = {
-  conservative: { onsetThreshold: 0.6, frameThreshold: 0.35 },
-  balanced: {},
-  sensitive: { onsetThreshold: 0.4, frameThreshold: 0.25, minNoteLengthMs: 90 },
-};
-
-const engines = new Map<Sensitivity, TranscriptionEngine>();
-
-export function getTranscriptionEngine(sensitivity: Sensitivity = 'balanced'): TranscriptionEngine {
-  let engine = engines.get(sensitivity);
+/**
+ * The engine for these settings. Engines are cheap: they share one worker and
+ * one loaded model, and differ only in how activations are turned into notes.
+ */
+export function getTranscriptionEngine(
+  settings: TranscriptionSettings = DEFAULT_TRANSCRIPTION_SETTINGS,
+): TranscriptionEngine {
+  const params = transcriptionParams(settings);
+  const labels = { environment: settings.environment, heldNotes: settings.heldNotes };
+  const key = JSON.stringify([params, labels]);
+  let engine = engines.get(key);
   if (!engine) {
-    engine = new BasicPitchEngine({ params: SENSITIVITY_PARAMS[sensitivity] });
-    engines.set(sensitivity, engine);
+    if (engines.size > 16) engines.clear();
+    engine = new BasicPitchEngine({ params, labels });
+    engines.set(key, engine);
   }
   return engine;
 }

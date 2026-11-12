@@ -1,8 +1,8 @@
 <script lang="ts">
   /**
    * Overview waveform of the take (from the analysis audio). Drag or tap to
-   * scrub. The tinted band shows what the piano roll is currently showing.
-   * The bracket handles at either end crop playback to a section.
+   * scrub. The bracket handles at either end crop playback to a section;
+   * what lies outside them is dimmed, what lies between is only the waveform.
    */
   import { onMount } from 'svelte';
   import { loadPeaks, type Peaks } from '../audio/peaks';
@@ -12,9 +12,6 @@
     path: string | null;
     duration: number;
     currentTime: number;
-    /** Visible window of the piano roll, in seconds. */
-    viewStart?: number;
-    viewEnd?: number;
     /** Playback crop range in seconds (null = start / end of the take). */
     cropStart?: number | null;
     cropEnd?: number | null;
@@ -27,8 +24,6 @@
     path,
     duration,
     currentTime,
-    viewStart = 0,
-    viewEnd = 0,
     cropStart = null,
     cropEnd = null,
     onseek,
@@ -148,14 +143,6 @@
     const unplayed = color('--rule-strong');
     const accent = color('--accent');
     const playheadX = (Math.min(currentTime, total) / total) * width;
-
-    // Piano-roll window.
-    if (viewEnd > viewStart && viewEnd - viewStart < total * 0.98) {
-      const x0 = (viewStart / total) * width;
-      const x1 = (Math.min(viewEnd, total) / total) * width;
-      ctx.fillStyle = color('--note-soft');
-      ctx.fillRect(x0, 0, Math.max(2, x1 - x0), height);
-    }
 
     if (peaks) {
       const bar = 3;

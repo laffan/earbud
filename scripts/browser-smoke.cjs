@@ -139,9 +139,9 @@ async function findNote(page) {
   const note = await findNote(page);
   if (!note) fail('no note found on the piano roll');
   await page.mouse.click(note.x, note.y);
-  if (await page.isDisabled('button[aria-label="Delete note"]')) fail('tapping a note did not select it');
+  if (await page.isDisabled('button[aria-label="Delete selected notes"]')) fail('tapping a note did not select it');
   await page.keyboard.press('ArrowUp');
-  await page.click('button[aria-label="Delete note"]');
+  await page.click('button[aria-label="Delete selected notes"]');
   if ((await countNotes()) !== before - 1) fail('delete did not remove a note');
   await page.click('button[aria-label="Undo"]');
   if ((await countNotes()) !== before) fail('undo did not restore the note');

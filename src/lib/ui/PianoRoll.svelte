@@ -3,12 +3,17 @@
    * Interactive piano roll (canvas).
    *  - Review: tap to seek, drag to scroll, pinch / ctrl+wheel to zoom; the
    *    view follows the playhead and lights up sounding notes and keys.
-   *  - Edit: tap a note to select, drag to move (time + pitch), drag an edge
-   *    to resize, double-tap empty space to add, Delete/arrow keys on desktop.
+   *  - Edit: tap a note to select it, drag across empty space to select
+   *    several (Shift adds to the selection). Dragging a selected note moves
+   *    the whole selection (time + pitch), dragging an edge resizes it,
+   *    double-tap empty space adds a note, Delete/arrow keys on desktop.
+   *    One finger selects, so the view is scrolled with two fingers, the
+   *    wheel, or by dragging the time ruler.
    */
   import { onMount, untrack } from 'svelte';
   import type { ChordSegment } from '../music/chords';
   import { isBlackKey, noteName, normalizeNote, pitchClass, PIANO_MAX, PIANO_MIN } from '../music/notes';
+  import { mergeSelection, notesInBox, shiftNotes, type NoteShift } from '../music/selection';
   import type { PianoNote } from '../transcription/types';
   import { formatClock } from './format';
 
@@ -19,14 +24,14 @@
     currentTime: number;
     playing?: boolean;
     editing?: boolean;
-    selected?: number | null;
+    /** Indices of the selected notes (edit mode). */
+    selection?: number[];
     onseek?: (time: number) => void;
-    onchange?: (notes: PianoNote[], focus: PianoNote | null) => void;
+    /** The notes changed; `focus` are the notes that should be selected afterwards. */
+    onchange?: (notes: PianoNote[], focus: PianoNote[]) => void;
     onpreview?: (pitch: number) => void;
     /** A chord in the chord lane was tapped. */
     onchordtap?: (chord: ChordSegment) => void;
-    /** Visible time window changed (seconds). */
-    onviewchange?: (start: number, end: number) => void;
     /** Playback crop range (seconds); outside it is dimmed. */
     cropStart?: number | null;
     cropEnd?: number | null;
@@ -39,12 +44,11 @@
     currentTime,
     playing = false,
     editing = false,
-    selected = $bindable(null),
+    selection = $bindable([]),
     onseek,
     onchange,
     onpreview,
     onchordtap,
-    onviewchange,
     cropStart = null,
     cropEnd = null,
   }: Props = $props();
@@ -65,7 +69,11 @@
   let userZoomed = false;
   let fittedFor = 0;
   let userScrollUntil = 0;
-  let dragPreview = $state<{ index: number; note: PianoNote } | null>(null);
+  /** Notes as they would be if the current drag ended now, by index. */
+  let dragPreview = $state.raw<Map<number, PianoNote> | null>(null);
+  /** Selection rectangle being dragged: time span and vertical pixel span. */
+  let marquee = $state<{ t0: number; t1: number; y0: number; y1: number } | null>(null);
+  const selectedSet = $derived(new Set(selection));
   let themeVersion = $state(0);
 
   const notesEnd = $derived(notes.reduce((t, n) => Math.max(t, n.endTime), 0));
@@ -151,10 +159,6 @@
     pxPerSec = Math.max(MIN_PX, Math.min(MAX_PX, pxPerSec * factor));
     scrollX = clampScroll(anchor - (anchorX - GUTTER) / pxPerSec);
   }
-
-  $effect(() => {
-    onviewchange?.(scrollX, scrollX + visibleSeconds);
-  });
 
   // ------------------------------------------------------------ momentum
 
@@ -316,7 +320,7 @@
     const sounding = new Set<number>();
     const h = Math.max(2, rowH - 1.5);
     for (let i = 0; i < notes.length; i++) {
-      const n = dragPreview?.index === i ? dragPreview.note : notes[i];
+      const n = dragPreview?.get(i) ?? notes[i];
       if (n.endTime < t0 || n.startTime > t1 || n.pitch < lo || n.pitch > hi) continue;
       const x = xOf(n.startTime);
       const w = Math.max(2, (n.endTime - n.startTime) * pxPerSec - 1);
@@ -328,7 +332,7 @@
       roundRect(ctx, x, y, w, h, 3);
       ctx.fill();
       ctx.globalAlpha = 1;
-      if (editing && i === selected) {
+      if (editing && selectedSet.has(i)) {
         ctx.strokeStyle = c.accent;
         ctx.lineWidth = 2;
         roundRect(ctx, x - 1, y - 1, w + 2, h + 2, 4);
@@ -337,6 +341,24 @@
         ctx.fillStyle = c.paper;
         ctx.fillRect(x + w - 4, y + h / 2 - Math.min(5, h / 3), 2, Math.min(10, (h * 2) / 3));
       }
+    }
+
+    // Selection rectangle.
+    if (marquee) {
+      const x0 = Math.max(GUTTER, xOf(marquee.t0));
+      const x1 = Math.min(width, xOf(marquee.t1));
+      const w = Math.max(1, x1 - x0);
+      const mh = Math.max(1, marquee.y1 - marquee.y0);
+      ctx.fillStyle = c.accent;
+      ctx.globalAlpha = 0.12;
+      ctx.fillRect(x0, marquee.y0, w, mh);
+      ctx.globalAlpha = 0.9;
+      ctx.strokeStyle = c.accent;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 3]);
+      ctx.strokeRect(x0 + 0.5, marquee.y0 + 0.5, w - 1, mh - 1);
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
     }
 
     // Outside the playback crop range.
@@ -422,21 +444,33 @@
 
   // ---------------------------------------------------------- interaction
 
-  type Mode = 'pending' | 'pan' | 'move' | 'start' | 'end';
+  type Mode = 'pending' | 'pan' | 'marquee' | 'move' | 'start' | 'end';
   interface Drag {
     pointerId: number;
     mode: Mode;
+    /** Note under the pointer when the drag began. */
     index: number | null;
+    /** Notes the drag moves or resizes, and how they were when it began. */
+    indices: number[];
+    originals: PianoNote[];
     startX: number;
     startY: number;
     startScroll: number;
-    original: PianoNote | null;
+    /** Time under the pointer when the drag began (anchor of the selection rectangle). */
+    startT: number;
+    /** Selection the rectangle adds to (Shift held), else empty. */
+    base: number[];
+    /** The pressed note was already one of several selected notes. */
+    inGroup: boolean;
+    lastX: number;
+    lastY: number;
     moved: boolean;
   }
   const pointers = new Map<number, { x: number; y: number }>();
   let drag: Drag | null = null;
   let pinch: { dist: number; px: number; centerT: number } | null = null;
   let lastTap = { time: 0, x: 0, y: 0 };
+  let edgeFrame = 0;
 
   function local(e: PointerEvent | WheelEvent) {
     const rect = canvas.getBoundingClientRect();
@@ -460,6 +494,60 @@
     return null;
   }
 
+  // ------------------------------------------------- selection rectangle
+
+  function updateMarquee(d: Drag) {
+    const t = tOf(Math.max(GUTTER, Math.min(width, d.lastX)));
+    const y = Math.max(TOP, Math.min(height, d.lastY));
+    const box = {
+      t0: Math.min(d.startT, t),
+      t1: Math.max(d.startT, t),
+      y0: Math.min(d.startY, y),
+      y1: Math.max(d.startY, y),
+    };
+    marquee = box;
+    const hits = notesInBox(notes, {
+      startTime: box.t0,
+      endTime: box.t1,
+      pitchLow: pitchOf(box.y1),
+      pitchHigh: pitchOf(box.y0),
+    });
+    selection = d.base.length > 0 ? mergeSelection(d.base, hits) : hits;
+  }
+
+  /** Scroll while the selection rectangle is held against the left or right edge. */
+  function edgeScroll() {
+    edgeFrame = 0;
+    const d = drag;
+    if (!d || d.mode !== 'marquee') return;
+    const margin = 28;
+    let push = 0;
+    if (d.lastX > width - margin) push = (d.lastX - (width - margin)) / margin;
+    else if (d.lastX < GUTTER + margin) push = -(GUTTER + margin - d.lastX) / margin;
+    if (push === 0) return;
+    const before = scrollX;
+    scrollX = clampScroll(scrollX + (Math.max(-1.5, Math.min(1.5, push)) * 12) / pxPerSec);
+    userScrollUntil = performance.now() + 2500;
+    if (scrollX === before) return;
+    updateMarquee(d);
+    edgeFrame = requestAnimationFrame(edgeScroll);
+  }
+
+  function stopEdgeScroll() {
+    cancelAnimationFrame(edgeFrame);
+    edgeFrame = 0;
+  }
+
+  function cancelDrag() {
+    stopEdgeScroll();
+    if (drag?.mode === 'marquee') selection = drag.base;
+    drag = null;
+    dragPreview = null;
+    marquee = null;
+  }
+
+  // ------------------------------------------------------------ pointers
+
   function onPointerDown(e: PointerEvent) {
     stopFling();
     panSamples = [];
@@ -468,47 +556,62 @@
     pointers.set(e.pointerId, p);
     if (pointers.size === 2) {
       const [a, b] = [...pointers.values()];
+      cancelDrag();
       pinch = {
         dist: Math.max(10, Math.abs(a.x - b.x)),
         px: pxPerSec,
         centerT: tOf((a.x + b.x) / 2),
       };
-      drag = null;
-      dragPreview = null;
       return;
     }
     if (p.x < GUTTER && p.y > TOP) {
       onpreview?.(pitchOf(p.y));
       return;
     }
+    const additive = e.shiftKey || e.metaKey || e.ctrlKey;
+    const fresh: Drag = {
+      pointerId: e.pointerId,
+      mode: 'pending',
+      index: null,
+      indices: [],
+      originals: [],
+      startX: p.x,
+      startY: p.y,
+      startScroll: scrollX,
+      startT: tOf(p.x),
+      base: editing && additive ? selection.filter((i) => i < notes.length) : [],
+      inGroup: false,
+      lastX: p.x,
+      lastY: p.y,
+      moved: false,
+    };
     if (editing) {
       const hit = hitNote(p.x, p.y);
       if (hit) {
-        selected = hit.index;
+        if (additive) {
+          // Shift/Cmd/Ctrl-click adds the note to the selection or takes it out.
+          selection = selectedSet.has(hit.index)
+            ? selection.filter((i) => i !== hit.index)
+            : mergeSelection(selection, [hit.index]);
+          onpreview?.(notes[hit.index].pitch);
+          return;
+        }
+        const inGroup = selectedSet.has(hit.index) && selection.length > 1;
+        if (!selectedSet.has(hit.index)) selection = [hit.index];
+        const indices = selection.filter((i) => i < notes.length);
         drag = {
-          pointerId: e.pointerId,
+          ...fresh,
           mode: hit.mode,
           index: hit.index,
-          startX: p.x,
-          startY: p.y,
-          startScroll: scrollX,
-          original: notes[hit.index],
-          moved: false,
+          indices,
+          originals: indices.map((i) => notes[i]),
+          inGroup,
         };
         onpreview?.(notes[hit.index].pitch);
         return;
       }
     }
-    drag = {
-      pointerId: e.pointerId,
-      mode: 'pending',
-      index: null,
-      startX: p.x,
-      startY: p.y,
-      startScroll: scrollX,
-      original: null,
-      moved: false,
-    };
+    drag = fresh;
   }
 
   function onPointerMove(e: PointerEvent) {
@@ -525,39 +628,43 @@
       return;
     }
     if (!drag || drag.pointerId !== e.pointerId) return;
-    const dx = p.x - drag.startX;
-    const dy = p.y - drag.startY;
-    if (!drag.moved && Math.hypot(dx, dy) < 5) return;
-    drag.moved = true;
+    const d = drag;
+    d.lastX = p.x;
+    d.lastY = p.y;
+    const dx = p.x - d.startX;
+    const dy = p.y - d.startY;
+    if (!d.moved && Math.hypot(dx, dy) < 5) return;
+    d.moved = true;
 
-    if (drag.mode === 'pending' || drag.mode === 'pan') {
-      drag.mode = 'pan';
-      scrollX = clampScroll(drag.startScroll - dx / pxPerSec);
+    if (d.mode === 'pending') {
+      // While editing, a drag that starts on the roll draws a selection
+      // rectangle. Everywhere else (and on the time ruler) it scrolls.
+      d.mode = editing && d.startY > TOP && d.startX >= GUTTER ? 'marquee' : 'pan';
+    }
+    if (d.mode === 'marquee') {
+      updateMarquee(d);
+      if (!edgeFrame) edgeFrame = requestAnimationFrame(edgeScroll);
+      return;
+    }
+    if (d.mode === 'pan') {
+      scrollX = clampScroll(d.startScroll - dx / pxPerSec);
       userScrollUntil = performance.now() + 2500;
       panSamples.push({ t: performance.now(), scroll: scrollX });
       if (panSamples.length > 12) panSamples.shift();
       return;
     }
 
-    const o = drag.original!;
     const dt = snap(dx / pxPerSec);
-    let next: PianoNote;
-    if (drag.mode === 'move') {
-      const dp = -Math.round(dy / rowH);
-      next = { ...o, pitch: o.pitch + dp, startTime: o.startTime + dt, endTime: o.endTime + dt };
-      if (next.startTime < 0) {
-        next.endTime -= next.startTime;
-        next.startTime = 0;
-      }
-    } else if (drag.mode === 'end') {
-      next = { ...o, endTime: Math.max(o.startTime + 0.03, o.endTime + dt) };
-    } else {
-      next = { ...o, startTime: Math.max(0, Math.min(o.endTime - 0.03, o.startTime + dt)) };
-    }
-    next = normalizeNote(next, totalSeconds + 30);
-    const previousPitch = dragPreview?.note.pitch ?? o.pitch;
-    dragPreview = { index: drag.index!, note: next };
-    if (next.pitch !== previousPitch) onpreview?.(next.pitch);
+    const shift: NoteShift =
+      d.mode === 'move' ? { time: dt, pitch: -Math.round(dy / rowH) } : d.mode === 'end' ? { end: dt } : { start: dt };
+    const moved = shiftNotes(d.originals, shift, totalSeconds + 30);
+    const preview = new Map<number, PianoNote>();
+    d.indices.forEach((index, k) => preview.set(index, moved[k]));
+    const lead = d.index!;
+    const previousPitch = (dragPreview?.get(lead) ?? notes[lead]).pitch;
+    dragPreview = preview;
+    const pitch = preview.get(lead)?.pitch;
+    if (pitch !== undefined && pitch !== previousPitch) onpreview?.(pitch);
   }
 
   function onPointerUp(e: PointerEvent) {
@@ -570,15 +677,23 @@
     const d = drag;
     if (!d || d.pointerId !== e.pointerId) return;
     drag = null;
+    stopEdgeScroll();
 
     if (d.mode === 'move' || d.mode === 'start' || d.mode === 'end') {
       const preview = dragPreview;
       dragPreview = null;
       if (d.moved && preview) {
         const next = notes.slice();
-        next[preview.index] = preview.note;
-        onchange?.(next, preview.note);
+        for (const [index, note] of preview) next[index] = note;
+        onchange?.(next, [...preview.values()]);
+      } else if (d.inGroup && d.index !== null) {
+        // A tap on one of several selected notes narrows the selection to it.
+        selection = [d.index];
       }
+      return;
+    }
+    if (d.mode === 'marquee') {
+      marquee = null;
       return;
     }
     if (d.moved) {
@@ -603,10 +718,10 @@
         const pitch = pitchOf(d.startY);
         const start = snap(Math.max(0, t));
         const added = normalizeNote({ pitch, startTime: start, endTime: start + 0.4, velocity: 80, confidence: 1 });
-        onchange?.([...notes, added], added);
+        onchange?.([...notes, added], [added]);
         onpreview?.(pitch);
-      } else {
-        selected = null;
+      } else if (d.base.length === 0) {
+        selection = [];
       }
       return;
     }
@@ -615,8 +730,7 @@
 
   function onPointerCancel(e: PointerEvent) {
     pointers.delete(e.pointerId);
-    drag = null;
-    dragPreview = null;
+    cancelDrag();
     if (pointers.size < 2) pinch = null;
   }
 
@@ -640,44 +754,50 @@
   }
 
   function onKeyDown(e: KeyboardEvent) {
-    if (!editing || selected === null || selected >= notes.length) return;
-    const n = notes[selected];
-    let next: PianoNote | null = null;
+    if (!editing) return;
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a') {
+      e.preventDefault();
+      selection = notes.map((_, i) => i);
+      return;
+    }
+    const indices = selection.filter((i) => i < notes.length);
+    if (indices.length === 0) return;
+    const coarse = e.shiftKey;
+    let shift: NoteShift;
     switch (e.key) {
       case 'Delete':
-      case 'Backspace':
+      case 'Backspace': {
         e.preventDefault();
-        onchange?.(notes.filter((_, i) => i !== selected), null);
-        selected = null;
+        const gone = new Set(indices);
+        selection = [];
+        onchange?.(notes.filter((_, i) => !gone.has(i)), []);
         return;
+      }
       case 'ArrowUp':
-        next = { ...n, pitch: n.pitch + (e.shiftKey ? 12 : 1) };
+        shift = { pitch: coarse ? 12 : 1 };
         break;
       case 'ArrowDown':
-        next = { ...n, pitch: n.pitch - (e.shiftKey ? 12 : 1) };
+        shift = { pitch: coarse ? -12 : -1 };
         break;
       case 'ArrowLeft':
-        next = e.altKey ? { ...n, endTime: n.endTime - 0.05 } : { ...n, startTime: n.startTime - 0.05, endTime: n.endTime - 0.05 };
+        shift = e.altKey ? { end: -0.05 } : { time: -0.05 };
         break;
       case 'ArrowRight':
-        next = e.altKey ? { ...n, endTime: n.endTime + 0.05 } : { ...n, startTime: n.startTime + 0.05, endTime: n.endTime + 0.05 };
+        shift = e.altKey ? { end: 0.05 } : { time: 0.05 };
         break;
       case 'Escape':
-        selected = null;
+        selection = [];
         return;
       default:
         return;
     }
     e.preventDefault();
-    if (next.startTime < 0) {
-      next.endTime -= next.startTime;
-      next.startTime = 0;
-    }
-    const normalized = normalizeNote(next, totalSeconds + 30);
+    const originals = indices.map((i) => notes[i]);
+    const moved = shiftNotes(originals, shift, totalSeconds + 30);
     const updated = notes.slice();
-    updated[selected] = normalized;
-    onchange?.(updated, normalized);
-    if (normalized.pitch !== n.pitch) onpreview?.(normalized.pitch);
+    indices.forEach((index, k) => (updated[index] = moved[k]));
+    onchange?.(updated, moved);
+    if (indices.length === 1 && moved[0].pitch !== originals[0].pitch) onpreview?.(moved[0].pitch);
   }
 
   onMount(() => {
@@ -695,6 +815,7 @@
     canvas.addEventListener('wheel', onWheel, { passive: false });
     return () => {
       stopFling();
+      stopEdgeScroll();
       observer.disconnect();
       media.removeEventListener('change', onTheme);
       canvas.removeEventListener('wheel', onWheel);

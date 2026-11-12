@@ -15,13 +15,19 @@ import {
 import { getLibrary, type Sketch, type SketchLibrary } from '../library';
 import { ProcessingQueue, type JobProgress } from '../pipeline/processingQueue';
 import { errorCode, errorMessage, isIOSLike } from '../platform/tauri';
-import { getTranscriptionEngine, type Sensitivity } from '../transcription';
+import {
+  DEFAULT_TRANSCRIPTION_SETTINGS,
+  getTranscriptionEngine,
+  normalizeTranscriptionSettings,
+  type TranscriptionSettings,
+} from '../transcription';
 import { WatchReceiver } from '../watch/receiver.svelte';
 import { TauriWatchLink } from '../watch/tauriWatchLink';
 import type { WatchLinkClient } from '../watch/types';
 
 export interface Settings extends CaptureSettings {
-  sensitivity: Sensitivity;
+  /** Recording environment and held-note handling used for new transcriptions. */
+  transcription: TranscriptionSettings;
   autoTranscribe: boolean;
 }
 
@@ -82,14 +88,22 @@ const DEFAULT_SETTINGS: Settings = {
   camera: 'back',
   lens: 'wide',
   rawAudio: false,
-  sensitivity: 'balanced',
+  transcription: DEFAULT_TRANSCRIPTION_SETTINGS,
   autoTranscribe: true,
 };
 
 function loadSettings(): Settings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
-    if (raw) return { ...DEFAULT_SETTINGS, ...(JSON.parse(raw) as Partial<Settings>) };
+    if (raw) {
+      // `sensitivity` is the setting older versions stored instead of `transcription`.
+      const { sensitivity, ...stored } = JSON.parse(raw) as Partial<Settings> & { sensitivity?: unknown };
+      return {
+        ...DEFAULT_SETTINGS,
+        ...stored,
+        transcription: normalizeTranscriptionSettings(stored.transcription, sensitivity),
+      };
+    }
   } catch {
     // storage unavailable
   }
@@ -135,7 +149,7 @@ export class AppState {
     this.queue = new ProcessingQueue({
       library: this.library,
       capture: () => this.captureEngine,
-      engine: () => getTranscriptionEngine(this.settings.sensitivity),
+      engine: () => getTranscriptionEngine(this.settings.transcription),
       onProgress: (id, progress) => {
         if (progress) this.jobs[id] = progress;
         else delete this.jobs[id];
@@ -281,6 +295,11 @@ export class AppState {
 
   transcribe(id: string) {
     this.queue.enqueue(id);
+  }
+
+  /** Change part of the transcription settings (applies to the next transcription). */
+  updateTranscription(patch: Partial<TranscriptionSettings>) {
+    this.updateSettings({ transcription: { ...this.settings.transcription, ...patch } });
   }
 
   updateSettings(patch: Partial<Settings>) {

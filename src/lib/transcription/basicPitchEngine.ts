@@ -11,6 +11,7 @@ import {
   BASIC_PITCH_SAMPLE_RATE,
   BASIC_PITCH_VERSION,
   DEFAULT_BASIC_PITCH_PARAMS,
+  TakeCache,
   type BasicPitchParams,
   type ModelArtifacts,
 } from './basicPitchParams';
@@ -73,7 +74,9 @@ const disposed = new WeakSet<object>();
 interface Runner {
   readonly backend: string;
   readonly context: 'worker' | 'main';
+  /** `key` identifies the take, so its activations can be reused. */
   run(
+    key: string,
     samples: Float32Array,
     params: BasicPitchParams,
     onProgress: (f: number) => void,
@@ -141,7 +144,7 @@ class WorkerRunner implements Runner {
     this.pending.clear();
   }
 
-  run(samples: Float32Array, params: BasicPitchParams, onProgress: (f: number) => void, signal?: AbortSignal) {
+  run(key: string, samples: Float32Array, params: BasicPitchParams, onProgress: (f: number) => void, signal?: AbortSignal) {
     const id = this.nextId++;
     return new Promise<PianoNote[]>((resolve, reject) => {
       this.pending.set(id, { resolve, reject, onProgress });
@@ -155,7 +158,7 @@ class WorkerRunner implements Runner {
         },
         { once: true },
       );
-      const message: WorkerRequest = { type: 'transcribe', id, samples, params };
+      const message: WorkerRequest = { type: 'transcribe', id, key, samples, params };
       this.worker.postMessage(message, [samples.buffer]);
     });
   }
@@ -169,6 +172,7 @@ class WorkerRunner implements Runner {
 
 class MainThreadRunner implements Runner {
   readonly context = 'main' as const;
+  private cache = new TakeCache();
   private constructor(
     private model: import('@tensorflow/tfjs').GraphModel,
     readonly backend: string,
@@ -180,20 +184,60 @@ class MainThreadRunner implements Runner {
     return new MainThreadRunner(await core.loadModel(model), backend);
   }
 
-  async run(samples: Float32Array, params: BasicPitchParams, onProgress: (f: number) => void, signal?: AbortSignal) {
+  async run(key: string, samples: Float32Array, params: BasicPitchParams, onProgress: (f: number) => void, signal?: AbortSignal) {
     const core = await import('./basicPitchCore');
-    const output = await core.runModel(this.model, samples, onProgress, signal);
-    return core.notesFromModelOutput(output, params);
+    return core.transcribeSamples(this.model, samples, params, { key, cache: this.cache, onProgress, signal });
   }
 
   dispose() {
+    this.cache.clear();
     this.model.dispose();
     disposed.add(this);
   }
 }
 
+/**
+ * One runner (worker and loaded model) per context, shared by every engine.
+ * Engines differ only in their parameters, so switching the environment in
+ * Settings neither loads the model again nor loses the cached activations.
+ */
+const runners = new Map<'auto' | 'worker' | 'main', Promise<Runner>>();
+
+function sharedRunner(context: 'auto' | 'worker' | 'main'): Promise<Runner> {
+  const existing = runners.get(context);
+  if (existing) {
+    return existing.then((runner) => {
+      if (!disposed.has(runner)) return runner;
+      if (runners.get(context) === existing) runners.delete(context);
+      return sharedRunner(context);
+    });
+  }
+  const created: Promise<Runner> = (async () => {
+    const model = await fetchModelArtifacts();
+    if (context === 'main') return MainThreadRunner.create(model);
+    try {
+      const worker = await WorkerRunner.create(model, ['webgl', 'cpu']);
+      if (context === 'auto' && worker.backend !== 'webgl' && pageHasWebGL()) {
+        worker.dispose();
+        return MainThreadRunner.create(model);
+      }
+      return worker;
+    } catch (error) {
+      if (context === 'worker') throw error;
+      return MainThreadRunner.create(model);
+    }
+  })().catch((error) => {
+    if (runners.get(context) === created) runners.delete(context);
+    throw error;
+  });
+  runners.set(context, created);
+  return created;
+}
+
 export interface BasicPitchEngineOptions {
   params?: Partial<BasicPitchParams>;
+  /** Names stored with the results next to the params (e.g. which environment profile). */
+  labels?: Readonly<Record<string, string>>;
   /** Force where inference runs (default: automatic). */
   context?: 'auto' | 'worker' | 'main';
   /** Override how analysis audio is loaded (tests, alternate storage). */
@@ -203,59 +247,31 @@ export interface BasicPitchEngineOptions {
 export class BasicPitchEngine implements TranscriptionEngine {
   readonly id = 'basic-pitch';
   readonly version = BASIC_PITCH_VERSION;
-  readonly params: Readonly<BasicPitchParams>;
-  private runner: Promise<Runner> | null = null;
+  /** Decoding parameters plus the labels, as stored with each transcription. */
+  readonly params: Readonly<BasicPitchParams & Record<string, unknown>>;
+  private readonly decoding: Readonly<BasicPitchParams>;
   private readonly context: 'auto' | 'worker' | 'main';
   private readonly loadSamples: (path: string) => Promise<Float32Array>;
 
   constructor(options: BasicPitchEngineOptions = {}) {
-    this.params = Object.freeze({ ...DEFAULT_BASIC_PITCH_PARAMS, ...options.params });
+    this.decoding = Object.freeze({ ...DEFAULT_BASIC_PITCH_PARAMS, ...options.params });
+    this.params = Object.freeze({ ...this.decoding, ...options.labels });
     this.context = options.context ?? 'auto';
     this.loadSamples = options.loadSamples ?? ((p) => loadAnalysisSamples(p, BASIC_PITCH_SAMPLE_RATE));
   }
 
   /** Where and how inference runs, once the engine has warmed up. */
   async describe(): Promise<{ context: string; backend: string }> {
-    const runner = await this.getRunner();
+    const runner = await sharedRunner(this.context);
     return { context: runner.context, backend: runner.backend };
-  }
-
-  private getRunner(): Promise<Runner> {
-    if (this.runner) {
-      const current = this.runner;
-      return current.then((r) => {
-        if (!disposed.has(r)) return r;
-        this.runner = null;
-        return this.getRunner();
-      });
-    }
-    this.runner = (async () => {
-      const model = await fetchModelArtifacts();
-      if (this.context === 'main') return MainThreadRunner.create(model);
-      try {
-        const worker = await WorkerRunner.create(model, ['webgl', 'cpu']);
-        if (this.context === 'auto' && worker.backend !== 'webgl' && pageHasWebGL()) {
-          worker.dispose();
-          return MainThreadRunner.create(model);
-        }
-        return worker;
-      } catch (error) {
-        if (this.context === 'worker') throw error;
-        return MainThreadRunner.create(model);
-      }
-    })().catch((error) => {
-      this.runner = null;
-      throw error;
-    });
-    return this.runner;
   }
 
   async transcribe(audioPath: string, options: TranscribeOptions = {}): Promise<PianoNote[]> {
     const { onProgress, signal } = options;
     if (signal?.aborted) throw new TranscriptionAbortedError();
-    const [samples, runner] = await Promise.all([this.loadSamples(audioPath), this.getRunner()]);
+    const [samples, runner] = await Promise.all([this.loadSamples(audioPath), sharedRunner(this.context)]);
     if (signal?.aborted) throw new TranscriptionAbortedError();
     if (samples.length < BASIC_PITCH_SAMPLE_RATE * 0.25) return [];
-    return runner.run(samples, { ...this.params }, (f) => onProgress?.(f), signal);
+    return runner.run(audioPath, samples, { ...this.decoding }, (f) => onProgress?.(f), signal);
   }
 }

@@ -1,9 +1,9 @@
 <script lang="ts">
   import { app } from '../state/app.svelte';
   import Sheet from './Sheet.svelte';
+  import TranscriptionSettings from './TranscriptionSettings.svelte';
   import WatchSettings from './WatchSettings.svelte';
   import type { CameraChoice, LensChoice } from '../capture/types';
-  import type { Sensitivity } from '../transcription';
 
   let { onclose }: { onclose: () => void } = $props();
 
@@ -35,11 +35,6 @@
   const lenses: { value: LensChoice; label: string }[] = [
     { value: 'wide', label: 'Wide' },
     { value: 'ultraWide', label: 'Ultra wide' },
-  ];
-  const sensitivities: { value: Sensitivity; label: string }[] = [
-    { value: 'conservative', label: 'Fewer notes' },
-    { value: 'balanced', label: 'Balanced' },
-    { value: 'sensitive', label: 'More notes' },
   ];
 </script>
 
@@ -83,14 +78,10 @@
 
   <section>
     <h3>Transcription</h3>
-    <div class="segmented" role="group" aria-label="Sensitivity">
-      {#each sensitivities as s (s.value)}
-        <button
-          aria-pressed={app.settings.sensitivity === s.value}
-          onclick={() => app.updateSettings({ sensitivity: s.value })}>{s.label}</button
-        >
-      {/each}
-    </div>
+    <TranscriptionSettings />
+    <p class="help">
+      Used for new transcriptions. To apply a change to an existing sketch, open it and choose ⋯ → Transcribe again.
+    </p>
     <label class="toggle">
       <input
         type="checkbox"
