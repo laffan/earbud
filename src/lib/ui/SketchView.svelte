@@ -83,6 +83,12 @@
       if (listen !== 'recording') void synth.start(position, rate);
     },
     onError: (message) => app.toast(message, 'error'),
+    // WebKit can play a file URL it cannot seek in; an in-memory copy can.
+    onUnseekable: () => {
+      void loadIntoMemory().then((switched) =>
+        app.logCapture(`[playback] ${switched ? 'playing an in-memory copy so seeking works' : 'no seekable source available'}`),
+      );
+    },
     log: (message) => app.logCapture(`[playback] ${message}`),
   });
 
@@ -217,31 +223,43 @@
     mediaDuration = Number.isFinite(video.duration) ? video.duration : 0;
   }
 
+  /**
+   * Switch from the original file URL to an in-memory copy of the take, for
+   * files that comfortably fit in memory. Some WebKit builds cannot stream
+   * (or seek in) media from a custom URL scheme but play a blob fine.
+   * Returns whether the source changed.
+   */
+  async function loadIntoMemory(): Promise<boolean> {
+    const d = detail;
+    if (!d?.mediaPath || blobUrl) return false;
+    const original = fileUrl(d.mediaPath);
+    if (sources[sourceIndex] !== original || original.startsWith('blob:')) return false;
+    try {
+      const probe = await fetch(original, { headers: { Range: 'bytes=0-0' } });
+      const total =
+        probe.status === 206 ? probe.headers.get('content-range')?.split('/')[1] : probe.headers.get('content-length');
+      void probe.body?.cancel().catch(() => {});
+      const size = Number(total ?? NaN);
+      const response = size < BLOB_FALLBACK_LIMIT ? await fetch(original) : null;
+      if (!response?.ok || blobUrl) return false;
+      blobUrl = URL.createObjectURL(await response.blob());
+      sources = [...sources, blobUrl];
+      sourceIndex = sources.length - 1;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async function onMediaError() {
     const d = detail;
     if (!d || !d.mediaPath) return;
-    const original = fileUrl(d.mediaPath);
     app.logCapture(
       `[playback] source ${sourceIndex} failed (code ${video?.error?.code ?? '?'} ${video?.error?.message ?? ''}); trying the next one`,
     );
     // Some WebKit builds cannot stream media from a custom URL scheme:
     // retry from an in-memory blob, then fall back to the analysis audio.
-    if (sources[sourceIndex] === original && !original.startsWith('blob:')) {
-      try {
-        // Only buffer files that comfortably fit in memory.
-        const probe = await fetch(original, { headers: { Range: 'bytes=0-0' } });
-        const size = Number(probe.headers.get('content-range')?.split('/')[1] ?? NaN);
-        const response = size < BLOB_FALLBACK_LIMIT ? await fetch(original) : null;
-        if (response?.ok) {
-          blobUrl = URL.createObjectURL(await response.blob());
-          sources = [...sources, blobUrl];
-          sourceIndex = sources.length - 1;
-          return;
-        }
-      } catch {
-        // fall through
-      }
-    }
+    if (await loadIntoMemory()) return;
     if (d.analysisPath) {
       const audio = fileUrl(d.analysisPath);
       if (!sources.includes(audio)) {

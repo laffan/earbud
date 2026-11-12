@@ -214,6 +214,15 @@ One `MediaTransport` owns "where are we, are we playing" for the video, waveform
   which had surfaced as a "Playback aborted" error toast.
 - **The position survives a source reload** (e.g. the fallback from the `asset://` URL to an in-memory copy), and
   playback resumes.
+- **A seek is over when the element stops `seeking`, not only on `seeked`.** WebKit (the iOS, macOS and Linux
+  webviews) drops a seek without firing `seeking` or `seeked` when the media has no seekable ranges yet
+  (AVFoundation reports them only once the item is ready to play, which can be after `loadedmetadata`) and when
+  the engine fails it (`HTMLMediaElement::seekTask`). The transport stops following the media while one of its
+  seeks is pending, so waiting for `seeked` froze both playheads while the audio played on. Now any media event
+  or animation frame settles a seek whose element is no longer seeking. A seek that ended away from its target
+  is sent again once the media reports seekable ranges (up to three times; meanwhile, while playing, the
+  playhead shows what is playing). If a loaded source never becomes seekable, `onUnseekable` makes the sketch
+  view switch to an in-memory copy. `npm run smoke:playback` emulates a dropped seek in Chromium.
 - **Crop and loop.** Playback is limited to the sketch's crop range (stored as `crop_start_ms` / `crop_end_ms`,
   schema v2). At the end it stops and returns to the crop start, or loops.
 - Media events (errors with codes, stalls, aborts, reloads, retries) go to the diagnostics log in Settings.

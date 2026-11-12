@@ -2,7 +2,9 @@
  * Playback regression check (browser preview with the ?demo sketch, phone
  * width): scrub the waveform then play (playhead must move, display in sync
  * with the media), crop with the waveform handles, stop at the crop end,
- * loop, clear the crop. Fails on any page error or error toast.
+ * loop, clear the crop, and play after a seek that the media engine drops
+ * the way WebKit does (no 'seeking'/'seeked' events). Fails on any page
+ * error or error toast.
  *
  *   npm run dev            # terminal 1
  *   npm run smoke:playback
@@ -17,6 +19,37 @@ const parse = (text) => {
 (async () => {
   const browser = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required'] });
   const page = await (await browser.newContext({ viewport: { width: 390, height: 844 } })).newPage();
+  // WebKit (iOS, macOS, Linux webviews) drops a seek without firing 'seeking' or 'seeked' when the media
+  // has no seekable ranges yet, or when the seek fails (HTMLMediaElement::seekTask). Chromium never does,
+  // so emulate it: while window.__dropSeeks > 0, setting currentTime only flips `seeking` for one task.
+  await page.addInitScript(() => {
+    const proto = HTMLMediaElement.prototype;
+    const time = Object.getOwnPropertyDescriptor(proto, 'currentTime');
+    const seeking = Object.getOwnPropertyDescriptor(proto, 'seeking');
+    const dropping = new WeakSet();
+    window.__dropSeeks = 0;
+    Object.defineProperty(proto, 'currentTime', {
+      configurable: true,
+      get() {
+        return time.get.call(this);
+      },
+      set(value) {
+        if (window.__dropSeeks > 0) {
+          window.__dropSeeks--;
+          dropping.add(this);
+          setTimeout(() => dropping.delete(this), 0);
+          return;
+        }
+        time.set.call(this, value);
+      },
+    });
+    Object.defineProperty(proto, 'seeking', {
+      configurable: true,
+      get() {
+        return dropping.has(this) || seeking.get.call(this);
+      },
+    });
+  });
   const problems = [];
   page.on('pageerror', (e) => problems.push(e.message));
   page.on('console', (m) => {
@@ -95,6 +128,24 @@ const parse = (text) => {
   await page.click('.crop-info .link');
   await page.waitForTimeout(200);
   console.log('crop cleared:', (await page.$('.crop-info')) === null);
+
+  // 7. A seek the engine drops (WebKit), then play: both playheads must follow the audio.
+  await page.evaluate(() => (window.__dropSeeks = 1));
+  await page.mouse.click(wf.x + wf.width * 0.7, y);
+  await page.waitForTimeout(300);
+  const waveAt = () => page.$eval('.waveform canvas', (e) => Number(e.getAttribute('aria-valuenow')));
+  await page.click('.play');
+  await page.waitForTimeout(1500);
+  const a = { shown: await shown(), wave: await waveAt(), media: await media() };
+  await page.waitForTimeout(2000);
+  const b = { shown: await shown(), wave: await waveAt(), media: await media() };
+  console.log('after a dropped seek, playing:', JSON.stringify(a), '->', JSON.stringify(b));
+  if (b.media.paused) problems.push('not playing after a dropped seek');
+  if (b.media.t - a.media.t < 1.5) problems.push('media did not advance after a dropped seek');
+  if (b.shown - a.shown < 1 || b.wave - a.wave < 1) problems.push('playhead frozen after a dropped seek');
+  if (Math.abs(b.shown - Math.floor(b.media.t)) > 1) problems.push('playhead out of sync with the media after a dropped seek');
+  await page.click('.play');
+  await page.waitForTimeout(200);
 
   const toasts = await page.$$eval('.toast', (els) => els.map((e) => e.textContent));
   console.log('toasts:', JSON.stringify(toasts));

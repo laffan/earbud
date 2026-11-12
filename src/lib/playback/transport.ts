@@ -14,6 +14,8 @@
  *    instead of being reported as an error.
  *  - The position survives a source reload, and playback resumes.
  *  - Playback can be limited to a crop range, optionally looping.
+ *  - A seek is over when the element stops `seeking`, not only on 'seeked':
+ *    WebKit drops some seeks without firing either event (see `settleSeek`).
  */
 
 /** The parts of HTMLMediaElement the transport uses (fakeable in tests). */
@@ -25,6 +27,8 @@ export interface MediaLike {
   readonly ended: boolean;
   readonly readyState: number;
   readonly error: { code: number; message?: string } | null;
+  /** Only its length is used: zero means the media cannot seek (yet). */
+  readonly seekable?: { readonly length: number };
   playbackRate: number;
   play(): Promise<void>;
   pause(): void;
@@ -46,13 +50,30 @@ export interface TransportOptions {
   /** Called after a seek while playing (so followers can resync). */
   onJump?: (position: number) => void;
   onError?: (message: string) => void;
+  /**
+   * The current source has finished loading but still cannot seek (it
+   * reports no seekable ranges). Called once per source, so the owner can
+   * switch to a source that can, e.g. an in-memory copy.
+   */
+  onUnseekable?: () => void;
   log?: (message: string) => void;
   requestFrame?: (callback: () => void) => number;
   cancelFrame?: (id: number) => void;
+  /** Milliseconds clock (tests); defaults to `performance.now`. */
+  now?: () => number;
 }
 
 const HAVE_METADATA = 1;
+const HAVE_FUTURE_DATA = 3;
 const END_EPSILON = 0.03;
+/** A seek that lands within this of its target counts as done (seconds). */
+const SEEK_TOLERANCE = 0.1;
+/** Stop waiting for a seek after this long, whatever the element says (ms). */
+const SEEK_TIMEOUT_MS = 3000;
+/** Times a dropped seek is sent again before the UI just follows the media. */
+const MAX_SEEK_RETRIES = 3;
+/** How long a loaded source may report no seekable ranges before it is called unseekable (ms). */
+const UNSEEKABLE_AFTER_MS = 1500;
 const MEDIA_EVENTS = [
   'play',
   'playing',
@@ -69,6 +90,10 @@ const MEDIA_EVENTS = [
   'error',
   'stalled',
   'timeupdate',
+  'loadeddata',
+  'canplaythrough',
+  'durationchange',
+  'progress',
 ] as const;
 
 export class MediaTransport {
@@ -80,6 +105,16 @@ export class MediaTransport {
   private wantPlaying = false;
   /** A seek has been sent to the media and has not completed. */
   private seekInFlight = false;
+  /** Target of the seek in flight, and when it was sent (ms). */
+  private seekTarget = 0;
+  private seekSentAt = 0;
+  /** A seek the engine dropped; sent again once the media can seek. */
+  private droppedSeek: number | null = null;
+  private droppedAt = 0;
+  private seekRetries = 0;
+  private reportedUnseekable = false;
+  /** When a dropped seek was last logged (ms), to keep scrubbing from flooding the log. */
+  private dropLoggedAt = -Infinity;
   /** Latest seek target waiting for the in-flight seek to finish. */
   private queuedSeek: number | null = null;
   /** Position to restore once a (re)loaded source has metadata. */
@@ -92,10 +127,12 @@ export class MediaTransport {
   private readonly listener = (event: Event) => this.onMediaEvent(event.type);
   private readonly requestFrame: (callback: () => void) => number;
   private readonly cancelFrame: (id: number) => void;
+  private readonly now: () => number;
 
   constructor(private readonly options: TransportOptions) {
     this.requestFrame = options.requestFrame ?? ((cb) => requestAnimationFrame(cb));
     this.cancelFrame = options.cancelFrame ?? ((id) => cancelAnimationFrame(id));
+    this.now = options.now ?? (() => performance.now());
   }
 
   // ------------------------------------------------------------ public API
@@ -110,6 +147,8 @@ export class MediaTransport {
     this.media = media;
     this.seekInFlight = false;
     this.queuedSeek = null;
+    this.forgetDroppedSeek();
+    this.reportedUnseekable = false;
     if (!media) {
       this.setPlaying(false);
       return;
@@ -162,6 +201,8 @@ export class MediaTransport {
   seek(time: number) {
     const t = this.clampToRange(time);
     this.position = t;
+    // A new target replaces one the engine dropped earlier.
+    this.forgetDroppedSeek();
     this.emit();
     this.applySeek(t);
     if (this.playing) this.options.onJump?.(t);
@@ -196,12 +237,97 @@ export class MediaTransport {
       return;
     }
     if (this.seekInFlight) {
-      this.queuedSeek = t;
-      return;
+      // The previous seek may have been dropped without an event.
+      this.settleSeek();
+      if (this.seekInFlight) {
+        this.queuedSeek = t;
+        return;
+      }
+      this.droppedSeek = null; // superseded by this target
     }
     if (Math.abs(media.currentTime - t) < 0.001) return;
+    this.sendSeek(media, t);
+  }
+
+  private sendSeek(media: MediaLike, t: number) {
+    // Set before assigning: some engines dispatch 'seeking' synchronously.
     this.seekInFlight = true;
+    this.seekTarget = t;
+    this.seekSentAt = this.now();
     media.currentTime = t;
+  }
+
+  private forgetDroppedSeek() {
+    this.droppedSeek = null;
+    this.seekRetries = 0;
+  }
+
+  /**
+   * End the seek in flight once the element no longer reports `seeking`.
+   *
+   * Normally that comes with 'seeked'. WebKit, though, drops a seek without
+   * firing 'seeking' or 'seeked' when the media has no seekable ranges yet
+   * (AVFoundation reports them only once the item is ready to play, which can
+   * be after 'loadedmetadata'), and when the engine fails the seek
+   * (HTMLMediaElement::seekTask). Waiting for 'seeked' then left the
+   * playhead frozen while the audio played on. A seek that ended away from
+   * its target is remembered and sent again once the media can seek.
+   */
+  private settleSeek(sawSeeked = false) {
+    const media = this.media;
+    if (!media || !this.seekInFlight) return;
+    const waited = this.now() - this.seekSentAt;
+    if (media.seeking && waited < SEEK_TIMEOUT_MS) return;
+    this.seekInFlight = false;
+    if (this.queuedSeek !== null) {
+      const next = this.queuedSeek;
+      this.queuedSeek = null;
+      this.applySeek(next);
+      return;
+    }
+    if (media.seeking) {
+      this.options.log?.(`seek to ${this.seekTarget.toFixed(2)} s still running after ${Math.round(waited)} ms; following the media`);
+      return;
+    }
+    const target = this.seekTarget;
+    if (sawSeeked || Math.abs(media.currentTime - target) <= SEEK_TOLERANCE) {
+      this.seekRetries = 0;
+      return;
+    }
+    const ranges = media.seekable?.length;
+    if (this.seekRetries >= MAX_SEEK_RETRIES) {
+      this.options.log?.(`seek to ${target.toFixed(2)} s dropped again; following the media at ${media.currentTime.toFixed(2)} s`);
+      this.forgetDroppedSeek();
+      return;
+    }
+    if (this.now() - this.dropLoggedAt > 2000) {
+      this.dropLoggedAt = this.now();
+      this.options.log?.(
+        `seek to ${target.toFixed(2)} s was dropped by the media engine ` +
+          `(at ${media.currentTime.toFixed(2)} s, readyState ${media.readyState}, seekable ranges ${ranges ?? '?'})`,
+      );
+    }
+    this.droppedSeek = target;
+    this.droppedAt = this.now();
+  }
+
+  /** Send a dropped seek again once the media reports somewhere to seek to. */
+  private retryDroppedSeek() {
+    const media = this.media;
+    const target = this.droppedSeek;
+    if (!media || target === null || this.seekInFlight || media.readyState < HAVE_METADATA) return;
+    if (media.seekable && media.seekable.length === 0) {
+      const loaded = media.readyState >= HAVE_FUTURE_DATA;
+      if (loaded && !this.reportedUnseekable && this.now() - this.droppedAt >= UNSEEKABLE_AFTER_MS) {
+        this.reportedUnseekable = true;
+        this.options.log?.('the media is loaded but reports no seekable ranges');
+        this.options.onUnseekable?.();
+      }
+      return;
+    }
+    this.droppedSeek = null;
+    this.seekRetries++;
+    this.applySeek(target);
   }
 
   private async startMedia() {
@@ -233,32 +359,26 @@ export class MediaTransport {
   private onMediaEvent(type: string) {
     const media = this.media;
     if (!media) return;
+    // Any event is a chance to notice a seek that ended without 'seeked'.
+    this.settleSeek(type === 'seeked');
     switch (type) {
-      case 'seeked':
-        this.seekInFlight = false;
-        if (this.queuedSeek !== null) {
-          const next = this.queuedSeek;
-          this.queuedSeek = null;
-          this.applySeek(next);
-        }
-        break;
       case 'loadstart':
       case 'emptied':
         // A new source (or a reload): remember where we were.
         this.options.log?.(`media ${type} at ${this.position.toFixed(2)} s (wantPlaying=${this.wantPlaying})`);
+        // A seek the old source dropped is where the user wanted to be.
+        this.restoreAt = this.droppedSeek ?? this.queuedSeek ?? this.position;
         this.seekInFlight = false;
         this.queuedSeek = null;
-        this.restoreAt = this.position;
+        this.forgetDroppedSeek();
+        this.reportedUnseekable = false;
         if (this.wantPlaying) this.retryPlayOnReady = true;
         break;
       case 'loadedmetadata':
         if (this.restoreAt !== null) {
           const t = this.clampToRange(this.restoreAt);
           this.restoreAt = null;
-          if (t > 0.001) {
-            this.seekInFlight = true;
-            media.currentTime = t;
-          }
+          if (t > 0.001) this.sendSeek(media, t);
         }
         break;
       case 'error': {
@@ -267,6 +387,7 @@ export class MediaTransport {
         // A failed load never sends 'seeked'; don't stay pinned to a pending seek.
         this.seekInFlight = false;
         this.queuedSeek = null;
+        this.forgetDroppedSeek();
         break;
       }
       case 'abort':
@@ -305,11 +426,15 @@ export class MediaTransport {
   /** Re-derive playing state from the element and keep the frame loop alive. */
   private sync() {
     const media = this.media;
+    this.settleSeek();
+    this.retryDroppedSeek();
     const playing = !!media && !media.paused && !media.ended;
     if (!playing) this.buffering = false;
     this.setPlaying(playing);
-    // While paused, follow the media position only when no seek of ours is pending.
-    if (media && !playing && !this.seekInFlight && this.queuedSeek === null && this.restoreAt === null) {
+    // While paused, follow the media position only when no seek of ours is
+    // pending (a dropped one included: it is sent again once the media can seek).
+    const pending = this.seekInFlight || this.queuedSeek !== null || this.restoreAt !== null || this.droppedSeek !== null;
+    if (media && !playing && !pending) {
       if (media.readyState >= HAVE_METADATA) this.position = media.currentTime;
     }
     this.emit();
@@ -333,6 +458,10 @@ export class MediaTransport {
         this.frame = 0;
         return;
       }
+      this.settleSeek();
+      this.retryDroppedSeek();
+      // While playing, a dropped seek does not hold the playhead: it shows
+      // what is playing until the seek is sent again and lands.
       if (!this.seekInFlight && this.queuedSeek === null) {
         this.position = media.currentTime;
         if (this.checkRangeEnd(media)) return;

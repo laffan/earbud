@@ -197,7 +197,10 @@ These behaviours could not be verified without hardware. Please check them on th
 12. **Playback sync**: scrub the waveform (also while playing), then press play. The playhead in the waveform and
     piano roll moves with the video, and no error toast appears. Drag the waveform's bracket handles to crop;
     playback stops at the crop end (or loops with the loop button). If anything is off, Settings → Diagnostics now
-    also records playback events (`[playback]` lines).
+    also records playback events (`[playback]` lines). A line `seek to … was dropped by the media engine` means
+    WebKit ignored a seek (see the playback transport in `docs/ARCHITECTURE.md`); the playhead should keep
+    following the sound anyway. `playing an in-memory copy so seeking works` means the file URL could not be
+    seeked at all and the app switched to a copy in memory.
 13. **Apple Watch** (if you use it): see the checklist in [watch-app/README.md](../watch-app/README.md#what-to-check-on-a-device).
     The new `tauri-plugin-watch-link` Swift package must compile as part of the iOS build.
 
