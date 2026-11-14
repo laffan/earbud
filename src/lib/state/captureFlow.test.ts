@@ -249,6 +249,10 @@ describe('count-in and takes', () => {
     expect(sketch.status).toBe('saved');
     expect(sketch.countInMs).toBe(Math.round(downbeat));
     expect(sketch.offsetMs).toBe(0);
+    // Until its notes say otherwise, the sketch has the count-in's tempo, a beat on the downbeat.
+    expect(sketch.tempoBpm).toBe(300);
+    expect(sketch.beatMs).toBe(Math.round(downbeat));
+    expect(sketch.tempoSource).toBe('count-in');
   });
 
   it('cancels the take when stopped during the count-in', async () => {
@@ -275,11 +279,13 @@ describe('count-in and takes', () => {
 
     let ended: unknown = undefined;
     let downbeats = 0;
+    app.updateSettings({ countInBpm: 60 }); // the sketch's own tempo must win
     await app.startRecording({
       take: {
         sketchId: first.id,
         trackId: null,
         label: 'Track 2',
+        tempo: { bpm: 300, beat: 0.1 },
         onDownbeat: () => {
           downbeats++;
           return 5; // the other tracks started at 0:05
@@ -291,6 +297,12 @@ describe('count-in and takes', () => {
     const downbeat = app.recording!.downbeatMs!;
     expect(downbeats).toBe(1);
     expect(app.recording?.take?.label).toBe('Track 2');
+    // Counted in at the sketch's 300 BPM (0.6 s), not the setting's 60 (3 s).
+    expect(downbeat).toBeLessThan(1500);
+    // The dot follows the sketch's beats: 5.1 s is the first at or after 5 s, 0.1 s away.
+    const pulse = app.recording!.pulse!;
+    expect(pulse.periodMs).toBeCloseTo(200);
+    expect(pulse.firstBeatAt - performance.now()).toBeLessThan(100 + 5);
     await sleep(STOP_GUARD_MS);
     await app.stopRecording();
 

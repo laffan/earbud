@@ -9,6 +9,7 @@ import type { CaptureEngine } from '../capture/types';
 import { analysisPathFor, type Sketch, type SketchLibrary } from '../library/types';
 import { notesToMidi } from '../music/midi';
 import { summarize } from '../music/summary';
+import { confidentTempo } from '../music/tempo';
 import { fileUrl, errorMessage } from '../platform/tauri';
 import { TranscriptionAbortedError, type TranscriptionEngine } from '../transcription/types';
 import { WATCH_CAPTURE_BACKEND } from '../watch/types';
@@ -143,6 +144,14 @@ export class ProcessingQueue {
       });
       await library.writeFile(id, 'midi', notesToMidi(notes, { title: detail.title || undefined }));
       onSketchChanged(detail);
+
+      // 4. The sketch's tempo, from its first recording (unless set by hand).
+      if (detail.parentId === null && detail.tempoSource !== 'user') {
+        const tempo = confidentTempo(notes);
+        if (tempo) {
+          onSketchChanged(await library.setTempo(id, tempo.bpm, Math.round(tempo.beat * 1000), 'detected'));
+        }
+      }
     } catch (error) {
       if (error instanceof TranscriptionAbortedError) {
         onSketchChanged(await library.setTranscriptionStatus(id, 'pending').catch(() => sketch));

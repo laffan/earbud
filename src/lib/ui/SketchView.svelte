@@ -1,14 +1,18 @@
 <script lang="ts">
   /**
    * An open sketch: its tracks (each a piano roll with its waveform), an
-   * "Add track" button, the video, text notes and details, and the
-   * transport fixed to the bottom of the screen. All tracks play together
-   * on one timeline (`TrackMixer`), honouring mute and solo.
+   * "Add track" button, the video, text notes and details. The top bar
+   * (title, timecode, tempo) and the transport (play, what plays, loop)
+   * stay on screen. All tracks play together on one timeline
+   * (`TrackMixer`), honouring mute and solo; each can play its recording,
+   * its notes or both ("Separate").
    */
   import { onDestroy, onMount, untrack } from 'svelte';
-  import type { Sketch, SketchDetail, Track, UpdateTrackArgs } from '../library/types';
+  import { ClickTrack } from '../capture/countIn';
+  import type { Sketch, SketchDetail, TempoSource, Track, UpdateTrackArgs } from '../library/types';
   import { notesEndTime } from '../music/notes';
   import { NoteSynth } from '../music/synth';
+  import { confidentTempo, nearestBeat, nextBeat } from '../music/tempo';
   import { TrackMixer, type MixerTrack } from '../playback/mixer';
   import { TakeSource } from '../playback/takeSource.svelte';
   import { errorMessage } from '../platform/tauri';
@@ -17,7 +21,8 @@
   import Icon from './Icon.svelte';
   import { RollViewport } from './rollViewport.svelte';
   import Sheet from './Sheet.svelte';
-  import TrackPanel from './TrackPanel.svelte';
+  import TempoSheet from './TempoSheet.svelte';
+  import TrackPanel, { type ListenMode } from './TrackPanel.svelte';
   import { displayTitle, formatClock, formatDate, formatDuration, formatTimeOfDay } from './format';
 
   let { id }: { id: string } = $props();
@@ -56,7 +61,10 @@
   let currentTime = $state(0);
   let playing = $state(false);
   let rate = $state(1);
-  let listen = $state<'recording' | 'notes' | 'both'>('recording');
+  /** What plays: every track's recording, notes or both, or each track its own ("separate"). */
+  let listen = $state<ListenMode | 'separate'>('recording');
+  /** Each track's choice when `listen` is "separate". */
+  let trackListen = $state<Record<string, ListenMode>>({});
   let buffering = $state(false);
   /** Playback crop range in seconds (null = whole sketch). */
   let cropStart = $state<number | null>(null);
@@ -70,6 +78,27 @@
   const view = new RollViewport();
   const unlocked = new WeakSet<HTMLMediaElement>();
 
+  /** What a track plays. */
+  const modeOf = (track: Track): ListenMode => (listen === 'separate' ? (trackListen[track.id] ?? 'recording') : listen);
+  /** Its recording is heard. */
+  const takeHeard = (track: Track) => audible(track) && track.id !== recordingInto && modeOf(track) !== 'notes';
+  /** Its notes are played by the synth. */
+  const notesHeard = (track: Track) => audible(track) && track.id !== recordingInto && modeOf(track) !== 'recording';
+
+  // ------------------------------------------------------------ tempo
+  let tempo = $state<{ bpm: number | null; beat: number | null; source: TempoSource | null }>({
+    bpm: null,
+    beat: null,
+    source: null,
+  });
+  let showTempo = $state(false);
+  let tempoTimer: number | undefined;
+  /** A click on the beat while the tempo sheet is open, to set the tempo by ear. */
+  const click = new ClickTrack();
+  $effect(() => {
+    click.setGrid(tempo.bpm, tempo.beat);
+  });
+
   /** One clock for every track, the waveforms, the piano rolls and the synth. */
   const mixer = new TrackMixer({
     onState: (state) => {
@@ -77,15 +106,19 @@
       buffering = state.buffering;
       if (state.playing !== playing) {
         playing = state.playing;
-        if (playing && listen !== 'recording') void synth.start(state.position, rate);
-        if (!playing) synth.stop();
+        if (playing && synthOn) void synth.start(state.position, rate);
+        if (!playing) {
+          synth.stop();
+          click.stop();
+        } else if (showTempo) click.start();
       }
     },
     onFrame: (position, playbackRate) => {
-      if (listen !== 'recording') synth.tick(position, playbackRate);
+      if (synthOn) synth.tick(position, playbackRate);
+      if (showTempo) click.tick(position, playbackRate);
     },
     onJump: (position) => {
-      if (listen !== 'recording') void synth.start(position, rate);
+      if (synthOn) void synth.start(position, rate);
     },
     onError: (message) => app.toast(message, 'error'),
     // WebKit can play a file URL it cannot seek in; an in-memory copy can.
@@ -129,7 +162,7 @@
       media: mediaEls[take.id] ?? null,
       offset: take.offsetMs / 1000,
       duration: mediaDurations[take.id] || (take.durationMs ?? 0) / 1000 || notesEndTime(takeNotes[take.id] ?? []),
-      audible: audible(track) && track.id !== recordingInto,
+      audible: takeHeard(track),
     })),
   );
   $effect(() => {
@@ -150,10 +183,11 @@
     return end;
   });
 
-  /** The notes the synth plays: every audible track's, on the sketch's timeline. */
+  /** The notes the synth plays: those of the tracks whose notes are heard, on the sketch's timeline. */
+  const synthOn = $derived(playable.some((e) => notesHeard(e.track)));
   const mixedNotes = $derived(
     playable.flatMap(({ track, take }) => {
-      if (!audible(track) || track.id === recordingInto) return [];
+      if (!notesHeard(track)) return [];
       const notes = takeNotes[take.id] ?? [];
       const offset = take.offsetMs / 1000;
       if (offset === 0) return notes;
@@ -177,7 +211,16 @@
     mixer.setLoop(loopPlayback && recordingInto === undefined);
   });
   $effect(() => {
-    mixer.setSilent(listen === 'notes');
+    // Notes switched on or off while playing.
+    const on = synthOn;
+    untrack(() => {
+      if (!on) synth.stop();
+      else if (playing) void synth.start(currentTime, rate);
+    });
+  });
+  $effect(() => {
+    // "Separate" needs several tracks; with one, keep what it played.
+    if (listen === 'separate' && tracks.length < 2) listen = (tracks[0] && trackListen[tracks[0].id]) || 'recording';
   });
 
   // --------------------------------------------------------------- ui
@@ -199,6 +242,11 @@
       detail = d;
       title = d.title;
       textNotes = d.textNotes;
+      tempo = {
+        bpm: d.tempoBpm,
+        beat: d.beatMs !== null ? d.beatMs / 1000 : null,
+        source: d.tempoSource,
+      };
       cropStart = d.cropStartMs !== null ? d.cropStartMs / 1000 : null;
       cropEnd = d.cropEndMs !== null ? d.cropEndMs / 1000 : null;
     } catch (error) {
@@ -209,7 +257,12 @@
   /** Pick up new tracks and takes (the panels reload their own notes). */
   async function refresh() {
     try {
-      detail = await app.library.get(id);
+      const d = await app.library.get(id);
+      detail = d;
+      // A tempo found after transcribing arrives here; one being edited stays.
+      if (tempoTimer === undefined) {
+        tempo = { bpm: d.tempoBpm, beat: d.beatMs !== null ? d.beatMs / 1000 : null, source: d.tempoSource };
+      }
     } catch {
       // deleted
     }
@@ -235,8 +288,10 @@
   onDestroy(() => {
     window.clearTimeout(notesTimer);
     if (detail && textNotes !== detail.textNotes) void app.saveNotesText(id, textNotes);
+    if (tempoTimer !== undefined) void saveTempo();
     mixer.dispose();
     synth.dispose();
+    click.dispose();
     // Release the media pipelines (and WebKit's audio session) right away
     // instead of waiting for garbage collection.
     for (const el of Object.values(mediaEls)) {
@@ -294,16 +349,96 @@
     mixer.seek(t);
   }
 
-  function cycleRate() {
-    rate = rate === 1 ? 0.75 : rate === 0.75 ? 0.5 : 1;
+  function setRate(next: number) {
+    rate = next;
     mixer.setRate(rate);
-    if (playing && listen !== 'recording') void synth.start(currentTime, rate);
+    if (playing && synthOn) void synth.start(currentTime, rate);
   }
 
   function setListen(mode: typeof listen) {
+    if (mode === 'separate' && listen !== 'separate') {
+      // Each track starts from what everything played.
+      const from = listen;
+      trackListen = Object.fromEntries(tracks.map((t) => [t.id, from]));
+    }
     listen = mode;
-    if (mode === 'recording') synth.stop();
-    else if (playing) void synth.start(currentTime, rate);
+  }
+
+  function setTrackListen(track: Track, mode: ListenMode) {
+    trackListen = { ...trackListen, [track.id]: mode };
+  }
+
+  // ------------------------------------------------------------ tempo
+
+  /** The first track's notes (its take's own time) and where they sit on the timeline. */
+  function firstTrackNotes(): { notes: PianoNote[]; offset: number } | null {
+    const first = tracks[0] ? takeOf(tracks[0]) : null;
+    const notes = first ? takeNotes[first.id] : undefined;
+    return first && notes?.length ? { notes, offset: first.offsetMs / 1000 } : null;
+  }
+
+  function setTempo(bpm: number | null, beat: number | null, source: TempoSource | null) {
+    tempo = { bpm, beat, source };
+    window.clearTimeout(tempoTimer);
+    tempoTimer = window.setTimeout(() => void saveTempo(), 500);
+  }
+
+  async function saveTempo() {
+    window.clearTimeout(tempoTimer);
+    tempoTimer = undefined;
+    try {
+      const { bpm, beat, source } = tempo;
+      app.upsert(await app.library.setTempo(id, bpm, bpm !== null && beat !== null ? Math.round(beat * 1000) : null, source));
+    } catch (error) {
+      app.toast(`Could not save the tempo: ${errorMessage(error)}`, 'error');
+    }
+  }
+
+  /**
+   * A tempo chosen by hand. The beat nearest the playhead stays where it is
+   * (so the click stays on the music being listened to); a tapped tempo puts
+   * a beat at the playhead (the last tap).
+   */
+  function setTempoByHand(bpm: number, tapped = false) {
+    let beat: number;
+    if (tapped && playing) beat = currentTime;
+    else if (tempo.bpm !== null && tempo.beat !== null) beat = nearestBeat(currentTime, tempo.bpm, tempo.beat);
+    else beat = currentTime;
+    setTempo(bpm, beat, 'user');
+  }
+
+  /** Detect the tempo from the first track's notes; false if there is no steady one. */
+  function detectTempo(source: TempoSource = 'detected'): boolean {
+    const first = firstTrackNotes();
+    const found = first ? confidentTempo(first.notes) : null;
+    if (!found || !first) return false;
+    setTempo(found.bpm, found.beat + first.offset, source);
+    return true;
+  }
+
+  // Older sketches have no tempo yet: try once their first track's notes are in.
+  let triedDetecting = false;
+  $effect(() => {
+    if (triedDetecting || !detail || tempo.bpm !== null || !firstTrackNotes()) return;
+    triedDetecting = true;
+    untrack(() => detectTempo());
+  });
+
+  function openTempo() {
+    showTempo = true;
+    if (playing) click.start();
+  }
+
+  function closeTempo() {
+    showTempo = false;
+    click.stop();
+    if (tempoTimer !== undefined) void saveTempo();
+  }
+
+  /** Play from the tempo sheet: the click starts in this tap (iOS starts audio only in a gesture). */
+  function togglePlayWithClick() {
+    if (!playing) click.start();
+    togglePlay();
   }
 
   // ------------------------------------------------------------ crop
@@ -372,14 +507,19 @@
   /**
    * Where the other tracks start while a take is recorded: the playhead,
    * but not before the first track's downbeat (its count-in is silence),
-   * and from the top when the playhead is at the end.
+   * from the top when the playhead is at the end, and on a beat when the
+   * sketch has a tempo (so the count-in leads into it).
    */
   function takeStart(): number {
     const first = tracks[0] ? takeOf(tracks[0]) : null;
     const downbeat = first?.countInMs != null ? Math.max(0, (first.offsetMs + first.countInMs) / 1000) : 0;
     let from = Math.max(currentTime, downbeat);
     if (from >= duration - 0.25) from = Math.min(downbeat, Math.max(0, duration - 0.25));
-    return from;
+    if (tempo.bpm !== null && tempo.beat !== null) {
+      const onBeat = nextBeat(from - 0.02, tempo.bpm, tempo.beat);
+      if (onBeat < duration) from = onBeat;
+    }
+    return Math.max(0, from);
   }
 
   /** Record a new take for `trackId`, or a new track (null), with the other tracks playing. */
@@ -391,11 +531,14 @@
     mixer.pause();
     const from = takeStart();
     recordingInto = trackId;
+    // The take is recorded in real time: the others play at full speed meanwhile.
+    if (rate !== 1) mixer.setRate(1);
     void app.startRecording({
       take: {
         sketchId: id,
         trackId,
         label,
+        tempo: tempo.bpm !== null ? { bpm: tempo.bpm, beat: tempo.beat ?? from } : undefined,
         onDownbeat: () => {
           mixer.seek(from);
           void mixer.play();
@@ -403,6 +546,7 @@
         },
         onEnd: () => {
           mixer.pause();
+          mixer.setRate(rate);
           recordingInto = undefined;
           armedTrack = null;
         },
@@ -488,6 +632,7 @@
 
 <div class="sketch-view">
   <header class="bar">
+    <div class="bar-row">
     <button class="icon-button" onclick={() => app.goHome()} aria-label="Back to sketches">
       <Icon name="back" />
     </button>
@@ -513,6 +658,25 @@
             <button role="menuitem" class="danger" onclick={deleteSketch}><Icon name="trash" size={18} /> Delete sketch</button>
           </div>
         {/if}
+      </div>
+    {/if}
+    </div>
+    {#if detail}
+      <!-- Timecode and tempo stay on screen with the title. -->
+      <div class="bar-row status">
+        <span class="time tabular"
+          >{formatClock(currentTime)}<span class="dim"> / {formatClock(duration)}</span
+          >{#if buffering}<span class="buffering" aria-live="polite"> loading…</span>{/if}{#if rate !== 1}<span
+              class="rate-note"
+            >
+              · {rate}×</span
+            >{/if}</span
+        >
+        <span class="spacer"></span>
+        <button class="tempo-button tabular" onclick={openTempo} aria-label="Tempo{tempo.bpm !== null ? ` ${Math.round(tempo.bpm)} BPM` : ''}">
+          <span class="note" aria-hidden="true">♩</span>
+          {#if tempo.bpm !== null}{Math.round(tempo.bpm)}<span class="unit">BPM</span>{:else}<span class="unit">Set tempo</span>{/if}
+        </button>
       </div>
     {/if}
   </header>
@@ -550,6 +714,8 @@
               ondelete={() => deleteTrack(track)}
               ondeletetake={deleteTake}
               onnotes={(notes) => (takeNotes = { ...takeNotes, [take.id]: notes })}
+              listenMode={listen === 'separate' ? modeOf(track) : null}
+              onlisten={(mode) => setTrackListen(track, mode)}
             />
           {/if}
         {/each}
@@ -649,12 +815,8 @@
               <span class="dot"></span>
             </button>
           {/if}
-          <span class="time tabular"
-            >{formatClock(currentTime)}<span class="dim"> / {formatClock(duration)}</span
-            >{#if buffering}<span class="buffering" aria-live="polite"> loading…</span>{/if}</span
-          >
           <span class="spacer"></span>
-          <div class="segmented" role="group" aria-label="Listen to">
+          <div class="segmented listen" role="group" aria-label="Listen to">
             <button aria-pressed={listen === 'recording'} onclick={() => setListen('recording')}>Take</button>
             <button aria-pressed={listen === 'notes'} onclick={() => setListen('notes')} disabled={noteCount === 0}
               >Notes</button
@@ -662,7 +824,13 @@
             <button aria-pressed={listen === 'both'} onclick={() => setListen('both')} disabled={noteCount === 0}
               >Both</button
             >
+            {#if tracks.length > 1}
+              <button aria-pressed={listen === 'separate'} onclick={() => setListen('separate')} title="Choose for each track"
+                >Separate</button
+              >
+            {/if}
           </div>
+          <span class="spacer"></span>
           <button
             class="icon-button loop"
             class:on={loopPlayback}
@@ -673,12 +841,27 @@
           >
             <Icon name="loop" size={18} />
           </button>
-          <button class="pill-button rate tabular" onclick={cycleRate} aria-label="Playback speed">{rate}×</button>
         </div>
       </div>
     </div>
   {/if}
 </div>
+
+{#if showTempo}
+  <TempoSheet
+    bpm={tempo.bpm}
+    source={tempo.source}
+    {playing}
+    {rate}
+    canDetect={!!firstTrackNotes()}
+    onchange={setTempoByHand}
+    onclear={() => setTempo(null, null, null)}
+    ondetect={() => detectTempo()}
+    ontoggleplay={togglePlayWithClick}
+    onrate={setRate}
+    onclose={closeTempo}
+  />
+{/if}
 
 {#if confirmation}
   {@const c = confirmation}
@@ -715,14 +898,47 @@
     position: sticky;
     top: 0;
     z-index: 10;
-    display: flex;
-    align-items: center;
-    gap: 2px;
-    padding: calc(var(--safe-top) + 6px) calc(var(--safe-right) + 6px) 6px calc(var(--safe-left) + 6px);
+    display: grid;
+    padding: calc(var(--safe-top) + 6px) calc(var(--safe-right) + 6px) 4px calc(var(--safe-left) + 6px);
     background: color-mix(in srgb, var(--paper) 94%, transparent);
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
     border-bottom: 1px solid var(--rule);
+  }
+  .bar-row {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+  }
+  .bar-row.status {
+    gap: 8px;
+    padding: 0 6px 2px 12px;
+  }
+  .tempo-button {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    min-height: 32px;
+    padding: 4px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--rule-strong);
+    font-weight: 700;
+    font-size: 0.95rem;
+  }
+  .tempo-button .note {
+    font-weight: 400;
+    color: var(--ink-3);
+  }
+  .tempo-button .unit {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--ink-3);
+    letter-spacing: 0.04em;
+  }
+  .rate-note {
+    color: var(--accent);
+    font-size: 0.85rem;
   }
   .title-input {
     flex: 1;
@@ -867,7 +1083,8 @@
     opacity: 0.5;
   }
   .time {
-    font-size: 0.95rem;
+    font-size: 1.05rem;
+    font-weight: 600;
     white-space: nowrap;
   }
   .dim {
@@ -879,11 +1096,6 @@
   }
   .spacer {
     flex: 1;
-  }
-  .rate {
-    min-width: 46px;
-    padding: 0 8px;
-    justify-content: center;
   }
   .loop {
     width: 36px;
@@ -915,12 +1127,8 @@
       gap: 4px;
     }
     .transport .segmented button {
-      padding: 0 7px;
+      padding: 0 8px;
       font-size: 0.8rem;
-    }
-    .rate {
-      min-width: 40px;
-      padding: 0 6px;
     }
   }
 
@@ -1020,12 +1228,6 @@
   .confirm-actions {
     display: flex;
     gap: 8px;
-  }
-
-  @media (max-width: 430px) {
-    .time .dim {
-      display: none;
-    }
   }
 
   /* Wide screens: the take and the notes side by side under the tracks. */

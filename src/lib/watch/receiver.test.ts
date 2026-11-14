@@ -43,6 +43,9 @@ function sketch(id: string, createdAt: number): Sketch {
     trackId: null,
     offsetMs: 0,
     countInMs: null,
+    tempoBpm: null,
+    beatMs: null,
+    tempoSource: null,
   };
 }
 

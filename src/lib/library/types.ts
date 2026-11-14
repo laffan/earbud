@@ -42,7 +42,15 @@ export interface Sketch {
   offsetMs: number;
   /** Where the count-in ended in the recording (ms), if there was one. */
   countInMs: number | null;
+  /** The sketch's tempo (beats per minute), if known. */
+  tempoBpm: number | null;
+  /** Where one of its beats falls on the sketch's timeline (ms). */
+  beatMs: number | null;
+  tempoSource: TempoSource | null;
 }
+
+/** Where a sketch's tempo came from. */
+export type TempoSource = 'detected' | 'count-in' | 'user';
 
 /** One track of a sketch: a lane of takes, one of which plays. */
 export interface Track {
@@ -178,6 +186,8 @@ export interface SketchLibrary {
   removeTake(id: string): Promise<void>;
   /** Set or clear (nulls) the playback crop range. The recording is untouched. */
   setCrop(id: string, startMs: number | null, endMs: number | null): Promise<Sketch>;
+  /** Set (or clear, with a null tempo) the sketch's tempo and where one of its beats falls. */
+  setTempo(id: string, bpm: number | null, beatMs: number | null, source: TempoSource | null): Promise<Sketch>;
   setTranscriptionStatus(id: string, status: TranscriptionStatus, error?: string | null): Promise<Sketch>;
   saveTranscription(args: SaveTranscriptionArgs): Promise<SketchDetail>;
   saveEdits(args: SaveEditsArgs): Promise<SketchDetail>;

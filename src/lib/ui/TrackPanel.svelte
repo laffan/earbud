@@ -1,9 +1,15 @@
+<script lang="ts" module>
+  /** What a track plays: its recording, its notes (the synth), or both. */
+  export type ListenMode = 'recording' | 'notes' | 'both';
+</script>
+
 <script lang="ts">
   /**
-   * One track of a sketch: a title bar (collapse, name, current chord,
-   * mute / solo / record-a-new-take toggles, menu), then the piano roll
-   * with the waveform attached underneath, or, collapsed, a short strip of
-   * the notes. Editing the notes of the take that plays happens here.
+   * One track of a sketch: a title bar (collapse, name, mute / solo /
+   * record-a-new-take toggles, menu), then the piano roll with the waveform
+   * attached underneath, or, collapsed, a short strip of the notes. With
+   * "Separate" listening, its own Take / Notes / Both choice below. Editing
+   * the notes of the take that plays happens here.
    */
   import { onDestroy, onMount, untrack } from 'svelte';
   import type { Sketch, SketchDetail, Track, UpdateTrackArgs } from '../library/types';
@@ -54,6 +60,9 @@
     ondeletetake: (takeId: string) => void;
     /** The notes changed (loaded, transcribed or edited), in the take's own time. */
     onnotes: (notes: PianoNote[]) => void;
+    /** This track's own Take / Notes / Both choice ("Separate" listening), or null. */
+    listenMode?: ListenMode | null;
+    onlisten?: (mode: ListenMode) => void;
   }
 
   let {
@@ -79,6 +88,8 @@
     ondelete,
     ondeletetake,
     onnotes,
+    listenMode = null,
+    onlisten,
   }: Props = $props();
 
   // ------------------------------------------------------------ data
@@ -116,8 +127,6 @@
   const transcribing = $derived(!!job || live.transcriptionStatus === 'running');
   const hasTranscription = $derived(!!detail?.transcription);
   const chords = $derived(detectChords(notes));
-  const takeTime = $derived(currentTime - offset);
-  const currentChord = $derived(chords.find((c) => takeTime >= c.startTime && takeTime < c.endTime));
   const collapsed = $derived(track.collapsed);
   const takeNumber = $derived(track.takes.findIndex((t) => t.id === take.id) + 1);
   const label = $derived(track.name || `Track ${track.position + 1}`);
@@ -252,7 +261,7 @@
   }
 
   function addNote() {
-    const at = Math.max(0, takeTime);
+    const at = Math.max(0, currentTime - offset);
     const sounding = notes.filter((n) => n.startTime <= at && n.endTime > at);
     const pitch = sounding.length ? Math.max(...sounding.map((n) => n.pitch)) + 2 : 60;
     const n = normalizeNote({ pitch, startTime: at, endTime: at + 0.5, velocity: 80, confidence: 1 });
@@ -434,7 +443,6 @@
       onkeydown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
     />
     {#if track.takes.length > 1}<span class="take-chip tabular" title="Take {takeNumber} of {track.takes.length}">take {takeNumber}</span>{/if}
-    <span class="chord-now serif" aria-live="polite">{currentChord?.symbol ?? ''}</span>
     {#if collapsed && transcribing}<span class="mini-status">{Math.round((job?.fraction ?? 0) * 100)}%</span>{/if}
     <span class="spacer"></span>
     <div class="toggles" role="group" aria-label="{label} controls">
@@ -628,6 +636,19 @@
       />
     </div>
   {/if}
+
+  {#if listenMode}
+    <!-- "Separate" listening: this track's own choice, attached under it. -->
+    <div class="segmented track-listen" role="group" aria-label="{label} plays">
+      <button aria-pressed={listenMode === 'recording'} onclick={() => onlisten?.('recording')}>Take</button>
+      <button aria-pressed={listenMode === 'notes'} onclick={() => onlisten?.('notes')} disabled={notes.length === 0}
+        >Notes</button
+      >
+      <button aria-pressed={listenMode === 'both'} onclick={() => onlisten?.('both')} disabled={notes.length === 0}
+        >Both</button
+      >
+    </div>
+  {/if}
 </section>
 
 {#if showRetranscribe}
@@ -714,15 +735,14 @@
     border-radius: 999px;
     border: 1px solid var(--rule);
   }
-  .chord-now {
-    font-size: 1.15rem;
-    font-weight: 600;
-    color: var(--chord);
-    min-width: 2ch;
-    padding-left: 4px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  .track-listen {
+    justify-self: start;
+    margin-top: -2px;
+  }
+  .track-listen button {
+    min-height: 28px;
+    padding: 0 12px;
+    font-size: 0.8rem;
   }
   .mini-status {
     font-size: 0.75rem;
@@ -932,13 +952,15 @@
     display: grid;
     place-items: center;
     color: var(--ink-2);
-    background: var(--paper-raised);
-    border: 1px solid var(--rule);
+    background: transparent;
+    border: none;
+  }
+  .pencil:hover:not(:disabled) {
+    background: var(--paper-sunk);
   }
   .pencil.on {
     color: var(--paper);
     background: var(--accent);
-    border-color: var(--accent);
   }
   .pencil:disabled {
     opacity: 0.4;

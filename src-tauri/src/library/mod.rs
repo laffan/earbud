@@ -466,6 +466,9 @@ impl Library {
             track_id: row.get("track_id")?,
             offset_ms: row.get("offset_ms")?,
             count_in_ms: row.get("count_in_ms")?,
+            tempo_bpm: row.get("tempo_bpm")?,
+            beat_ms: row.get("beat_ms")?,
+            tempo_source: row.get("tempo_source")?,
             id,
         })
     }
@@ -620,6 +623,37 @@ impl Library {
         let changed = self.conn().execute(
             "UPDATE sketches SET crop_start_ms = ?2, crop_end_ms = ?3, updated_at = ?4 WHERE id = ?1",
             params![id, start_ms, end_ms, now_ms()],
+        )?;
+        if changed == 0 {
+            return Err(Error::NotFound(id.to_string()));
+        }
+        Ok(self.get(id)?.sketch)
+    }
+
+    /// Set (or clear, with `None`) the sketch's tempo and the position of one of its beats.
+    pub fn set_tempo(
+        &self,
+        id: &str,
+        bpm: Option<f64>,
+        beat_ms: Option<i64>,
+        source: Option<&str>,
+    ) -> Result<Sketch> {
+        validate_id(id)?;
+        if let Some(bpm) = bpm {
+            if !bpm.is_finite() || !(20.0..=400.0).contains(&bpm) {
+                return Err(Error::Invalid(format!("tempo {bpm} is out of range")));
+            }
+        }
+        if let Some(source) = source {
+            if !matches!(source, "detected" | "count-in" | "user") {
+                return Err(Error::Invalid(format!("unknown tempo source '{source}'")));
+            }
+        }
+        let (beat_ms, source) = if bpm.is_some() { (beat_ms, source) } else { (None, None) };
+        let changed = self.conn().execute(
+            "UPDATE sketches SET tempo_bpm = ?2, beat_ms = ?3, tempo_source = ?4, updated_at = ?5
+              WHERE id = ?1",
+            params![id, bpm, beat_ms, source, now_ms()],
         )?;
         if changed == 0 {
             return Err(Error::NotFound(id.to_string()));

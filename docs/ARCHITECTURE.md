@@ -142,6 +142,13 @@ Pure TypeScript, no UI or platform dependencies, unit tested.
   a freshly created context retrigger the same note when switching to *Notes* mid-playback.
   `renderNotesToWav` renders the same voice in an `OfflineAudioContext` for the *Notes audio* export.
 - `notes.ts`: naming, normalization (used by the editor), ranges.
+- `tempo.ts`: tempo and beat from notes. Note starts within 50 ms are one onset, weighted by loudness and count.
+  Candidate beat periods (50–200 BPM) come from the autocorrelation of a 10 ms onset-strength signal, supported by
+  the repeat at twice the period and weighted towards moderate tempos (log-normal around 100 BPM, 0.9 octaves wide)
+  against double / half errors. Tempo (±4 %) and phase are then searched together for the grid the onsets fit best
+  (on beats fully, on half beats half). Confidence is the share of onset weight within 45 ms of a beat or half beat,
+  rescaled so that randomly placed notes score about 0: steady synthesized playing scores about 1, random notes
+  0.2–0.3, and under 0.5 counts as no tempo.
 
 ## 4. Sketch Library (`src-tauri/src/library`, `src/lib/library`)
 
@@ -168,6 +175,10 @@ Tables:
   edits); `edited_notes_json` (user corrections, nullable); `summary_json`.
 - `tracks` (schema v3): a sketch's tracks in order (`position`), each with a name, mute, solo, collapsed, and
   `take_id`, the take it plays.
+- Tempo (schema v4, on the sketch row): `tempo_bpm`, `beat_ms` (where one beat falls on the timeline) and
+  `tempo_source`: `count-in` (set when a new sketch is recorded with a count-in: its tempo, a beat on the
+  downbeat), `detected` (by `tempo.ts` from the first recording's notes after each transcription of it, replacing
+  `count-in` when confident) or `user` (never replaced). Sketches from before v4 get a detected tempo when opened.
 
 **Tracks and takes.** Every recording is a `sketches` row with its own folder, media, analysis audio and
 transcription, so capture, the processing queue, editing and export work on a take exactly as on a sketch. A
@@ -236,9 +247,18 @@ which makes the whole UI testable in Chromium.
   the listen mode (take / synthesized notes of the audible tracks / both), playback rate and crop. Recording into
   the sketch (*Add track*, or the armed track's record button) pauses playback, records with
   `app.startRecording({ take })`, and at the downbeat starts the other tracks from the playhead (not before the
-  first track's downbeat); the take is placed with `offset = playFrom − downbeat`. Crop and loop are off while
+  first track's downbeat, and on a beat when the sketch has a tempo); the take is placed with
+  `offset = playFrom − downbeat`. With a tempo, the count-in runs at it, and the recording screen flashes a dot on
+  the sketch's beats (worked out at the downbeat; nothing audible). Crop, loop and slowed playback are off while
   recording. On iOS a media element only plays sound after a `play()` inside a tap, so the play and record
   buttons give each follower element one (played and paused at once).
+  Listening is *Take*, *Notes*, *Both*, or, with several tracks, *Separate*: each track then has its own choice,
+  so a track's recording is muted in the mixer when it plays notes only, and the synth plays the notes of the
+  tracks set to *Notes* or *Both*.
+- `TempoSheet.svelte`: the tempo editor (typed value, − / +, slider, tap tempo, *Detect again*, playback speed).
+  While it is open and the sketch plays, `ClickTrack` (`src/lib/capture/countIn.ts`) ticks on the beat grid,
+  scheduled ahead on the audio clock from a smooth mapping of media time, so the tempo can be matched by ear. A
+  tempo changed by hand keeps the beat nearest the playhead in place; a tapped one puts a beat at the last tap.
 
 ## 6. Playback transport (`src/lib/playback/transport.ts`)
 

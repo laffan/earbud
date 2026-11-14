@@ -18,6 +18,25 @@
     recording.phase === 'recording' ? Math.max(recording.elapsedMs, now - recording.startedAt) : 0,
   );
   const counting = $derived(recording.phase === 'recording' && recording.countIn !== null);
+
+  /** Recording into a sketch with a tempo: a dot lights up on each of its beats. */
+  const BEAT_FLASH_MS = 120;
+  let beatOn = $state(false);
+  let beatFrame = 0;
+  $effect(() => {
+    const pulse = recording.phase === 'recording' && !counting ? recording.pulse : null;
+    if (!pulse) {
+      beatOn = false;
+      return;
+    }
+    const step = () => {
+      const since = performance.now() - pulse.firstBeatAt;
+      beatOn = since >= -5 && ((since % pulse.periodMs) + pulse.periodMs) % pulse.periodMs < BEAT_FLASH_MS;
+      beatFrame = requestAnimationFrame(step);
+    };
+    beatFrame = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(beatFrame);
+  });
   // Map -60…0 dBFS onto 0…1.
   const level = $derived(Math.max(0, Math.min(1, (recording.levelDb + 60) / 60)));
   const peak = $derived(Math.max(0, Math.min(1, (recording.peakDb + 60) / 60)));
@@ -82,6 +101,9 @@
   {/if}
 
   <div class="bottom">
+    {#if recording.pulse && !counting && recording.phase === 'recording'}
+      <span class="beat-dot" class:on={beatOn} aria-hidden="true"></span>
+    {/if}
     <button
       class="stop"
       onclick={() => app.stopRecording()}
@@ -252,6 +274,20 @@
     background: rgb(0 0 0 / 60%);
     color: #ffd27a;
     font-size: 0.9rem;
+  }
+  .beat-dot {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 2px solid currentColor;
+    opacity: 0.45;
+    transition: opacity 60ms linear;
+  }
+  .beat-dot.on {
+    background: var(--accent);
+    border-color: var(--accent);
+    opacity: 1;
+    transition: none;
   }
   .stop {
     width: 84px;

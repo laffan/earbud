@@ -85,6 +85,7 @@ pub fn run() {
             commands::delete_track,
             commands::delete_take,
             commands::set_crop,
+            commands::set_tempo,
             commands::set_transcription_status,
             commands::save_transcription,
             commands::save_edits,

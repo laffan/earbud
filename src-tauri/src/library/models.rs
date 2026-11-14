@@ -149,6 +149,12 @@ pub struct Sketch {
     pub offset_ms: i64,
     /// Where the count-in ended in the recording (milliseconds), if there was one.
     pub count_in_ms: Option<i64>,
+    /// The sketch's tempo in beats per minute, if known.
+    pub tempo_bpm: Option<f64>,
+    /// Where one beat falls on the sketch's timeline (milliseconds).
+    pub beat_ms: Option<i64>,
+    /// Where the tempo came from: `detected`, `count-in` or `user`.
+    pub tempo_source: Option<String>,
 }
 
 /// One track of a sketch: a lane of takes, of which one plays.

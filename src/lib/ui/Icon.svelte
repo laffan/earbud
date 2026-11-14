@@ -3,7 +3,7 @@
   type Name =
     | 'back' | 'more' | 'play' | 'pause' | 'settings' | 'share' | 'trash' | 'undo' | 'redo'
     | 'plus' | 'edit' | 'zoom-in' | 'zoom-out' | 'refresh' | 'close' | 'up' | 'down'
-    | 'left' | 'right' | 'check' | 'mic' | 'camera' | 'shorter' | 'longer' | 'import' | 'loop';
+    | 'left' | 'right' | 'check' | 'mic' | 'camera' | 'shorter' | 'longer' | 'import' | 'loop' | 'minus';
 
   let { name, size = 20, label }: { name: Name; size?: number; label?: string } = $props();
 </script>
@@ -31,6 +31,7 @@
   {:else if name === 'undo'}<path d="M9 14L4 9l5-5" /><path d="M4 9h10a6 6 0 0 1 0 12h-3" />
   {:else if name === 'redo'}<path d="M15 14l5-5-5-5" /><path d="M20 9H10a6 6 0 0 0 0 12h3" />
   {:else if name === 'plus'}<path d="M12 5v14M5 12h14" />
+  {:else if name === 'minus'}<path d="M5 12h14" />
   {:else if name === 'edit'}<path d="M4 20h4L19 9l-4-4L4 16z" /><path d="M14 6l4 4" />
   {:else if name === 'zoom-in'}<circle cx="11" cy="11" r="6" /><path d="M20 20l-4.5-4.5M8.5 11h5M11 8.5v5" />
   {:else if name === 'zoom-out'}<circle cx="11" cy="11" r="6" /><path d="M20 20l-4.5-4.5M8.5 11h5" />

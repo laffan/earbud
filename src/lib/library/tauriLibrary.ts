@@ -14,6 +14,7 @@ import type {
   Sketch,
   SketchDetail,
   SketchLibrary,
+  TempoSource,
   Track,
   TranscriptionStatus,
   UpdateSketchArgs,
@@ -58,6 +59,9 @@ export class TauriLibrary implements SketchLibrary {
   }
   setCrop(id: string, startMs: number | null, endMs: number | null) {
     return invoke<Sketch>('set_crop', { id, startMs, endMs });
+  }
+  setTempo(id: string, bpm: number | null, beatMs: number | null, source: TempoSource | null) {
+    return invoke<Sketch>('set_tempo', { id, bpm, beatMs, source });
   }
   setTranscriptionStatus(id: string, status: TranscriptionStatus, error: string | null = null) {
     return invoke<Sketch>('set_transcription_status', { id, status, error });

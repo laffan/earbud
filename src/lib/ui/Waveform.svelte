@@ -538,6 +538,13 @@
     border-radius: 2px 6px 6px 2px;
     margin-right: 6px;
   }
+  /* Attached under a piano roll: square at the top, so it reads as one block with the roll. */
+  .flush .handle.start .grip {
+    border-radius: 0 0 2px var(--radius-sm);
+  }
+  .flush .handle.end .grip {
+    border-radius: 0 0 var(--radius-sm) 2px;
+  }
   .grip {
     display: flex;
     align-items: center;

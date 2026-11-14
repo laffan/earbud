@@ -30,6 +30,7 @@ Built with Tauri 2, Svelte 5 + TypeScript, Rust + SQLite, Swift + AVFoundation (
 | Chord names, MIDI export | Done, unit tested |
 | Piano roll, synchronized playback, note editing | Done, tested end to end in Chromium and in the Linux desktop app |
 | Tracks (layered recordings in one sketch), takes, mute/solo, count-in | Done, tested in Chromium (fake camera/microphone) and the Linux desktop app; not yet run on an iPhone |
+| Tempo: detection from the first recording, editor with a click, beat-aligned takes | Done, detection unit tested on synthesized playing (not on real recordings yet) |
 | Titles, text notes, export/share | Done |
 | Apple Watch companion: record on the Watch, send to a paired device | Written; receiver tested over TCP, Watch and iOS Swift not yet compiled (see [watch-app/README.md](watch-app/README.md)) |
 | Core ML transcription backend, Apple Vision finger tracking, cloud processing | Deferred (interfaces in place) |
@@ -97,8 +98,8 @@ APPLE_DEVELOPMENT_TEAM=<your team id> npm run tauri ios dev -- --host
    playhead, lights the sounding keys and names the chords along the top, which you can tap to hear) with
    the waveform of its take attached underneath (tap or drag to scrub; **press and hold** to open a magnifier
    that shows the waveform close up and follows your finger). The video and your notes come after the tracks.
-   The transport stays at the bottom of the screen: play, the time, *Take*, *Notes* (a synth plays the
-   transcription) or *Both*, loop, and the speed (0.75× or 0.5×).
+   The top bar stays on screen with the title, the time and the sketch's tempo; the bottom bar has play, what
+   plays (*Take*, *Notes*, where a synth plays the transcription, or *Both*) and loop.
    Drag the bracket handles at either end of a waveform to **crop playback** to a passage (saved with the
    sketch; the recording itself is not trimmed), and turn on **loop** to repeat it.
 5. **Edit**: tap the pencil in the top-left corner of a piano roll. Tap a note to select it. A one-finger drag
@@ -116,16 +117,24 @@ APPLE_DEVELOPMENT_TEAM=<your team id> npm run tauri ios dev -- --host
    **●** toggle arms it to *record a new take*: a record button then appears next to play, and the new take
    replaces the one the track plays (the earlier takes are kept; the track menu ⋯ switches between them,
    deletes one, deletes the track, or *Line up* moves the take earlier or later in 20 ms steps if it does not
-   sit right). All tracks share one zoom and scroll.
-7. **Share**: the share button (or swiping a sketch left in the list) asks which files to include: the
+   sit right). All tracks share one zoom and scroll. With several tracks, *Separate* in the bottom bar gives
+   each track its own *Take / Notes / Both* choice, attached under it.
+7. **Tempo**: the ♩ value in the top bar is the sketch's tempo. It is detected from the first recording's notes
+   once they are transcribed (until then, a sketch recorded with a count-in has the count-in's tempo). Tap it
+   to change it: type a value, use − / +, drag the slider, or tap along; play the sketch from there and a click
+   sounds on the beat so you can match it by ear. *Detect again* re-reads the first track; the playback speed
+   (1×, 0.75×, 0.5×) is set there too. When you record another track, the count-in runs at the sketch's tempo,
+   the other tracks start on a beat, and a dot near the bottom of the recording screen flashes on each beat
+   (silently, so the microphone does not pick it up).
+8. **Share**: the share button (or swiping a sketch left in the list) asks which files to include: the
    **video** (original take), the **recorded audio** on its own, the **notes audio** (the transcription played by
    the built-in piano) and **MIDI**. Then it opens the iOS share sheet, or a folder picker on desktop. For a
    sketch with several tracks, the recorded audio and the notes audio are the tracks you hear mixed together
    (muted tracks left out), the MIDI file has one MIDI track per track, and the video is the take shown in the
    sketch.
-8. **Organise**: in the list, swipe a sketch left for *Share* / *Delete*; press and hold to select several, then
+9. **Organise**: in the list, swipe a sketch left for *Share* / *Delete*; press and hold to select several, then
    share or delete them together.
-9. **Apple Watch**: record on the Watch and the take arrives here as a sketch tagged *Apple Watch*. Pair once
+10. **Apple Watch**: record on the Watch and the take arrives here as a sketch tagged *Apple Watch*. Pair once
    with Settings → *Apple Watch* → *Pair Apple Watch*, which shows a code to type on the Watch; the Watch then
    shows which device it sends to. Setup and details: [watch-app/README.md](watch-app/README.md).
 
@@ -256,7 +265,10 @@ Linux; the header of `scripts/tauri-webdriver-smoke.mjs` explains the setup.
 - **Apple Watch**: Wi-Fi and Bluetooth delivery need Earbud open on the receiving device. watchOS may block the
   Watch's direct Wi-Fi connections (Apple TN3135); the Watch then falls back to Bluetooth or its paired iPhone.
   See [watch-app/README.md](watch-app/README.md).
-- No notation, quantization or tempo detection yet. MIDI is exported in real time (120 BPM header).
+- **Tempo detection** assumes a steady beat. It is tested on synthesized playing (steady, with up to 30 ms of
+  timing spread) and on random notes (rejected), not yet on real recordings. Rubato or free playing gets no
+  tempo (set one by hand), and a tempo can come out at double or half speed; the editor fixes both.
+- No notation or quantization yet. MIDI is exported in real time (120 BPM header).
 
 ## License
 

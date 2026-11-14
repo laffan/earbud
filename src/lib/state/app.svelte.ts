@@ -50,6 +50,11 @@ export interface TakeTarget {
   /** Shown while recording, e.g. "Track 2". */
   label: string;
   /**
+   * The sketch's tempo and one of its beats (seconds of sketch time): the
+   * count-in runs at this tempo, and a dot flashes on its beats while recording.
+   */
+  tempo?: { bpm: number; beat: number };
+  /**
    * The downbeat: start playing the other tracks and return where on the
    * sketch's timeline they started (seconds). The take is placed so that
    * its downbeat lines up with that point.
@@ -86,6 +91,8 @@ export interface RecordingState {
   playFrom: number | null;
   /** Recording a take into an open sketch (null: a new sketch). */
   take: { sketchId: string; trackId: string | null; label: string } | null;
+  /** The sketch's beat while recording a take into it: when one falls (performance.now ms) and how far apart. */
+  pulse: { firstBeatAt: number; periodMs: number } | null;
 }
 
 export interface Toast {
@@ -490,6 +497,7 @@ export class AppState {
       downbeatMs: null,
       playFrom: null,
       take: take ? { sketchId: take.sketchId, trackId: take.trackId, label: take.label } : null,
+      pulse: null,
     };
     this.lastLevel = null;
     this.queue.setPaused(true);
@@ -599,7 +607,8 @@ export class AppState {
       if (!this.metronome.audible) this.logCapture('count-in without sound (no running audio context)');
       const reached = await this.metronome.run({
         beats: COUNT_IN_BEATS,
-        bpm: this.settings.countInBpm,
+        // Into a sketch: at its tempo, so the take starts in time with it.
+        bpm: this.takeTarget?.tempo?.bpm ?? this.settings.countInBpm,
         signal: abort.signal,
         onBeat: (beat) => {
           if (attempt === this.attempt && this.recording?.countIn) this.recording.countIn.beat = beat;
@@ -612,12 +621,21 @@ export class AppState {
     const recording = this.recording;
     if (!recording || attempt !== this.attempt || recording.phase !== 'recording') return;
     recording.downbeatMs = Math.max(0, this.recordingElapsedMs());
+    const downbeatAt = performance.now();
     if (this.takeTarget?.onDownbeat) {
       try {
         recording.playFrom = this.takeTarget.onDownbeat();
       } catch (error) {
         this.logCapture(`could not start the other tracks: ${errorMessage(error)}`);
       }
+    }
+    const tempo = this.takeTarget?.tempo;
+    if (tempo && tempo.bpm > 0) {
+      // The sketch's beats from here on, on the clock the dot is drawn with.
+      const period = 60 / tempo.bpm;
+      const from = recording.playFrom ?? 0;
+      const next = tempo.beat + Math.ceil((from - tempo.beat - 1e-6) / period) * period;
+      recording.pulse = { firstBeatAt: downbeatAt + (next - from) * 1000, periodMs: period * 1000 };
     }
     this.logCapture(
       `downbeat at ${Math.round(recording.downbeatMs)} ms into the take` +
@@ -788,16 +806,21 @@ export class AppState {
       ? Math.round((recording?.playFrom ?? 0) * 1000 - (downbeatMs ?? 0))
       : undefined;
     let saved: Sketch | null = null;
+    const countedIn = recording?.countIn === null && downbeatMs !== null && this.settings.countIn;
     try {
-      const sketch = await this.library.finalize({
+      let sketch = await this.library.finalize({
         id,
         durationMs: Math.round(result.durationMs) || null,
         hasVideo: result.hasVideo,
         videoWidth: result.width ?? null,
         videoHeight: result.height ?? null,
         offsetMs,
-        countInMs: recording?.countIn === null && downbeatMs !== null && this.settings.countIn ? Math.round(downbeatMs) : null,
+        countInMs: countedIn ? Math.round(downbeatMs!) : null,
       });
+      if (!take && countedIn) {
+        // Until the notes say otherwise: the tempo it was counted in at, with a beat on the downbeat.
+        sketch = await this.library.setTempo(id, this.settings.countInBpm, Math.round(downbeatMs!), 'count-in');
+      }
       saved = sketch;
       this.logCapture(
         `saved ${Math.round(result.durationMs)} ms take${userStopped ? '' : ' (ended on its own)'}` +

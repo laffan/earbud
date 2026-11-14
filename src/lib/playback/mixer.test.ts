@@ -183,13 +183,14 @@ describe('TrackMixer', () => {
     expect(one.currentTime).toBeCloseTo(1);
   });
 
-  it('mutes tracks that are not audible, and everything when silent', () => {
+  it('mutes tracks that are not audible', () => {
     const one = new FakeMedia(10);
     const two = new FakeMedia(10);
     mixer.setTracks([track('1', one, 0, false), track('2', two)]);
     expect(one.muted).toBe(true);
     expect(two.muted).toBe(false);
-    mixer.setSilent(true);
+    mixer.setTracks([track('1', one), track('2', two, 0, false)]);
+    expect(one.muted).toBe(false);
     expect(two.muted).toBe(true);
   });
 

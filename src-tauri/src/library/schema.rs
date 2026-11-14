@@ -75,6 +75,14 @@ const MIGRATIONS: &[&str] = &[
         SELECT lower(hex(randomblob(16))), id, 0, 'Track 1', id, created_at FROM sketches;
     UPDATE sketches SET track_id = (SELECT t.id FROM tracks t WHERE t.take_id = sketches.id);
     "#,
+    // v4: the sketch's tempo (beats per minute), where one of its beats falls
+    // on the timeline (ms), and where the tempo came from: 'detected' from the
+    // first recording's notes, the 'count-in' it was recorded with, or 'user'.
+    r#"
+    ALTER TABLE sketches ADD COLUMN tempo_bpm REAL;
+    ALTER TABLE sketches ADD COLUMN beat_ms INTEGER;
+    ALTER TABLE sketches ADD COLUMN tempo_source TEXT;
+    "#,
 ];
 
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {

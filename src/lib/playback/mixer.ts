@@ -24,7 +24,7 @@ export interface MixerTrack {
   offset: number;
   /** Length of the take (seconds), used until the media reports its own. */
   duration: number;
-  /** Not muted (and soloed, when any track is). */
+  /** Its sound is heard (not muted, soloed when any track is, not replaced by its notes). */
   audible: boolean;
 }
 
@@ -96,7 +96,6 @@ export class TrackMixer {
   readonly transport: MediaTransport;
   private tracks: MixerTrack[] = [];
   private rate = 1;
-  private silent = false;
   private followers = new Map<MediaLike, FollowerState>();
   private readonly now: () => number;
 
@@ -182,12 +181,6 @@ export class TrackMixer {
     }
   }
 
-  /** Silence every track (the synthesized notes play instead). */
-  setSilent(silent: boolean) {
-    this.silent = silent;
-    this.follow(false);
-  }
-
   dispose() {
     this.transport.dispose();
     for (const t of this.tracks) t.media?.pause();
@@ -208,7 +201,7 @@ export class TrackMixer {
     for (const track of this.tracks) {
       const media = track.media;
       if (!media) continue;
-      setMuted(media, this.silent || !track.audible);
+      setMuted(media, !track.audible);
       if (media === clock) continue;
       let state = this.followers.get(media);
       if (!state) {

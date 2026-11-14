@@ -140,6 +140,8 @@ try {
       args: { id: take.id, durationMs: 3000, hasVideo: false, videoWidth: null, videoHeight: null, offsetMs: 1500, countInMs: 900 },
     });
     await invoke('update_track', { args: { id: take.trackId, name: 'Melody', muted: true } });
+    const tempo = await invoke('set_tempo', { id, bpm: 84, beatMs: 300, source: 'user' });
+    if (tempo.tempoBpm !== 84 || tempo.beatMs !== 300 || tempo.tempoSource !== 'user') throw new Error('tempo not stored');
     const detail = await invoke('get_sketch', { id });
     return detail.tracks.map((t) => ({ name: t.name, muted: t.muted, takes: t.takes.map((k) => [k.offsetMs, k.countInMs, k.parentId]) }));
   }, created.id);
@@ -172,6 +174,9 @@ try {
   if (media.tracks !== 2 || !media.second || media.second.readyState < 1 || !media.second.muted) {
     throw new Error('the second track did not load (muted)');
   }
+  const tempoShown = await run(async () => document.querySelector('.tempo-button')?.textContent.replace(/\s+/g, ' ').trim());
+  console.log('tempo', tempoShown);
+  if (!tempoShown?.includes('84')) throw new Error(`tempo not shown (${tempoShown})`);
   await screenshot('sketch');
 
   // 5. Export bundle (friendly-named hard links of the originals).

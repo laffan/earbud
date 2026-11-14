@@ -20,6 +20,7 @@ import type {
   Sketch,
   SketchDetail,
   SketchLibrary,
+  TempoSource,
   Track,
   Transcription,
   TranscriptionStatus,
@@ -136,6 +137,9 @@ export class MemoryLibrary implements SketchLibrary {
         trackId,
         offsetMs: 0,
         countInMs: null,
+        tempoBpm: null,
+        beatMs: null,
+        tempoSource: null,
       },
       transcription: null,
       chunks: [],
@@ -243,6 +247,15 @@ export class MemoryLibrary implements SketchLibrary {
     if (startMs !== null && endMs !== null && endMs - startMs < 100) throw new Error('crop range is too short');
     entry.sketch.cropStartMs = startMs;
     entry.sketch.cropEndMs = endMs;
+    return this.snapshot(entry);
+  }
+
+  async setTempo(id: string, bpm: number | null, beatMs: number | null, source: TempoSource | null): Promise<Sketch> {
+    const entry = this.entry(id);
+    if (bpm !== null && !(bpm >= 20 && bpm <= 400)) throw new Error(`tempo ${bpm} is out of range`);
+    entry.sketch.tempoBpm = bpm;
+    entry.sketch.beatMs = bpm === null ? null : beatMs;
+    entry.sketch.tempoSource = bpm === null ? null : source;
     return this.snapshot(entry);
   }
 

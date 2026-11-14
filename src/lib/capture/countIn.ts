@@ -59,6 +59,16 @@ export class Metronome {
     return this.ctx?.state === 'running';
   }
 
+  /** The audio clock (seconds), while it runs. */
+  get time(): number | null {
+    return this.ctx?.state === 'running' ? this.ctx.currentTime : null;
+  }
+
+  /** A tick at `when` on the audio clock. */
+  tickAt(when: number, accent = false) {
+    if (this.ctx) this.tick(this.ctx, when, accent);
+  }
+
   /**
    * Count `beats` beats at `bpm` and resolve at the downbeat that follows
    * them: true if it got there, false if `signal` aborted first.
@@ -123,5 +133,62 @@ export class Metronome {
     source.connect(filter).connect(gain).connect(ctx.destination);
     source.start(when);
     source.stop(when + 0.03);
+  }
+}
+
+/**
+ * Metronome ticks that follow playback (a media clock), on a grid of `bpm`
+ * through `beat` (seconds of sketch time). Scheduled a little ahead on the
+ * audio clock from a smooth mapping of media time to audio time, which is
+ * reset after a seek or when the two clocks disagree by more than 80 ms.
+ */
+export class ClickTrack {
+  private grid: { bpm: number; beat: number } | null = null;
+  private anchor: { media: number; ctx: number } | null = null;
+  private next = 0;
+  private active = false;
+
+  constructor(private readonly metronome = new Metronome()) {}
+
+  setGrid(bpm: number | null, beat: number | null) {
+    this.grid = bpm && bpm > 0 ? { bpm, beat: beat ?? 0 } : null;
+    this.anchor = null;
+  }
+
+  /** Begin following playback. Call from a tap the first time (iOS starts audio only then). */
+  start() {
+    this.metronome.prepare();
+    this.active = true;
+    this.anchor = null;
+  }
+
+  /** Every animation frame while playing. */
+  tick(position: number, rate: number) {
+    const now = this.metronome.time;
+    const grid = this.grid;
+    if (!this.active || now === null || !grid || rate <= 0) return;
+    const period = 60 / grid.bpm;
+    const predicted = this.anchor ? this.anchor.media + (now - this.anchor.ctx) * rate : NaN;
+    if (!this.anchor || !(Math.abs(predicted - position) <= 0.08)) {
+      this.anchor = { media: position, ctx: now + 0.03 };
+      this.next = grid.beat + Math.ceil((position - grid.beat) / period) * period;
+    }
+    const mediaNow = this.anchor.media + (now - this.anchor.ctx) * rate;
+    while (this.next < mediaNow + 0.15 * rate) {
+      const when = this.anchor.ctx + (this.next - this.anchor.media) / rate;
+      if (when >= now - 0.01) this.metronome.tickAt(Math.max(when, now));
+      this.next += period;
+    }
+  }
+
+  /** Playback paused or jumped: the next tick is worked out afresh. */
+  stop() {
+    this.active = false;
+    this.anchor = null;
+  }
+
+  dispose() {
+    this.stop();
+    this.metronome.close();
   }
 }

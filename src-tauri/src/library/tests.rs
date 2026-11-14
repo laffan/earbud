@@ -528,3 +528,25 @@ fn discarded_and_recovered_takes() {
     assert_eq!(detail.tracks[0].takes.len(), 2);
     assert_eq!(detail.tracks[0].take_id, sketch.id);
 }
+
+#[test]
+fn tempo_is_stored_and_validated() {
+    let (_tmp, lib) = lib();
+    let created = create(&lib);
+    fs::write(&created.media_path, b"movie").unwrap();
+    let sketch = finalize(&lib, &created.id);
+    assert_eq!((sketch.tempo_bpm, sketch.beat_ms, sketch.tempo_source), (None, None, None));
+
+    let sketch = lib.set_tempo(&created.id, Some(92.5), Some(410), Some("detected")).unwrap();
+    assert_eq!(sketch.tempo_bpm, Some(92.5));
+    assert_eq!(sketch.beat_ms, Some(410));
+    assert_eq!(sketch.tempo_source.as_deref(), Some("detected"));
+
+    assert!(lib.set_tempo(&created.id, Some(5.0), None, Some("user")).is_err());
+    assert!(lib.set_tempo(&created.id, Some(f64::NAN), None, Some("user")).is_err());
+    assert!(lib.set_tempo(&created.id, Some(100.0), None, Some("guess")).is_err());
+
+    // Clearing the tempo clears its beat and source too.
+    let cleared = lib.set_tempo(&created.id, None, Some(1), Some("user")).unwrap();
+    assert_eq!((cleared.tempo_bpm, cleared.beat_ms, cleared.tempo_source), (None, None, None));
+}

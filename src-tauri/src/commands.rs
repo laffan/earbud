@@ -70,6 +70,17 @@ pub async fn set_crop(
 }
 
 #[tauri::command]
+pub async fn set_tempo(
+    library: State<'_, Library>,
+    id: String,
+    bpm: Option<f64>,
+    beat_ms: Option<i64>,
+    source: Option<String>,
+) -> Result<Sketch> {
+    library.set_tempo(&id, bpm, beat_ms, source.as_deref())
+}
+
+#[tauri::command]
 pub async fn delete_sketch(library: State<'_, Library>, id: String) -> Result<()> {
     library.delete_sketch(&id)
 }
