@@ -5,7 +5,12 @@
   import { displayTitle, formatDuration, formatTimeOfDay } from './format';
   import { WATCH_CAPTURE_BACKEND } from '../watch/types';
 
-  let { sketch, job, selected = false }: { sketch: Sketch; job?: JobProgress; selected?: boolean } = $props();
+  let {
+    sketch,
+    job,
+    selected = false,
+    tracks = 1,
+  }: { sketch: Sketch; job?: JobProgress; selected?: boolean; tracks?: number } = $props();
 
   const status = $derived.by(() => {
     if (sketch.status === 'recording') return { label: 'Recording…', kind: 'accent' };
@@ -42,6 +47,7 @@
     {/if}
     <div class="chips">
       {#if status}<span class="chip {status.kind}">{status.label}</span>{/if}
+      {#if tracks > 1}<span class="chip">{tracks} tracks</span>{/if}
       {#if sketch.captureBackend === WATCH_CAPTURE_BACKEND}<span class="chip">Apple Watch</span>{/if}
       {#if sketch.recovered}<span class="chip">Recovered</span>{/if}
       {#if sketch.hasEdits}<span class="chip">Edited</span>{/if}

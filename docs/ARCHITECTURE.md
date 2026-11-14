@@ -45,6 +45,13 @@ Design rules:
   starts. If the app dies mid-take, `recover_sketches` on the next launch keeps whatever media reached disk.
 - **Recording never depends on transcription.** The capture flow finishes (`finalize_sketch`) before anything is
   queued for analysis.
+- **Count-in after the recorder starts.** Starting a camera can take a moment, so the three-beat count-in
+  (`src/lib/capture/countIn.ts`) runs once the recorder is going, and the take keeps it at its start. The
+  downbeat's position in the recording (`count_in_ms`) is taken from the recorder's own clock (the elapsed time in
+  its level events) and stored with the take. The ticks are 25 ms bursts of filtered noise: unpitched and far
+  shorter than Basic Pitch's minimum note length, so the microphone hearing them does not add notes. The audio
+  context is created inside the tap that starts recording (iOS only starts audio during a gesture); without it the
+  count-in is visual only. Stopping during the count-in discards the take.
 
 Native-only extra: `extractAnalysisAudio` decodes the recording's audio to a 22.05 kHz mono WAV with
 `AVAssetReader`. Backends without it fall back to Web Audio `decodeAudioData` plus a windowed-sinc resampler
@@ -159,6 +166,20 @@ Tables:
   transcription status (`pending` | `running` | `done` | `failed`) and error, capture backend, recovery flag.
 - `transcriptions`: engine id, version and parameters; `original_notes_json` (engine output, never overwritten by
   edits); `edited_notes_json` (user corrections, nullable); `summary_json`.
+- `tracks` (schema v3): a sketch's tracks in order (`position`), each with a name, mute, solo, collapsed, and
+  `take_id`, the take it plays.
+
+**Tracks and takes.** Every recording is a `sketches` row with its own folder, media, analysis audio and
+transcription, so capture, the processing queue, editing and export work on a take exactly as on a sketch. A
+sketch is a row without `parent_id`; it is also the first take of its first track. Further takes have
+`parent_id` (the sketch) and `track_id`, and `offset_ms`, where their time 0 lies on the sketch's timeline
+(negative when the recording started before it, during its count-in). `create_sketch` with a `parentId` reserves
+a take: with a `trackId` for that track (it starts playing once finalized, the earlier takes stay), without one
+on a new track (created at once, so a crash mid-take is recovered into it). `delete_take` makes the track play its
+latest other take and removes a track left empty; `delete_track` removes a track with its takes. The sketch's own
+recording and the track holding it cannot be deleted on their own (that is deleting the sketch), which keeps every
+sketch row backed by a recording. `list_sketches` returns takes too (the queue needs them); the home list shows
+rows without a parent. Migration v3 gives every existing sketch one track named *Track 1*.
 
 Guarantees, enforced in Rust and covered by `cargo test`:
 
@@ -194,11 +215,30 @@ which makes the whole UI testable in Chromium.
   browser (`touch-action: pan-y`) so the list scrolls natively. A 500 ms press (or right-click) enters selection mode.
 - `Waveform.svelte`: overview of the take drawn from peaks of the analysis WAV (`src/lib/audio/peaks.ts`, cached per
   file). Tap or drag to scrub. Outside the crop handles is dimmed; between them only the waveform is drawn.
-- `SketchView.svelte`: piano roll first, then chords, waveform and transport, then the video. The layout is a single
-  `minmax(0, 1fr)` grid column so wide children (the chord strip) scroll inside themselves instead of widening the
-  page. Playback uses a source fallback chain (`asset://` URL → in-memory blob for files under
-  200 MB → extracted analysis audio), the listen mode (take / synthesized notes / both), playback rate, the
-  editing toolbar with undo/redo and debounced autosave, notes and export.
+- `Waveform.svelte`: draws on the sketch's timeline, so a take that starts later is drawn further right. Pressing
+  and holding (350 ms without moving) opens a magnifier: a fixed-position canvas above the finger that draws the
+  waveform about eight times closer from `Peaks.detail` (150 buckets per second) and follows the finger,
+  including on the crop handles.
+- `PianoRoll.svelte` details for tracks: notes are in their take's time and the view in sketch time (`offset`);
+  rolls share a `RollViewport` (zoom, scroll, "user is scrolling") so all tracks stay lined up; `compact` draws a
+  collapsed track's strip. While editing with a finger, a drag scrolls as in review (the canvas keeps
+  `touch-action: pan-y`), and a press held for 300 ms turns the drag into a selection rectangle (on an unselected
+  note, picks the note up); a non-passive `touchmove` listener stops the page from scrolling during those drags.
+  A mouse drag selects at once.
+- `TrackPanel.svelte`: one track. Title bar (collapse, name, current chord, take number, M / S / ● toggles,
+  menu with the takes, transcribe again, revert, *Line up* nudge, delete), the pencil in the roll's top-left
+  corner, the editing toolbar above the roll, the waveform attached underneath. Editing state (notes, selection,
+  undo/redo, debounced autosave) lives here, per take.
+- `SketchView.svelte`: the tracks, *Add track*, the video, text notes and details, and the transport fixed to the
+  bottom. The take shown as video is the first track's take that has video (else the first track's), in a
+  `<video>`; the other tracks play through hidden `<audio>` elements. Each take's element has a source fallback
+  chain (`TakeSource`: `asset://` URL → in-memory blob for files under 200 MB → extracted analysis audio). Also
+  the listen mode (take / synthesized notes of the audible tracks / both), playback rate and crop. Recording into
+  the sketch (*Add track*, or the armed track's record button) pauses playback, records with
+  `app.startRecording({ take })`, and at the downbeat starts the other tracks from the playhead (not before the
+  first track's downbeat); the take is placed with `offset = playFrom − downbeat`. Crop and loop are off while
+  recording. On iOS a media element only plays sound after a `play()` inside a tap, so the play and record
+  buttons give each follower element one (played and paused at once).
 
 ## 6. Playback transport (`src/lib/playback/transport.ts`)
 
@@ -230,12 +270,31 @@ One `MediaTransport` owns "where are we, are we playing" for the video, waveform
 `src/lib/playback/transport.test.ts` drives it with a fake media element: seek coalescing, play after scrub,
 reload during playback, aborted play, crop stop/loop, and throttled animation frames.
 
+**Several tracks** (`src/lib/playback/mixer.ts`). The transport still follows one element at a time, now placed on
+the timeline by an offset. `TrackMixer` tells it which element covers a time (the first track in order whose span
+covers it); the transport switches on a seek, and hands over at the end of an element when another track goes
+on, taking an element that already plays near the position as it is. The other elements follow the clock every
+frame: started, paused and parked with it, and muted unless audible (mute, solo, or the synth-only listen mode).
+A follower is started ahead of the clock by the start-up lag it showed before (measured 0.6 s after each start),
+then kept in step by a rate correction of 2 % (4 % above 60 ms) from 18 ms of smoothed drift until it is back
+within 8 ms, changed at most every 0.4 s because every rate change makes the element reconfigure its output, or by
+seeking when the drift exceeds 0.3 s. In Chromium, a second track measured against the first over 10 s of playback
+was 15 ms off on average on the first start (48 ms at worst, while it learns its lag) and within 4 ms after a
+restart. WebKit has not been measured. With one track nothing of this runs. `mixer.test.ts` covers following
+with offsets, late-starting tracks, handover to a longer track, seeking into another track, mute and drift
+correction.
+
 ## 7. Export (`src/lib/export`)
 
 `prepareExports(ids, kinds)` handles one or many sketches. `kinds` is any of `recording` | `audio` | `notes-audio` | `midi`:
 
 - `midi` and `notes-audio` are rendered from the current notes (edits included) and written into the sketch folder
   (`transcription.mid`, `notes-audio.wav`).
+- A sketch with several tracks (or whose only track plays a later take): MIDI gets one MIDI track per track, notes
+  moved onto the sketch's timeline; *notes audio* renders the audible tracks; *audio* mixes the audible tracks'
+  recordings (each decoded at 44.1 kHz mono with Web Audio, or its analysis audio, placed at its offset, scaled
+  down only if the sum would clip) into `take-audio.wav`; the *recording* is the take the sketch view shows.
+  `prepare_export` picks whichever of `take-audio.m4a` / `.wav` is newer.
 - `audio` is the take's sound on its own. On iOS it comes from the native `exportAudio` command (`take-audio.m4a`).
   Elsewhere it is decoded with Web Audio at full quality (`take-audio.wav`), falling back to the analysis WAV.
 - Rust's `prepare_export(id, baseName, kinds)` then hard-links the chosen files into `exports/` under friendly

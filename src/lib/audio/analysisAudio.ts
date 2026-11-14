@@ -68,3 +68,41 @@ export async function decodeMediaToWav(mediaUrl: string): Promise<Uint8Array> {
     void ctx.close();
   }
 }
+
+/** Decode a recording's audio to mono samples at `rate` (for mixing several takes). */
+export async function decodeMediaToMono(mediaUrl: string, rate: number): Promise<Float32Array> {
+  const response = await fetch(mediaUrl);
+  if (!response.ok) throw new Error(`Could not read recording (${response.status})`);
+  const bytes = await response.arrayBuffer();
+  const Ctx: typeof AudioContext =
+    window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+  const ctx = new Ctx();
+  try {
+    const audio = await ctx.decodeAudioData(bytes);
+    const channels = Array.from({ length: audio.numberOfChannels }, (_, c) => audio.getChannelData(c));
+    return resample(downmix(channels), audio.sampleRate, rate);
+  } finally {
+    void ctx.close();
+  }
+}
+
+/**
+ * Sum mono parts placed at `offset` seconds (negative offsets start inside
+ * the part) into one track starting at 0; scaled down only if it would clip.
+ */
+export function mixParts(parts: { samples: Float32Array; offset: number }[], rate: number): Float32Array {
+  let length = 0;
+  for (const p of parts) length = Math.max(length, Math.round(p.offset * rate) + p.samples.length);
+  const out = new Float32Array(Math.max(0, length));
+  for (const p of parts) {
+    const shift = Math.round(p.offset * rate);
+    for (let i = Math.max(0, -shift); i < p.samples.length; i++) out[i + shift] += p.samples[i];
+  }
+  let peak = 0;
+  for (let i = 0; i < out.length; i++) peak = Math.max(peak, Math.abs(out[i]));
+  if (peak > 0.98) {
+    const gain = 0.98 / peak;
+    for (let i = 0; i < out.length; i++) out[i] *= gain;
+  }
+  return out;
+}

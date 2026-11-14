@@ -655,9 +655,11 @@
       <button
         class="pill-button {c.danger ? 'danger' : 'primary'}"
         onclick={async () => {
+          // Read before closing: `c` follows `confirmation`.
+          const run = c.run;
           confirmation = null;
           try {
-            await c.run();
+            await run();
           } catch (error) {
             app.toast(errorMessage(error), 'error');
           }

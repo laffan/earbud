@@ -4,7 +4,8 @@ Earbud is a small, offline-first app for capturing piano ideas. Tap **Record**,
 play, tap **Stop**. Earbud keeps the original audio and video, transcribes the
 notes and chords in the background, and files the sketch in a chronological
 notebook. You can then replay the take next to an interactive piano roll,
-correct the notes, add text notes, and export the recording and a MIDI file.
+correct the notes, layer more tracks over it, add text notes, and export the
+recording and a MIDI file.
 
 It is meant to feel like a notebook, not a digital audio workstation.
 
@@ -28,6 +29,7 @@ Built with Tauri 2, Svelte 5 + TypeScript, Rust + SQLite, Swift + AVFoundation (
 | Offline Basic Pitch transcription | Done, tested on synthesized two-handed chords |
 | Chord names, MIDI export | Done, unit tested |
 | Piano roll, synchronized playback, note editing | Done, tested end to end in Chromium and in the Linux desktop app |
+| Tracks (layered recordings in one sketch), takes, mute/solo, count-in | Done, tested in Chromium (fake camera/microphone) and the Linux desktop app; not yet run on an iPhone |
 | Titles, text notes, export/share | Done |
 | Apple Watch companion: record on the Watch, send to a paired device | Written; receiver tested over TCP, Watch and iOS Swift not yet compiled (see [watch-app/README.md](watch-app/README.md)) |
 | Core ML transcription backend, Apple Vision finger tracking, cloud processing | Deferred (interfaces in place) |
@@ -84,29 +86,46 @@ APPLE_DEVELOPMENT_TEAM=<your team id> npm run tauri ios dev -- --host
 ## Using Earbud
 
 1. **Record**: prop the phone above the keys (back camera, or *Ultra wide* in Settings to fit the whole
-   keyboard) and tap the red button. The screen stays awake while recording.
+   keyboard) and tap the red button. After a count-in of three ticks (with 3-2-1 on screen) the take begins.
+   The screen stays awake while recording. Stopping during the count-in cancels the take. Settings →
+   *Count-in* sets the tempo or turns it off.
 2. **Stop**: the take is saved immediately with a timestamp. Name it later if you like.
 3. **Transcribe**: happens automatically. The card shows progress, then the chord progression. Settings →
    *Transcription* says what kind of room you record in (*Quiet*, *Normal*, *Noisy* or *Custom*) and whether
    held notes are joined; see [Transcription settings](#transcription-settings).
-4. **Review**: open a sketch. From top to bottom: the piano roll (scroll it sideways, pinch to zoom; it follows
-   the playhead and lights the sounding keys), the detected chords (tap one to hear it), a waveform of the take
-   (tap or drag to scrub), the transport, then the video. Choose
-   *Take*, *Notes* (a synth plays the transcription) or *Both*, and slow down to 0.75× or 0.5×.
-   Drag the bracket handles at either end of the waveform to **crop playback** to a passage (saved with the
+4. **Review**: open a sketch. Each track is a piano roll (scroll it sideways, pinch to zoom; it follows the
+   playhead, lights the sounding keys and names the chords along the top, which you can tap to hear) with
+   the waveform of its take attached underneath (tap or drag to scrub; **press and hold** to open a magnifier
+   that shows the waveform close up and follows your finger). The video and your notes come after the tracks.
+   The transport stays at the bottom of the screen: play, the time, *Take*, *Notes* (a synth plays the
+   transcription) or *Both*, loop, and the speed (0.75× or 0.5×).
+   Drag the bracket handles at either end of a waveform to **crop playback** to a passage (saved with the
    sketch; the recording itself is not trimmed), and turn on **loop** to repeat it.
-5. **Edit**: tap *Edit notes*. Tap a note to select it, or drag across the roll to select every note the
-   rectangle touches (hold Shift to add to the selection, Cmd/Ctrl+A selects all). Drag a selected note to
-   move the whole selection, drag its end to resize, and double-tap to add a note. While editing, one finger
-   selects, so scroll with two fingers or by dragging the time ruler. The toolbar transposes, nudges, resizes,
-   deletes, undoes, and *Join* turns selected notes of the same pitch into one long note (for a held note the
-   transcription split). Edits save automatically and can be reverted to the original transcription.
-6. **Share**: the share button (or swiping a sketch left in the list) asks which files to include: the
+5. **Edit**: tap the pencil in the top-left corner of a piano roll. Tap a note to select it. A one-finger drag
+   still scrolls; **press and hold, then drag** to draw a rectangle that selects every note it touches (on a
+   note, press and hold picks the note up). With a mouse, drag across the roll to select (Shift adds,
+   Cmd/Ctrl+A selects all). Drag a selected note to move the whole selection, drag its end to resize, and
+   double-tap to add a note. The toolbar above the roll transposes, nudges, resizes, deletes, undoes, and *Join*
+   turns selected notes of the same pitch into one long note (for a held note the transcription split). Edits
+   save automatically and can be reverted to the original transcription (track menu → *Revert note edits*).
+6. **Tracks**: tap **Add track** under the last track to record another part over the sketch. After the
+   count-in, the existing tracks play from the playhead (or from the first track's downbeat, if the playhead
+   is before it) while you record, and the new track is lined up with them. Use headphones if you do not want
+   the other tracks in the new recording (and in its transcription). Each track has a title bar: the arrow
+   collapses it to a strip of its notes; the name can be edited; **M** mutes it, **S** solos it, and the
+   **●** toggle arms it to *record a new take*: a record button then appears next to play, and the new take
+   replaces the one the track plays (the earlier takes are kept; the track menu ⋯ switches between them,
+   deletes one, deletes the track, or *Line up* moves the take earlier or later in 20 ms steps if it does not
+   sit right). All tracks share one zoom and scroll.
+7. **Share**: the share button (or swiping a sketch left in the list) asks which files to include: the
    **video** (original take), the **recorded audio** on its own, the **notes audio** (the transcription played by
-   the built-in piano) and **MIDI**. Then it opens the iOS share sheet, or a folder picker on desktop.
-7. **Organise**: in the list, swipe a sketch left for *Share* / *Delete*; press and hold to select several, then
+   the built-in piano) and **MIDI**. Then it opens the iOS share sheet, or a folder picker on desktop. For a
+   sketch with several tracks, the recorded audio and the notes audio are the tracks you hear mixed together
+   (muted tracks left out), the MIDI file has one MIDI track per track, and the video is the take shown in the
+   sketch.
+8. **Organise**: in the list, swipe a sketch left for *Share* / *Delete*; press and hold to select several, then
    share or delete them together.
-8. **Apple Watch**: record on the Watch and the take arrives here as a sketch tagged *Apple Watch*. Pair once
+9. **Apple Watch**: record on the Watch and the take arrives here as a sketch tagged *Apple Watch*. Pair once
    with Settings → *Apple Watch* → *Pair Apple Watch*, which shows a code to type on the Watch; the Watch then
    shows which device it sends to. Setup and details: [watch-app/README.md](watch-app/README.md).
 
@@ -114,9 +133,9 @@ APPLE_DEVELOPMENT_TEAM=<your team id> npm run tauri ios dev -- --host
 
 Basic Pitch (the model) listens for any pitched sound, so the notes it reports are cleaned up for a piano
 afterwards (`src/lib/transcription/noteCleanup.ts`). Two choices in Settings → *Transcription* control that,
-and apply to the next transcription. To redo a sketch with other settings, open it and choose ⋯ →
-*Transcribe again*, which shows the same choices; the model's output for the open sketch is kept in memory, so
-this is quick.
+and apply to the next transcription. To redo a track with other settings, open the sketch and choose the
+track's ⋯ → *Transcribe again*, which shows the same choices; the model's output for the last take transcribed is
+kept in memory, so this is quick.
 
 **Recorded in a room that is**
 
@@ -202,6 +221,8 @@ npm run smoke:playback   # scrub, play, crop and loop on the ?demo sketch, with 
 npm run smoke:edit       # drag-select, move, transpose, delete, join and undo notes on the ?demo sketch
 ```
 
+http://localhost:1420/?demo=tracks opens the demo with a second track, for working on the multi-track view.
+
 `npm run smoke:tauri` drives the real desktop app (Rust, SQLite, IPC, asset protocol) through WebDriver on
 Linux; the header of `scripts/tauri-webdriver-smoke.mjs` explains the setup.
 
@@ -225,6 +246,11 @@ Linux; the header of `scripts/tauri-webdriver-smoke.mjs` explains the setup.
 - **Linux desktop**: WebKitGTK cannot stream media from custom URL schemes, so playback falls back to loading
   the file into memory (fine for typical sketches). Camera and microphone access depend on the distribution's
   WebKitGTK build.
+- **Tracks on iOS** have not been tried on a device. The other tracks play through the web view while the
+  native recorder runs; the recording audio session is mixable (`.mixWithOthers`), so this should work, but it
+  is unconfirmed, as is playing several media elements at once in the iOS web view. How well a new track lines
+  up depends on how precisely the app knows when the recorder started; if one sits early or late, use the
+  track menu's *Line up*. Without headphones the other tracks are recorded into the new one.
 - **Background recording** is not supported: iOS stops the camera when the app leaves the foreground. The take
   up to that point is saved automatically.
 - **Apple Watch**: Wi-Fi and Bluetooth delivery need Earbud open on the receiving device. watchOS may block the

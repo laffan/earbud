@@ -123,7 +123,12 @@
                 onshare={() => share([sketch.id])}
                 ondelete={() => (pendingDelete = [sketch.id])}
               >
-                <SketchCard {sketch} job={app.jobs[sketch.id]} selected={selecting && selectedIds.includes(sketch.id)} />
+                <SketchCard
+                  {sketch}
+                  job={app.jobs[sketch.id]}
+                  selected={selecting && selectedIds.includes(sketch.id)}
+                  tracks={app.trackCount(sketch.id)}
+                />
               </SwipeRow>
             </div>
           {/each}

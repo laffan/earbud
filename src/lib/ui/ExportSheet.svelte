@@ -16,6 +16,7 @@
   const anyTranscribed = $derived(sketches.some((s) => s.transcriptionStatus === 'done'));
   const someUntranscribed = $derived(sketches.some((s) => s.transcriptionStatus !== 'done'));
   const native = $derived(app.capabilities?.nativeShare ?? false);
+  const multiTrack = $derived(sketches.some((s) => app.trackCount(s.id) > 1));
   const audioExt = $derived(app.capabilities?.nativeAudioExport ? 'm4a' : 'wav');
   const recordingExt = $derived(
     [...new Set(sketches.map((s) => recordingExtension(s.mediaMime)))].map((e) => `.${e}`).join(', ') || '.mov',
@@ -39,17 +40,31 @@
     {
       kind: 'recording',
       label: allVideo ? 'Video' : 'Recording',
-      detail: `The original take, untouched (${recordingExt})`,
+      detail: multiTrack
+        ? `The original take, untouched; of several tracks, the one shown in the sketch (${recordingExt})`
+        : `The original take, untouched (${recordingExt})`,
       disabled: false,
     },
-    { kind: 'audio', label: 'Recorded audio', detail: `The take's sound on its own (.${audioExt})`, disabled: false },
+    {
+      kind: 'audio',
+      label: 'Recorded audio',
+      detail: multiTrack ? 'The tracks mixed together, muted ones left out (.wav)' : `The take's sound on its own (.${audioExt})`,
+      disabled: false,
+    },
     {
       kind: 'notes-audio',
       label: 'Notes audio',
-      detail: 'The transcribed notes played by the built-in piano (.wav)',
+      detail: multiTrack
+        ? 'The transcribed notes of the tracks you hear, played by the built-in piano (.wav)'
+        : 'The transcribed notes played by the built-in piano (.wav)',
       disabled: !anyTranscribed,
     },
-    { kind: 'midi', label: 'MIDI', detail: 'The transcribed notes, with your edits (.mid)', disabled: !anyTranscribed },
+    {
+      kind: 'midi',
+      label: 'MIDI',
+      detail: multiTrack ? 'The transcribed notes with your edits, a MIDI track per track (.mid)' : 'The transcribed notes, with your edits (.mid)',
+      disabled: !anyTranscribed,
+    },
   ]);
 
   const effective = $derived(selected.filter((k) => !options.find((o) => o.kind === k)?.disabled));

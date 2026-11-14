@@ -1016,9 +1016,16 @@ impl Library {
             let source = match kind {
                 ExportKind::Recording => Some(self.media_path(id)?),
                 ExportKind::Audio => {
+                    // The newer of the two: the native exporter writes .m4a,
+                    // a decode or a mix of several tracks writes .wav.
                     let m4a = dir.join(format!("{TAKE_AUDIO_STEM}.m4a"));
                     let wav = dir.join(format!("{TAKE_AUDIO_STEM}.wav"));
-                    Some(if m4a.is_file() { m4a } else { wav })
+                    let modified = |p: &Path| fs::metadata(p).and_then(|m| m.modified()).ok();
+                    Some(match (modified(&m4a), modified(&wav)) {
+                        (Some(a), Some(w)) if w > a => wav,
+                        (Some(_), _) => m4a,
+                        _ => wav,
+                    })
                 }
                 ExportKind::NotesAudio => Some(dir.join(NOTES_AUDIO_FILE)),
                 ExportKind::Midi => Some(dir.join(MIDI_FILE)),

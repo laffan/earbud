@@ -110,7 +110,7 @@
     <h3>Transcription</h3>
     <TranscriptionSettings />
     <p class="help">
-      Used for new transcriptions. To apply a change to an existing sketch, open it and choose ⋯ → Transcribe again.
+      Used for new transcriptions. To apply a change to an existing sketch, open it and choose a track's ⋯ → Transcribe again.
     </p>
     <label class="toggle">
       <input

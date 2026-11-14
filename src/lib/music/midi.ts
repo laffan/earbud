@@ -30,6 +30,31 @@ export function notesToMidi(notes: PianoNote[], options: MidiExportOptions = {})
   return midi.toArray();
 }
 
+/** Several parts, one MIDI track each (a multi-track sketch). Times are absolute seconds. */
+export function tracksToMidi(parts: { name: string; notes: PianoNote[] }[], options: MidiExportOptions = {}): Uint8Array {
+  const midi = new Midi();
+  midi.header.setTempo(options.bpm ?? 120);
+  if (options.title) midi.header.name = options.title;
+  parts.forEach((part, i) => {
+    const track = midi.addTrack();
+    track.name = part.name;
+    // Own channel per part, skipping the General MIDI drum channel.
+    track.channel = i < 9 ? i : Math.min(15, i + 1);
+    track.instrument.number = 0; // Acoustic Grand Piano
+    for (const note of sortNotes(part.notes)) {
+      const duration = note.endTime - note.startTime;
+      if (duration <= 0 || note.startTime < 0) continue;
+      track.addNote({
+        midi: Math.round(note.pitch),
+        time: note.startTime,
+        duration,
+        velocity: Math.min(1, Math.max(1 / 127, note.velocity / 127)),
+      });
+    }
+  });
+  return midi.toArray();
+}
+
 /** Parse a MIDI file back into notes (used by tests and future import). */
 export function midiToNotes(bytes: Uint8Array): PianoNote[] {
   const midi = new Midi(bytes);

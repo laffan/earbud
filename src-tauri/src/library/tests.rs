@@ -265,6 +265,13 @@ fn export_prefers_native_take_audio_and_reports_missing() {
     assert_eq!(m4a.files.len(), 1);
     assert!(m4a.files[0].path.ends_with("Take (audio).m4a"));
     assert_eq!(fs::read(&m4a.files[0].path).unwrap(), b"m4a");
+
+    // A WAV written later (a mix of several tracks) wins over an older M4A.
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    lib.write_file(&created.id, FileKind::TakeAudio, b"RIFFmix").unwrap();
+    let mix = lib.prepare_export(&created.id, "Take", &[ExportKind::Audio]).unwrap();
+    assert!(mix.files[0].path.ends_with("Take (audio).wav"));
+    assert_eq!(fs::read(&mix.files[0].path).unwrap(), b"RIFFmix");
 }
 
 #[test]

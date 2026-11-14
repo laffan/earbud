@@ -163,6 +163,21 @@ export class AppState {
   sketches = $state<Sketch[]>([]);
   /** The sketches shown in the list (not their takes). */
   readonly topLevel = $derived(this.sketches.filter((s) => s.parentId === null));
+  /** Tracks per sketch, counted from the takes in `sketches`. */
+  private readonly trackCounts = $derived.by(() => {
+    const tracks = new Map<string, Set<string>>();
+    for (const s of this.sketches) {
+      const sketch = s.parentId ?? s.id;
+      if (!tracks.has(sketch)) tracks.set(sketch, new Set());
+      if (s.trackId) tracks.get(sketch)!.add(s.trackId);
+    }
+    return tracks;
+  });
+
+  /** How many tracks a sketch has (1 for a plain sketch). */
+  trackCount(id: string): number {
+    return Math.max(1, this.trackCounts.get(id)?.size ?? 1);
+  }
   view = $state<View>({ name: 'home' });
   settings = $state<Settings>(loadSettings());
   recording = $state<RecordingState | null>(null);

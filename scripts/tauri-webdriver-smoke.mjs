@@ -3,7 +3,8 @@
  * through WebDriver: creates a sketch from a synthesized WAV over the raw
  * byte IPC channel, lets the app's processing queue transcribe it, then opens
  * it in the UI and checks that the recording plays through the asset
- * protocol. Linux only (tauri-driver + WebKitWebDriver).
+ * protocol, adds a second track over the same commands, and checks that the
+ * sketch view shows and plays both. Linux only (tauri-driver + WebKitWebDriver).
  *
  *   npm run build
  *   (cd src-tauri && cargo build --features tauri/custom-protocol)
@@ -117,18 +118,63 @@ try {
   console.log('analysis', sketch.analysisPath);
   if (sketch.summary.chords.join(' ') !== 'C Am F G7') throw new Error('unexpected chords');
 
-  // 3. Open it and confirm playback through the asset protocol.
+  // 3. A second track: a take for the sketch, placed 1.5 s in, renamed and muted.
+  const tracks = await run(async (id) => {
+    const invoke = window.__TAURI_INTERNALS__.invoke;
+    const rate = 22050;
+    const samples = new Int16Array(rate * 3);
+    for (let n = 0; n < samples.length; n++) samples[n] = Math.round(4000 * Math.sin((2 * Math.PI * 523.25 * n) / rate));
+    const bytes = new Uint8Array(44 + samples.length * 2);
+    const view = new DataView(bytes.buffer);
+    const str = (o, s) => [...s].forEach((c, i) => view.setUint8(o + i, c.charCodeAt(0)));
+    str(0, 'RIFF'); view.setUint32(4, 36 + samples.length * 2, true); str(8, 'WAVE'); str(12, 'fmt ');
+    view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+    view.setUint32(24, rate, true); view.setUint32(28, rate * 2, true); view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true); str(36, 'data'); view.setUint32(40, samples.length * 2, true);
+    samples.forEach((s, i) => view.setInt16(44 + i * 2, s, true));
+    const take = await invoke('create_sketch', {
+      args: { mediaExtension: 'wav', mediaMime: 'audio/wav', captureBackend: 'webdriver-test', parentId: id },
+    });
+    await invoke('write_sketch_file', bytes, { headers: { 'x-sketch-id': take.id, 'x-file-kind': 'media-chunk' } });
+    await invoke('finalize_sketch', {
+      args: { id: take.id, durationMs: 3000, hasVideo: false, videoWidth: null, videoHeight: null, offsetMs: 1500, countInMs: 900 },
+    });
+    await invoke('update_track', { args: { id: take.trackId, name: 'Melody', muted: true } });
+    const detail = await invoke('get_sketch', { id });
+    return detail.tracks.map((t) => ({ name: t.name, muted: t.muted, takes: t.takes.map((k) => [k.offsetMs, k.countInMs, k.parentId]) }));
+  }, created.id);
+  console.log('tracks', JSON.stringify(tracks));
+  if (tracks.length !== 2 || tracks[1].name !== 'Melody' || !tracks[1].muted || tracks[1].takes[0][0] !== 1500) {
+    throw new Error('unexpected tracks');
+  }
+  await run(async () => location.reload());
+  await sleep(2000);
+  const cards = await run(async () => document.querySelectorAll('.card').length);
+  if (cards !== 1) throw new Error(`the take shows up in the list (${cards} cards)`);
+
+  // 4. Open it and confirm playback of both tracks through the asset protocol.
   await run(async () => document.querySelector('.card').click());
   await sleep(2500);
   const media = await run(async () => {
     const v = document.querySelector('video');
-    return { readyState: v.readyState, duration: v.duration, src: v.currentSrc, error: v.error?.code ?? null };
+    const a = document.querySelector('.hidden-media audio');
+    return {
+      readyState: v.readyState,
+      duration: v.duration,
+      src: v.currentSrc,
+      error: v.error?.code ?? null,
+      tracks: document.querySelectorAll('.track').length,
+      second: a ? { readyState: a.readyState, duration: a.duration, muted: a.muted } : null,
+    };
   });
   console.log('media', media);
   if (!(media.readyState >= 1 && Math.abs(media.duration - 6) < 0.2)) throw new Error('recording did not load');
+  if (media.tracks !== 2 || !media.second || media.second.readyState < 1 || !media.second.muted) {
+    throw new Error('the second track did not load (muted)');
+  }
   await screenshot('sketch');
 
-  // 4. Export bundle (friendly-named hard links of the originals).
+  // 5. Export bundle (friendly-named hard links of the originals).
   const bundle = await run(
     async (id) =>
       window.__TAURI_INTERNALS__.invoke('prepare_export', {
@@ -141,6 +187,8 @@ try {
   console.log('export', JSON.stringify(bundle));
   if (bundle.files.length !== 2 || bundle.missing.join() !== 'audio') throw new Error('unexpected export bundle');
   await run(async (id) => window.__TAURI_INTERNALS__.invoke('delete_sketch', { id }), created.id);
+  const left = await run(async () => window.__TAURI_INTERNALS__.invoke('list_sketches'));
+  if (left.length !== 0) throw new Error(`deleting the sketch left ${left.length} rows`);
   console.log('TAURI SMOKE OK');
 } finally {
   await wd('DELETE', `/session/${sid}`).catch(() => {});
