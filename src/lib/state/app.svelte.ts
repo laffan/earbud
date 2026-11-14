@@ -740,9 +740,12 @@ export class AppState {
   /** Stopped during the count-in: nothing was played, so nothing is kept. */
   private async cancelRecording() {
     const id = this.recording?.sketchId;
+    const take = this.recording?.take;
     this.active = null;
     document.documentElement.classList.remove('native-preview');
     if (id) await this.library.discard(id).catch(() => {});
+    // A take for a new track had created the track: the open sketch drops it again.
+    if (take) this.touch(take.sketchId);
     this.endRecordingUi();
     this.toast('Recording cancelled.');
     void this.refresh();
@@ -764,6 +767,7 @@ export class AppState {
       const reason = result.interruption ?? result.message;
       this.logCapture(`discarding a ${Math.round(result.durationMs)} ms take that ended on its own`);
       await this.library.discard(id).catch(() => {});
+      if (recording?.take) this.touch(recording.take.sketchId);
       if (!recording?.retry) {
         await this.startRecording({ retry: true });
         return;
