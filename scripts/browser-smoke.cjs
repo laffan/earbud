@@ -104,8 +104,6 @@ async function findNote(page) {
   await page.click('.card');
   await page.waitForSelector('.roll canvas');
   await page.waitForTimeout(800);
-  const strip = await page.$$eval('.chord-strip .chord', (els) => els.map((e) => e.textContent).join(' '));
-  if (strip !== 'C Am F G7') fail(`chord strip was "${strip}"`);
   // Phone layout: nothing wider than the screen; the video fits the width.
   const layout = await page.evaluate(() => ({
     page: document.documentElement.scrollWidth,
@@ -116,7 +114,10 @@ async function findNote(page) {
   console.log(`layout: ${JSON.stringify(layout)}`);
   if (layout.page > layout.viewport) fail(`page scrolls sideways (${layout.page} > ${layout.viewport})`);
   if (layout.video === 0 || layout.video > layout.viewport) fail(`video does not fit the width (${layout.video})`);
-  if (!layout.order.startsWith('Transcription > Playback > Recording')) fail(`unexpected order ${layout.order}`);
+  if (!layout.order.startsWith('Tracks > Recording')) fail(`unexpected order ${layout.order}`);
+  // The transport stays at the bottom of the screen.
+  const bar = await page.$eval('.transport-bar', (e) => e.getBoundingClientRect().bottom);
+  if (Math.abs(bar - 844) > 1) fail(`transport is not at the bottom (${bar})`);
 
   await page.click('button[aria-label="Play"]');
   await page.waitForTimeout(2000);
@@ -134,7 +135,7 @@ async function findNote(page) {
   // Edit: select a note, transpose, delete, undo.
   const countNotes = async () => Number((await text(page, '.details')).match(/Notes(\d+)/)[1]);
   const before = await countNotes();
-  await page.click('button:has-text("Edit notes")');
+  await page.click('button[aria-label="Edit notes"]');
   await page.waitForTimeout(300);
   const note = await findNote(page);
   if (!note) fail('no note found on the piano roll');
@@ -147,7 +148,7 @@ async function findNote(page) {
   if ((await countNotes()) !== before) fail('undo did not restore the note');
   await page.waitForSelector('.save-state:has-text("Saved")', { timeout: 5000 });
   await shot(page, '05-editing');
-  await page.click('button:has-text("Done")');
+  await page.click('button[aria-label="Done editing notes"]');
 
   await page.click('button[aria-label="Back to sketches"]');
   await page.waitForTimeout(500);

@@ -225,9 +225,10 @@ export class AppState {
         this.settings.camera = 'front';
       }
       const report = await this.library.recover();
-      if (!this.library.persistent && new URLSearchParams(location.search).has('demo')) {
+      const demo = new URLSearchParams(location.search).get('demo');
+      if (!this.library.persistent && demo !== null) {
         const { seedDemo } = await import('../dev/demo');
-        await seedDemo(this.library);
+        await seedDemo(this.library, { tracks: demo === 'tracks' ? 2 : 1 });
       }
       this.sketches = await this.library.list();
       if (report.recovered.length > 0) {
@@ -330,6 +331,26 @@ export class AppState {
     this.sketches = this.sketches.filter((s) => !gone.has(s.id));
     if (this.view.name === 'sketch' && gone.has(this.view.id)) this.goHome();
     this.toast(ids.length === 1 ? 'Sketch deleted.' : `${ids.length} sketches deleted.`);
+  }
+
+  /** Delete a track of a sketch with all of its takes. */
+  async deleteTrack(sketchId: string, trackId: string) {
+    const takes = this.sketches.filter((s) => s.trackId === trackId).map((s) => s.id);
+    for (const take of takes) this.queue.cancel(take);
+    await this.library.removeTrack(trackId);
+    const gone = new Set(takes);
+    this.sketches = this.sketches.filter((s) => !gone.has(s.id));
+    this.touch(sketchId);
+    this.toast('Track deleted.');
+  }
+
+  /** Delete one take of a track (its track then plays its latest other take). */
+  async deleteTake(sketchId: string, takeId: string) {
+    this.queue.cancel(takeId);
+    await this.library.removeTake(takeId);
+    this.sketches = this.sketches.filter((s) => s.id !== takeId);
+    this.touch(sketchId);
+    this.toast('Take deleted.');
   }
 
   /** Open the export sheet for one or more sketches. */

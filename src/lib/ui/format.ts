@@ -7,6 +7,15 @@ export function formatClock(seconds: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
+/** m:ss.t, for precise positions (the waveform loupe). */
+export function formatClockTenths(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
+  const tenths = Math.floor(seconds * 10);
+  const m = Math.floor(tenths / 600);
+  const s = Math.floor((tenths % 600) / 10);
+  return `${m}:${s.toString().padStart(2, '0')}.${tenths % 10}`;
+}
+
 export function formatDuration(ms: number | null | undefined): string {
   return ms == null ? '–:––' : formatClock(ms / 1000);
 }

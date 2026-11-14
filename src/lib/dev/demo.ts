@@ -45,7 +45,22 @@ export function demoNotes(): PianoNote[] {
   return notes;
 }
 
-export async function seedDemo(library: SketchLibrary): Promise<void> {
+/** A second part for the demo's two-track sketch: a slow line in the bass and tenor. */
+export function demoSecondPart(): PianoNote[] {
+  const notes: PianoNote[] = [];
+  PROGRESSION.forEach(([bass], i) => {
+    const t = 0.4 + i * 2.5;
+    notes.push({ pitch: bass + 12, startTime: t + 1.25, endTime: t + 2.3, velocity: 75, confidence: 0.9 });
+    notes.push({ pitch: bass + 19, startTime: t + 1.875, endTime: t + 2.4, velocity: 70, confidence: 0.8 });
+  });
+  return notes;
+}
+
+/**
+ * `?demo`: one sketch. `?demo=tracks`: the same sketch with a second track
+ * (whose recording starts 1.5 s into the first).
+ */
+export async function seedDemo(library: SketchLibrary, options: { tracks?: number } = {}): Promise<void> {
   const notes = demoNotes();
   const created = await library.create({
     mediaExtension: 'wav',
@@ -70,5 +85,34 @@ export async function seedDemo(library: SketchLibrary): Promise<void> {
     params: {},
     notes,
     summary: summarize(notes),
+  });
+  if ((options.tracks ?? 1) < 2) return;
+
+  // Track 2: recorded "later", starting 1.5 s into the sketch.
+  const offset = 1.5;
+  const part = demoSecondPart().map((n) => ({ ...n, startTime: n.startTime - offset, endTime: n.endTime - offset }));
+  const second = await library.create({
+    mediaExtension: 'wav',
+    mediaMime: 'audio/wav',
+    captureBackend: 'demo',
+    parentId: created.id,
+  });
+  await library.writeFile(second.id, 'media-chunk', await renderNotesToWav(part, { sampleRate: 44100 }));
+  await library.finalize({
+    id: second.id,
+    durationMs: Math.round((part.reduce((t, n) => Math.max(t, n.endTime), 0) + 1.5) * 1000),
+    hasVideo: false,
+    videoWidth: null,
+    videoHeight: null,
+    offsetMs: offset * 1000,
+  });
+  await library.writeFile(second.id, 'analysis', await renderNotesToWav(part, { sampleRate: ANALYSIS_SAMPLE_RATE }));
+  await library.saveTranscription({
+    id: second.id,
+    engine: 'demo',
+    engineVersion: '1',
+    params: {},
+    notes: part,
+    summary: summarize(part),
   });
 }

@@ -40,7 +40,7 @@ const OUT = process.env.SMOKE_OUT;
     if (!ok) problems.push(message);
   };
 
-  await page.click('button:has-text("Edit notes")');
+  await page.click('button[aria-label="Edit notes"]');
   await page.waitForSelector('.edit-toolbar');
   const roll = await (await page.$('.roll canvas')).boundingBox();
   const total = await noteCount();
@@ -109,8 +109,10 @@ const OUT = process.env.SMOKE_OUT;
   expect((await noteCount()) === total, 'undo did not restore the joined notes');
 
   // 7. Dragging the time ruler still scrolls (zoom in first so there is somewhere to go).
-  await page.click('[aria-label="Zoom in"]');
-  await page.click('[aria-label="Zoom in"]');
+  await page.mouse.move(roll.x + roll.width / 2, roll.y + roll.height / 2);
+  await page.keyboard.down('Control');
+  await page.mouse.wheel(0, -120);
+  await page.keyboard.up('Control');
   await page.mouse.click(left, top);
   const before = await page.screenshot({ clip: { x: roll.x, y: roll.y, width: roll.width, height: 40 } });
   await drag(roll.x + roll.width * 0.8, roll.y + 34, roll.x + roll.width * 0.3, roll.y + 34);

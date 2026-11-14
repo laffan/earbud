@@ -3,10 +3,15 @@ import { fileUrl } from '../platform/tauri';
 import { decodeWav, downmix } from './wav';
 
 export interface Peaks {
-  /** Normalized peak amplitude per bucket, 0–1. */
+  /** Normalized peak amplitude per bucket, 0–1 (an overview of the whole take). */
   values: Float32Array;
+  /** The same at `DETAIL_RATE` buckets per second, for zoomed-in views. */
+  detail: Float32Array;
   duration: number;
 }
+
+/** Buckets per second of `Peaks.detail`. */
+export const DETAIL_RATE = 150;
 
 /** Peak (max |sample|) per bucket, normalized so the loudest bucket is 1. */
 export function computePeaks(samples: Float32Array, buckets: number): Float32Array {
@@ -40,7 +45,12 @@ export function loadPeaks(path: string, buckets = 2000): Promise<Peaks> {
       if (!response.ok) throw new Error(`Could not read audio (${response.status})`);
       const pcm = decodeWav(await response.arrayBuffer());
       const mono = downmix(pcm.channels);
-      return { values: computePeaks(mono, buckets), duration: mono.length / pcm.sampleRate };
+      const duration = mono.length / pcm.sampleRate;
+      return {
+        values: computePeaks(mono, buckets),
+        detail: computePeaks(mono, Math.max(1, Math.round(duration * DETAIL_RATE))),
+        duration,
+      };
     })();
     pending.catch(() => cache.delete(path));
     cache.set(path, pending);
