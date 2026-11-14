@@ -229,7 +229,6 @@
     </ol>
 
     <div class="instrument">
-      <span class="label">How to play</span>
       <div class="segmented" role="group" aria-label="Instrument">
         <button aria-pressed={instrument === 'piano'} onclick={() => setInstrument('piano')}>Piano</button>
         <button aria-pressed={instrument === 'guitar'} onclick={() => setInstrument('guitar')}>Guitar</button>
@@ -352,12 +351,6 @@
     display: flex;
     align-items: center;
     gap: 10px;
-  }
-  .label {
-    font-size: 0.78rem;
-    letter-spacing: 0.07em;
-    text-transform: uppercase;
-    color: var(--ink-3);
   }
   .cards {
     display: grid;
