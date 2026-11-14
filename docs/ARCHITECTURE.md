@@ -280,8 +280,8 @@ which makes the whole UI testable in Chromium.
   shapes). The chord at the playhead is outlined; a card's play button plays the voicing shown. Tab *Circle of
   fifths* (`CircleOfFifths.svelte`): three rings (major outside, relative minor in the middle, the key's
   diminished chord inside, so each key's chords form a wedge), the key's wedge shaded and its tonic outlined, the
-  chords used filled by how long they sound, the progression drawn as arrows, the chord at the playhead lit; any
-  chord can be tapped to hear it. The tab and instrument are remembered in `localStorage`. Chord symbols are spelled
+  chords used filled by how long they sound (so the areas a recording covers stand out; the order they come in is
+  not drawn), the chord at the playhead lit; any chord can be tapped to hear it. The tab and instrument are remembered in `localStorage`. Chord symbols are spelled
   for the key everywhere (the strips too).
 - `SketchView.svelte`: the tracks, *Record track* / *Import track*, the *Chords* section, the video, text notes and
   details, and the transport fixed to the bottom. All sound goes through one `AudioEngine` (section 6): each take

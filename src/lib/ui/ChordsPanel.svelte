@@ -6,7 +6,8 @@
    *    in the key, and how to play it on piano or guitar (tap to hear that
    *    voicing).
    *  - Circle of fifths: where those chords sit on the circle, the key's
-   *    wedge, and the path the progression takes; any chord can be tried.
+   *    wedge and which areas of the circle the recording covers; any chord
+   *    can be tried.
    * Everything comes from the notes of the tracks being heard (mute and
    * solo apply), together, on the sketch's timeline.
    */
@@ -155,7 +156,6 @@
     const at = (chord: ChordSegment) => indexOf.get(`${familyOf(chord.quality)}:${chord.root}`) ?? -1;
     return {
       chords: list,
-      path: progression.slice(0, PROGRESSION_LIMIT).map((p) => at(p.chord)),
       active: activeIndex >= 0 ? at(progression[activeIndex].chord) : -1,
     };
   });
@@ -270,7 +270,7 @@
       {/each}
     </ul>
   {:else}
-    <CircleOfFifths {key} chords={circle.chords} path={circle.path} active={circle.active} {names} onplay={playOnCircle} />
+    <CircleOfFifths {key} chords={circle.chords} active={circle.active} {names} onplay={playOnCircle} />
   {/if}
 </section>
 

@@ -111,9 +111,9 @@ APPLE_DEVELOPMENT_TEAM=<your team id> npm run tauri ios dev -- --host
    chord to go there and hear it), then a card for each chord used: its name, its numeral in the key, how often
    and how long it is played, and how to play it, as a keyboard (left-hand bass, right-hand chord) or a guitar
    chord box (with alternative shapes further up the neck); the play button plays that voicing. *Circle of
-   fifths* shows where the chords sit on the circle (major outside, minor in the middle, diminished inside), the
-   key's chords as a shaded wedge, and the progression as arrows; tap any chord on it to hear it, including ones
-   not played yet. With several tracks the section analyses the tracks you hear, together: mute or solo tracks to
+   fifths* shows which areas of the circle a recording covers: the chords played are filled (darker for more
+   time) on three rings (major outside, minor in the middle, diminished inside), with the key's chords as a shaded
+   wedge; tap any chord on it to hear it, including ones not played yet. With several tracks the section analyses the tracks you hear, together: mute or solo tracks to
    change what it reads.
 6. **Edit**: tap the pencil in the top-left corner of a piano roll. Tap a note to select it. A one-finger drag
    still scrolls; **press and hold, then drag** to draw a rectangle that selects every note it touches (on a

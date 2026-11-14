@@ -16,17 +16,14 @@
    * relative minors in the middle, the diminished chord of each key inside,
    * so each key's seven chords form a wedge (I, IV, V outside; vi, ii, iii in
    * the middle; vii° inside). The sketch's key is shaded, the chords it uses
-   * are filled (stronger for more time), the progression is drawn as a path
-   * from chord to chord, and the chord at the playhead is lit. Tap any chord
-   * to hear it.
+   * are filled (stronger for more time), so the areas a recording covers
+   * stand out, and the chord at the playhead is lit. Tap any chord to hear it.
    */
   import type { Key } from '../music/key';
 
   interface Props {
     key: Key | null;
     chords: CircleChord[];
-    /** Consecutive chords of the progression, as indices into `chords`. */
-    path: number[];
     /** Index into `chords` of the chord at the playhead, or -1. */
     active: number;
     /** Note names by pitch class (spelled for the key). */
@@ -34,7 +31,7 @@
     onplay: (root: number, family: CircleChord['family']) => void;
   }
 
-  let { key, chords, path, active, names, onplay }: Props = $props();
+  let { key, chords, active, names, onplay }: Props = $props();
 
   const C = 160;
   const RINGS = {
@@ -79,27 +76,6 @@
   }
   const familyWords = { major: 'major', minor: 'minor', diminished: 'diminished' };
 
-  /** The progression's path between chord centres (consecutive repeats dropped). */
-  const steps = $derived.by(() => {
-    const out: { from: [number, number]; to: [number, number] }[] = [];
-    const centre = (index: number) => {
-      const c = chords[index];
-      return point(positionOf(c.root, c.family), RINGS[c.family].label);
-    };
-    // Stop short of the labels at both ends.
-    const trim = (a: [number, number], b: [number, number], by: number): [number, number] => {
-      const d = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
-      return [a[0] + ((b[0] - a[0]) * by) / d, a[1] + ((b[1] - a[1]) * by) / d];
-    };
-    for (let k = 1; k < path.length && out.length < 24; k++) {
-      if (path[k] === path[k - 1]) continue;
-      const a = centre(path[k - 1]);
-      const b = centre(path[k]);
-      out.push({ from: trim(a, b, 11), to: trim(b, a, 13) });
-    }
-    return out;
-  });
-
   function onKey(e: KeyboardEvent, root: number, family: Family) {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
@@ -109,12 +85,6 @@
 </script>
 
 <svg class="circle" viewBox="0 0 320 320" role="group" aria-label="Circle of fifths">
-  <defs>
-    <marker id="cof-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M0 0 L8 4 L0 8 z" class="arrow-head" />
-    </marker>
-  </defs>
-
   <!-- The key's wedge: I, IV, V and vi, ii, iii, and vii°. -->
   {#if keyPosition !== null}
     <path class="wedge" d={sector(keyPosition, RINGS.minor.inner, RINGS.major.outer, 3)} />
@@ -148,13 +118,6 @@
       </g>
     {/each}
   {/each}
-
-  <!-- The progression, chord to chord. -->
-  <g class="path" aria-hidden="true">
-    {#each steps as step, k (k)}
-      <line x1={step.from[0]} y1={step.from[1]} x2={step.to[0]} y2={step.to[1]} marker-end="url(#cof-arrow)" />
-    {/each}
-  </g>
 </svg>
 
 <style>
@@ -209,13 +172,5 @@
   .tonic .sector {
     stroke: var(--chord);
     stroke-width: 2;
-  }
-  .path line {
-    stroke: var(--ink-2);
-    stroke-width: 1.3;
-    opacity: 0.55;
-  }
-  .arrow-head {
-    fill: var(--ink-2);
   }
 </style>
