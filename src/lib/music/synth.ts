@@ -122,19 +122,39 @@ export class NoteSynth {
   }
 
   /**
-   * Start following the media clock from `mediaTime`. Must be called from a
-   * user gesture the first time (autoplay policy). Notes are scheduled once
-   * the audio clock is actually running (a new context can take a moment).
+   * Create or wake the audio context. Call it synchronously inside the tap or
+   * key press that should lead to notes playing (play, the Take / Notes /
+   * Both choice): Safari and the iOS and macOS web views only let an audio
+   * context start during a user gesture, and `start()` itself runs later,
+   * once the media actually plays. Outside a gesture WebKit leaves
+   * `resume()` pending, which is why the synth used to stay silent until the
+   * listen mode was switched during playback.
+   */
+  unlock() {
+    const ctx = this.ensureContext();
+    if (ctx.state === 'running') return;
+    void ctx.resume().catch(() => {});
+    // Older WebKit also wants a sound started in the gesture: one silent sample.
+    try {
+      const source = ctx.createBufferSource();
+      source.buffer = ctx.createBuffer(1, 1, ctx.sampleRate);
+      source.connect(ctx.destination);
+      source.start(0);
+    } catch {
+      // not needed where resume() suffices
+    }
+  }
+
+  /**
+   * Start following the media clock from `mediaTime`. Notes are scheduled
+   * once the audio clock actually runs: right away if `unlock()` ran in the
+   * user's tap, else as soon as a later tap wakes the context. The resume is
+   * not awaited, so a context that cannot start yet never leaves the synth
+   * stuck.
    */
   async start(mediaTime: number, rate = 1) {
     const ctx = this.ensureContext();
-    if (ctx.state === 'suspended') {
-      try {
-        await ctx.resume();
-      } catch {
-        // will retry on the next gesture
-      }
-    }
+    if (ctx.state !== 'running') void ctx.resume().catch(() => {});
     this.stopVoices(0.02);
     this.active = true;
     this.rate = rate;
@@ -208,7 +228,7 @@ export class NoteSynth {
 
   private playNow(pitches: number[], velocity: number, length: number, spread = 0) {
     const ctx = this.ensureContext();
-    if (ctx.state === 'suspended') void ctx.resume();
+    if (ctx.state !== 'running') void ctx.resume().catch(() => {});
     const at = ctx.currentTime + 0.01;
     pitches.forEach((pitch, i) => {
       this.voices.push(scheduleVoice(ctx, this.master!, pitch, velocity, at + i * spread, length));

@@ -141,6 +141,12 @@ Pure TypeScript, no UI or platform dependencies, unit tested.
   over 1 s (seeks) and only after 0.25 s of persistent drift otherwise. Rescheduling on every small disagreement made
   a freshly created context retrigger the same note when switching to *Notes* mid-playback.
   `renderNotesToWav` renders the same voice in an `OfflineAudioContext` for the *Notes audio* export.
+  WebKit (Safari, the iOS and macOS web views) only lets an audio context start inside a user gesture and leaves
+  `resume()` pending outside one. The synth is started when the media reports that it plays, which is after the
+  play tap, so the taps that lead to notes playing (play with *Notes* / *Both* selected, choosing *Notes* / *Both*,
+  recording a track over notes) call `synth.unlock()` synchronously, and `start()` no longer waits on `resume()`:
+  it schedules from the first frame on which the audio clock runs. Before this, *Notes* stayed silent until the
+  listen mode was switched during playback (`synth.test.ts` reproduces it with a gesture-gated fake context).
 - `notes.ts`: naming, normalization (used by the editor), ranges.
 - `tempo.ts`: tempo and beat from notes. Note starts within 50 ms are one onset, weighted by loudness and count.
   Candidate beat periods (50–200 BPM) come from the autocorrelation of a 10 ms onset-strength signal, supported by

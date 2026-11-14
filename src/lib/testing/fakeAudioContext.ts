@@ -49,6 +49,12 @@ export class FakeAudioContext {
   createDynamicsCompressor() {
     return new FakeNode();
   }
+  createBuffer(channels: number, length: number, sampleRate: number) {
+    return { numberOfChannels: channels, length, sampleRate, getChannelData: () => new Float32Array(length) };
+  }
+  createBufferSource() {
+    return Object.assign(new FakeNode(), { buffer: null as unknown, start() {}, stop() {} });
+  }
   createOscillator() {
     const ctx = this;
     const voice: StartedVoice = { frequency: 0, when: -1, stoppedAt: null };
@@ -72,4 +78,29 @@ export class FakeAudioContext {
 export function attacksAt(ctx: FakeAudioContext, pitch: number): StartedVoice[] {
   const f0 = 440 * 2 ** ((pitch - 69) / 12);
   return ctx.started.filter((v) => Math.abs(v.frequency - f0) < 0.01);
+}
+
+/**
+ * Like WebKit (Safari, iOS and macOS web views): a context starts suspended,
+ * and `resume()` only takes effect inside a user gesture. Outside one, the
+ * promise stays pending (WebKit keeps it until playback is allowed).
+ */
+export class GestureGatedAudioContext extends FakeAudioContext {
+  /** Set while a simulated tap is being handled. */
+  static inGesture = false;
+  override state: 'running' | 'suspended' | 'closed' = 'suspended';
+  override async resume() {
+    if (!GestureGatedAudioContext.inGesture) return new Promise<void>(() => {});
+    this.state = 'running';
+  }
+}
+
+/** Run `fn` as if inside a tap. */
+export function inGesture<T>(fn: () => T): T {
+  GestureGatedAudioContext.inGesture = true;
+  try {
+    return fn();
+  } finally {
+    GestureGatedAudioContext.inGesture = false;
+  }
 }

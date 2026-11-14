@@ -342,7 +342,11 @@
   }
 
   function togglePlay() {
-    if (!playing) unlockMedia();
+    if (!playing) {
+      unlockMedia();
+      // The synth starts when the media does, after this tap: wake its audio now (WebKit).
+      if (synthOn) synth.unlock();
+    }
     mixer.toggle();
   }
 
@@ -363,10 +367,12 @@
       trackListen = Object.fromEntries(tracks.map((t) => [t.id, from]));
     }
     listen = mode;
+    if (mode !== 'recording') synth.unlock();
   }
 
   function setTrackListen(track: Track, mode: ListenMode) {
     trackListen = { ...trackListen, [track.id]: mode };
+    if (mode !== 'recording') synth.unlock();
   }
 
   // ------------------------------------------------------------ tempo
@@ -542,6 +548,7 @@
     const track = trackId ? tracks.find((t) => t.id === trackId) : undefined;
     const label = track ? trackLabel(track) : nextTrackLabel;
     unlockMedia();
+    if (synthOn) synth.unlock();
     mixer.pause();
     const from = takeStart();
     recordingInto = trackId;

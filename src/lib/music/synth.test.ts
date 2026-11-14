@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it } from 'vitest';
-import { attacksAt, FakeAudioContext } from '../testing/fakeAudioContext';
+import { attacksAt, FakeAudioContext, GestureGatedAudioContext, inGesture } from '../testing/fakeAudioContext';
 import { NoteSynth } from './synth';
 
 beforeEach(() => {
@@ -73,5 +73,40 @@ describe('NoteSynth', () => {
     const g = attacksAt(ctx, 67);
     expect(g).toHaveLength(1);
     expect(g[0].when - ctx.currentTime).toBeLessThan(0.2);
+  });
+});
+
+describe('NoteSynth in WebKit (audio starts only in a tap)', () => {
+  beforeEach(() => {
+    (window as unknown as { AudioContext: unknown }).AudioContext = GestureGatedAudioContext;
+  });
+
+  it('plays when unlocked in the play tap, though started once the media plays', async () => {
+    const synth = new NoteSynth();
+    synth.setNotes(notes);
+    // The play button's tap: the synth is woken there…
+    inGesture(() => synth.unlock());
+    // …and started later, when the media reports that it plays (no longer in the tap).
+    await synth.start(0.5, 1);
+    const ctx = FakeAudioContext.instances[0];
+    expect(ctx.state).toBe('running');
+    run(synth, ctx, { from: 0.5, seconds: 3.5 });
+    expect(attacksAt(ctx, 60)).toHaveLength(1);
+    expect(attacksAt(ctx, 67)).toHaveLength(1);
+  });
+
+  it('does not get stuck when started outside a tap: notes begin once a later tap wakes it', async () => {
+    const synth = new NoteSynth();
+    synth.setNotes(notes);
+    // Started with no tap (the old play path): the context cannot run yet.
+    await synth.start(0.5, 1);
+    const ctx = FakeAudioContext.instances[0];
+    run(synth, ctx, { from: 0.5, seconds: 0.4 });
+    expect(ctx.started).toHaveLength(0);
+    // Any later tap (e.g. play again, or a listen choice) wakes it; no second start() is needed.
+    inGesture(() => synth.unlock());
+    run(synth, ctx, { from: 0.9, seconds: 3 });
+    expect(attacksAt(ctx, 64)).toHaveLength(1);
+    expect(attacksAt(ctx, 67)).toHaveLength(1);
   });
 });
