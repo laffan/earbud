@@ -3,8 +3,9 @@
  * through WebDriver: creates a sketch from a synthesized WAV over the raw
  * byte IPC channel, lets the app's processing queue transcribe it, then opens
  * it in the UI and checks that the recording plays through the asset
- * protocol, adds a second track over the same commands, and checks that the
- * sketch view shows and plays both. Linux only (tauri-driver + WebKitWebDriver).
+ * protocol, adds a second track over the same commands, checks that the
+ * sketch view shows and plays both, and imports a MIDI file as a third track
+ * through the import sheet's file input. Linux only (tauri-driver + WebKitWebDriver).
  *
  *   npm run build
  *   (cd src-tauri && cargo build --features tauri/custom-protocol)
@@ -12,7 +13,10 @@
  *   EARBUD_BIN=src-tauri/target/debug/earbud node scripts/tauri-webdriver-smoke.mjs
  */
 import { writeFileSync, mkdirSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
+
+const { Midi } = createRequire(import.meta.url)('@tonejs/midi');
 
 const DRIVER = process.env.WEBDRIVER_URL ?? 'http://127.0.0.1:4444';
 const BIN = resolve(process.env.EARBUD_BIN ?? 'src-tauri/target/debug/earbud');
@@ -179,7 +183,41 @@ try {
   if (!tempoShown?.includes('84')) throw new Error(`tempo not shown (${tempoShown})`);
   await screenshot('sketch');
 
-  // 5. Export bundle (friendly-named hard links of the originals).
+  // 5. Import a MIDI file as a third track through the import sheet's file input.
+  const midi = new Midi();
+  const line = midi.addTrack();
+  [72, 74, 76, 77, 79].forEach((p, i) => line.addNote({ midi: p, time: 0.3 + i * 0.5, duration: 0.45, velocity: 0.8 }));
+  const midiPath = resolve(OUT, 'Top line.mid');
+  writeFileSync(midiPath, Buffer.from(midi.toArray()));
+  await run(async () => [...document.querySelectorAll('.add-track button')].find((b) => b.textContent.includes('Import'))?.click());
+  await sleep(500);
+  const input = await wd('POST', `/session/${sid}/element`, { using: 'css selector', value: '.choice input[type=file]' });
+  await wd('POST', `/session/${sid}/element/${Object.values(input)[0]}/value`, { text: midiPath });
+  let imported = null;
+  for (let i = 0; i < 40 && !imported; i++) {
+    await sleep(500);
+    imported = await run(async (id) => {
+      const detail = await window.__TAURI_INTERNALS__.invoke('get_sketch', { id });
+      const track = detail.tracks[2];
+      if (!track) return null;
+      const take = await window.__TAURI_INTERNALS__.invoke('get_sketch', { id: track.takeId });
+      return {
+        name: track.name,
+        engine: take.transcription?.engine ?? null,
+        notes: take.transcription?.originalNotes.length ?? 0,
+        analysis: !!take.analysisPath,
+        media: take.mediaPath?.split('/').pop(),
+        shown: document.querySelectorAll('.track').length,
+      };
+    }, created.id);
+  }
+  console.log('imported', JSON.stringify(imported));
+  if (!imported || imported.name !== 'Top line' || imported.engine !== 'midi-import' || imported.notes !== 5 || !imported.analysis) {
+    throw new Error('the MIDI import did not produce the expected track');
+  }
+  await screenshot('imported');
+
+  // 6. Export bundle (friendly-named hard links of the originals).
   const bundle = await run(
     async (id) =>
       window.__TAURI_INTERNALS__.invoke('prepare_export', {

@@ -192,6 +192,15 @@ recording and the track holding it cannot be deleted on their own (that is delet
 sketch row backed by a recording. `list_sketches` returns takes too (the queue needs them); the home list shows
 rows without a parent. Migration v3 gives every existing sketch one track named *Track 1*.
 
+**Imported tracks** (`src/lib/library/importTrack.ts`) use the same calls as a recording: a take reserved on a new
+track (capture backend `import`), the file uploaded in 4 MB `media-chunk`s, finalize, then the track renamed after
+the file; a failure discards the take, which removes the new track. An audio file is kept untouched as the take's
+recording and goes through the processing queue (on iOS through the native decoder first, like the app's own
+recordings, then the webview's). A MIDI file is read with `midiFileToNotes` (every channel but percussion, times
+from its tempo map) and is not transcribed: its notes are saved as the take's transcription (engine
+`midi-import`), the synth renders them at 44.1 kHz as the take's recording and at 22.05 kHz as its analysis audio
+(from which its waveform is drawn), and the file itself is kept as the take's `transcription.mid`.
+
 Guarantees, enforced in Rust and covered by `cargo test`:
 
 - The media file can only be appended to while the sketch is `recording`. After `finalize_sketch` nothing writes
@@ -240,12 +249,12 @@ which makes the whole UI testable in Chromium.
   menu with the takes, transcribe again, revert, *Line up* nudge, delete), the pencil in the roll's top-left
   corner, the editing toolbar above the roll, the waveform attached underneath. Editing state (notes, selection,
   undo/redo, debounced autosave) lives here, per take.
-- `SketchView.svelte`: the tracks, *Add track*, the video, text notes and details, and the transport fixed to the
+- `SketchView.svelte`: the tracks, *Record track* / *Import track*, the video, text notes and details, and the transport fixed to the
   bottom. The take shown as video is the first track's take that has video (else the first track's), in a
   `<video>`; the other tracks play through hidden `<audio>` elements. Each take's element has a source fallback
   chain (`TakeSource`: `asset://` URL → in-memory blob for files under 200 MB → extracted analysis audio). Also
   the listen mode (take / synthesized notes of the audible tracks / both), playback rate and crop. Recording into
-  the sketch (*Add track*, or the armed track's record button) pauses playback, records with
+  the sketch (*Record track*, or the armed track's record button) pauses playback, records with
   `app.startRecording({ take })`, and at the downbeat starts the other tracks from the playhead (not before the
   first track's downbeat, and on a beat when the sketch has a tempo); the take is placed with
   `offset = playFrom − downbeat`. With a tempo, the count-in runs at it, and the recording screen flashes a dot on

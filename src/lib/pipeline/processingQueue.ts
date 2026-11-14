@@ -6,6 +6,7 @@
  */
 import { decodeMediaToAnalysisWav } from '../audio/analysisAudio';
 import type { CaptureEngine } from '../capture/types';
+import { IMPORT_CAPTURE_BACKEND } from '../library/importTrack';
 import { analysisPathFor, type Sketch, type SketchLibrary } from '../library/types';
 import { notesToMidi } from '../music/midi';
 import { summarize } from '../music/summary';
@@ -98,12 +99,15 @@ export class ProcessingQueue {
         onProgress(id, { stage: 'audio', fraction: 0 });
         const capture = this.options.capture();
         let durationMs = 0;
-        // The native decoder (AVFoundation on iOS) reads its own recordings and
-        // the Watch's AAC files; anything else, or a native failure, goes
-        // through the webview's decoder.
+        // The native decoder (AVFoundation on iOS) reads its own recordings,
+        // the Watch's AAC files and imported audio files; anything else, or a
+        // native failure (a format it cannot read), goes through the
+        // webview's decoder.
         const native =
           capture?.extractAnalysisAudio &&
-          (sketch.captureBackend === capture.id || sketch.captureBackend === WATCH_CAPTURE_BACKEND);
+          (sketch.captureBackend === capture.id ||
+            sketch.captureBackend === WATCH_CAPTURE_BACKEND ||
+            sketch.captureBackend === IMPORT_CAPTURE_BACKEND);
         if (native) {
           try {
             const path = analysisPathFor(sketch.mediaPath);

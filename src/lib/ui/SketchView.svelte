@@ -19,6 +19,7 @@
   import { app } from '../state/app.svelte';
   import type { PianoNote } from '../transcription/types';
   import Icon from './Icon.svelte';
+  import ImportSheet from './ImportSheet.svelte';
   import { RollViewport } from './rollViewport.svelte';
   import Sheet from './Sheet.svelte';
   import TempoSheet from './TempoSheet.svelte';
@@ -504,6 +505,20 @@
     armedTrack = armedTrack === track.id ? null : track.id;
   }
 
+  /** Where the sketch's playing starts: after the first track's count-in, if it had one (seconds). */
+  function firstDownbeat(): number {
+    const first = tracks[0] ? takeOf(tracks[0]) : null;
+    return first?.countInMs != null ? Math.max(0, (first.offsetMs + first.countInMs) / 1000) : 0;
+  }
+
+  let showImport = $state(false);
+  const canImport = $derived(!app.recording && !!detail && detail.status === 'saved');
+
+  async function importTrack(kind: 'midi' | 'audio', file: File, offsetMs: number): Promise<boolean> {
+    mixer.pause();
+    return app.importTrack(id, kind, file, offsetMs);
+  }
+
   /**
    * Where the other tracks start while a take is recorded: the playhead,
    * but not before the first track's downbeat (its count-in is silence),
@@ -511,8 +526,7 @@
    * sketch has a tempo (so the count-in leads into it).
    */
   function takeStart(): number {
-    const first = tracks[0] ? takeOf(tracks[0]) : null;
-    const downbeat = first?.countInMs != null ? Math.max(0, (first.offsetMs + first.countInMs) / 1000) : 0;
+    const downbeat = firstDownbeat();
     let from = Math.max(currentTime, downbeat);
     if (from >= duration - 0.25) from = Math.min(downbeat, Math.max(0, duration - 0.25));
     if (tempo.bpm !== null && tempo.beat !== null) {
@@ -719,9 +733,14 @@
             />
           {/if}
         {/each}
-        <button class="add-track" onclick={() => recordTake(null)} disabled={!canRecordTake}>
-          <Icon name="plus" size={18} /> Add track
-        </button>
+        <div class="add-track">
+          <button onclick={() => recordTake(null)} disabled={!canRecordTake}>
+            <span class="rec-dot" aria-hidden="true"></span> Record track
+          </button>
+          <button onclick={() => (showImport = true)} disabled={!canImport}>
+            <Icon name="import" size={18} /> Import track
+          </button>
+        </div>
       </section>
 
       <!-- 2. The take (video, or the audio-only badge) -->
@@ -846,6 +865,15 @@
     </div>
   {/if}
 </div>
+
+{#if showImport}
+  <ImportSheet
+    start={firstDownbeat()}
+    playhead={currentTime}
+    onimport={importTrack}
+    onclose={() => (showImport = false)}
+  />
+{/if}
 
 {#if showTempo}
   <TempoSheet
@@ -1010,7 +1038,13 @@
     display: grid;
     gap: 14px;
   }
+  /* Record and Import share the row under the tracks. */
   .add-track {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .add-track button {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1021,11 +1055,17 @@
     color: var(--ink-2);
     font-weight: 600;
   }
-  .add-track:hover:not(:disabled) {
+  .add-track button:hover:not(:disabled) {
     background: var(--paper-sunk);
   }
-  .add-track:disabled {
+  .add-track button:disabled {
     opacity: 0.5;
+  }
+  .add-track .rec-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--accent);
   }
 
   /* The transport, fixed to the bottom. */

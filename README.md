@@ -109,7 +109,7 @@ APPLE_DEVELOPMENT_TEAM=<your team id> npm run tauri ios dev -- --host
    double-tap to add a note. The toolbar above the roll transposes, nudges, resizes, deletes, undoes, and *Join*
    turns selected notes of the same pitch into one long note (for a held note the transcription split). Edits
    save automatically and can be reverted to the original transcription (track menu → *Revert note edits*).
-6. **Tracks**: tap **Add track** under the last track to record another part over the sketch. After the
+6. **Tracks**: tap **Record track** under the last track to record another part over the sketch. After the
    count-in, the existing tracks play from the playhead (or from the first track's downbeat, if the playhead
    is before it) while you record, and the new track is lined up with them. Use headphones if you do not want
    the other tracks in the new recording (and in its transcription). Each track has a title bar: the arrow
@@ -119,6 +119,11 @@ APPLE_DEVELOPMENT_TEAM=<your team id> npm run tauri ios dev -- --host
    deletes one, deletes the track, or *Line up* moves the take earlier or later in 20 ms steps if it does not
    sit right). All tracks share one zoom and scroll. With several tracks, *Separate* in the bottom bar gives
    each track its own *Take / Notes / Both* choice, attached under it.
+   **Import track**, next to it, adds a track from a file, starting at the start of the sketch (where the first
+   track's playing begins) or at the playhead. A **MIDI file** brings its notes as they are (no transcription;
+   the drum channel is left out), played by the built-in piano, which also draws its waveform. An **audio
+   file** (WAV, MP3, M4A, AIFF, FLAC and the like, or a video's sound) is copied in untouched and transcribed
+   like a recording. Imported tracks are named after their files.
 7. **Tempo**: the ♩ value in the top bar is the sketch's tempo. It is detected from the first recording's notes
    once they are transcribed (until then, a sketch recorded with a count-in has the count-in's tempo). Tap it
    to change it: type a value, use − / +, drag the slider, or tap along; play the sketch from there and a click

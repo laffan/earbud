@@ -13,6 +13,7 @@ import {
   type RecordingResult,
 } from '../capture';
 import { Metronome } from '../capture/countIn';
+import { importAudioTrack, importMidiTrack } from '../library/importTrack';
 import { getLibrary, type Sketch, type SketchLibrary } from '../library';
 import { ProcessingQueue, type JobProgress } from '../pipeline/processingQueue';
 import { errorCode, errorMessage, isIOSLike } from '../platform/tauri';
@@ -373,6 +374,31 @@ export class AppState {
     this.sketches = this.sketches.filter((s) => s.id !== takeId);
     this.touch(sketchId);
     this.toast('Take deleted.');
+  }
+
+  /**
+   * Import a MIDI or audio file as a new track of a sketch, starting at
+   * `offsetMs` on its timeline. Audio is transcribed like a recording; MIDI
+   * brings its own notes. Returns whether it worked (problems are toasted).
+   */
+  async importTrack(sketchId: string, kind: 'midi' | 'audio', file: File, offsetMs: number): Promise<boolean> {
+    try {
+      const deps = { library: this.library };
+      const result =
+        kind === 'midi'
+          ? await importMidiTrack(deps, sketchId, file, offsetMs)
+          : await importAudioTrack(deps, sketchId, file, offsetMs);
+      this.upsert(result.take);
+      this.touch(sketchId);
+      if (result.transcribe && this.settings.autoTranscribe) this.queue.enqueue(result.take.id);
+      this.logCapture(`imported ${file.name} (${kind}, ${file.size} bytes) as ${result.track.name}`);
+      this.toast(`Imported “${result.track.name}”.`);
+      return true;
+    } catch (error) {
+      this.touch(sketchId);
+      this.toast(`Could not import ${file.name}: ${errorMessage(error)}`, 'error');
+      return false;
+    }
   }
 
   /** Open the export sheet for one or more sketches. */

@@ -71,3 +71,31 @@ export function midiToNotes(bytes: Uint8Array): PianoNote[] {
   }
   return sortNotes(notes);
 }
+
+/** Most notes taken from an imported file. */
+const MAX_IMPORTED_NOTES = 20000;
+
+/**
+ * Notes of a MIDI file to import as a track: every track and channel except
+ * General MIDI percussion (channel 10), with times in seconds as the file's
+ * tempo map gives them. Throws if the bytes are not a MIDI file.
+ */
+export function midiFileToNotes(bytes: Uint8Array): PianoNote[] {
+  const midi = new Midi(bytes);
+  const notes: PianoNote[] = [];
+  for (const track of midi.tracks) {
+    if (track.channel === 9 || track.instrument.percussion) continue;
+    for (const n of track.notes) {
+      if (!(n.duration > 0) || !(n.time >= 0) || n.midi < 0 || n.midi > 127) continue;
+      notes.push({
+        pitch: n.midi,
+        startTime: n.time,
+        endTime: n.time + n.duration,
+        velocity: Math.max(1, Math.min(127, Math.round(n.velocity * 127))),
+        confidence: 1,
+      });
+      if (notes.length >= MAX_IMPORTED_NOTES) return sortNotes(notes);
+    }
+  }
+  return sortNotes(notes);
+}
