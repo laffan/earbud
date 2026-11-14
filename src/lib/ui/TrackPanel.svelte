@@ -639,7 +639,7 @@
         {currentTime}
         {view}
         {spell}
-        empty={hasTranscription ? 'No chords found: they show where three or more notes sound together' : 'Chords appear once the take is transcribed'}
+        empty={hasTranscription ? 'No chords found' : ''}
         onchordtap={playChord}
       />
       <Waveform

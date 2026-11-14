@@ -813,7 +813,6 @@
         key={sketchKey}
         {currentTime}
         status={analysisState}
-        combined={playable.filter((e) => audible(e.track)).length > 1}
         onplay={playPitches}
         onseek={seek}
       />

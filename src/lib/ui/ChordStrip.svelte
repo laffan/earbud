@@ -51,7 +51,6 @@
         class:active
         style:left="{left}px"
         style:width="{Math.max(2, width - 3)}px"
-        title="{spell(chord)} — tap to hear"
         aria-label="{spell(chord)}, play it"
         onclick={() => onchordtap?.(chord)}><span>{spell(chord)}</span></button
       >

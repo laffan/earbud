@@ -34,14 +34,12 @@
     currentTime: number;
     /** 'pending': nothing transcribed yet; 'ready': notes to analyse (chords or not). */
     status: 'pending' | 'ready' | 'empty';
-    /** Several tracks are combined. */
-    combined: boolean;
     /** Play these pitches together (spread: seconds between them, bass first). */
     onplay: (pitches: number[], spread: number) => void;
     onseek: (time: number) => void;
   }
 
-  let { chords, key, currentTime, status, combined, onplay, onseek }: Props = $props();
+  let { chords, key, currentTime, status, onplay, onseek }: Props = $props();
 
   type Tab = 'chords' | 'circle';
   type Instrument = 'piano' | 'guitar';
@@ -202,7 +200,7 @@
   <header class="head">
     <h2 id="chords-title">Chords</h2>
     {#if key}
-      <span class="key serif" title="Detected from the notes">
+      <span class="key serif">
         {keyName(key)}{#if key.alternative}<span class="alt"> or {keyName(key.alternative)}</span>{/if}
       </span>
     {/if}
@@ -214,11 +212,9 @@
   </header>
 
   {#if status === 'pending'}
-    <p class="empty">Chords appear here once the recording is transcribed.</p>
+    <p class="empty">Not transcribed yet.</p>
   {:else if chords.length === 0}
-    <p class="empty">
-      No clear chords yet. Chords are named where three or more notes sound together{combined ? ' (across the tracks you hear)' : ''}.
-    </p>
+    <p class="empty">No chords found.</p>
   {:else if tab === 'chords'}
     <ol class="progression" aria-label="Progression">
       {#each progression.slice(0, PROGRESSION_LIMIT) as step, i (step.start)}
@@ -273,21 +269,8 @@
         </li>
       {/each}
     </ul>
-    {#if instrument === 'piano'}
-      <p class="legend">
-        <span class="swatch left"></span> left hand (bass) <span class="swatch right"></span> right hand
-      </p>
-    {/if}
   {:else}
     <CircleOfFifths {key} chords={circle.chords} path={circle.path} active={circle.active} {names} onplay={playOnCircle} />
-    <p class="legend">
-      {#if key}The shaded wedge holds the chords of {keyName(key)}: I, IV and V outside, vi, ii and iii in the middle, vii° inside.{' '}{/if}Chords
-      next to each other share most of their notes. Filled chords are the ones played, the line follows the
-      progression, and any chord can be tapped to hear it.
-    </p>
-  {/if}
-  {#if combined && status !== 'pending'}
-    <p class="source">From the tracks you hear together (mute or solo tracks to change what is analysed).</p>
   {/if}
 </section>
 
@@ -480,27 +463,6 @@
   }
   .shapes button:hover {
     background: var(--paper-sunk);
-  }
-  .legend,
-  .source {
-    margin: 0;
-    font-size: 0.78rem;
-    color: var(--ink-3);
-  }
-  .swatch {
-    display: inline-block;
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    margin: 0 2px 0 8px;
-    vertical-align: -1px;
-  }
-  .swatch.left {
-    background: var(--chord);
-    margin-left: 0;
-  }
-  .swatch.right {
-    background: var(--accent);
   }
   @media (max-width: 400px) {
     .head .segmented button {
