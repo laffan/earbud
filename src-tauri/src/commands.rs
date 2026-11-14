@@ -75,6 +75,21 @@ pub async fn delete_sketch(library: State<'_, Library>, id: String) -> Result<()
 }
 
 #[tauri::command]
+pub async fn update_track(library: State<'_, Library>, args: UpdateTrackArgs) -> Result<Track> {
+    library.update_track(args)
+}
+
+#[tauri::command]
+pub async fn delete_track(library: State<'_, Library>, id: String) -> Result<()> {
+    library.delete_track(&id)
+}
+
+#[tauri::command]
+pub async fn delete_take(library: State<'_, Library>, id: String) -> Result<()> {
+    library.delete_take(&id)
+}
+
+#[tauri::command]
 pub async fn set_transcription_status(
     library: State<'_, Library>,
     id: String,

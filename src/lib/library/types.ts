@@ -31,6 +31,45 @@ export interface Sketch {
   /** Playback crop range in milliseconds (null = whole take). */
   cropStartMs: number | null;
   cropEndMs: number | null;
+  /**
+   * The sketch this row is a take of. Null: the row is a sketch (and the
+   * first take of its first track).
+   */
+  parentId: string | null;
+  /** The track this take belongs to. */
+  trackId: string | null;
+  /** Where the recording's time 0 lies on the sketch's timeline (ms; negative = before). */
+  offsetMs: number;
+  /** Where the count-in ended in the recording (ms), if there was one. */
+  countInMs: number | null;
+}
+
+/** One track of a sketch: a lane of takes, one of which plays. */
+export interface Track {
+  id: string;
+  sketchId: string;
+  position: number;
+  name: string;
+  /** The take that plays. */
+  takeId: string;
+  muted: boolean;
+  solo: boolean;
+  collapsed: boolean;
+  createdAt: number;
+  /** Every take of the track, oldest first. */
+  takes: Sketch[];
+}
+
+export interface UpdateTrackArgs {
+  id: string;
+  name?: string;
+  muted?: boolean;
+  solo?: boolean;
+  collapsed?: boolean;
+  /** Play another take of this track. */
+  takeId?: string;
+  /** Move the take that plays on the timeline (ms). */
+  offsetMs?: number;
 }
 
 export interface Transcription {
@@ -45,6 +84,8 @@ export interface Transcription {
 
 export interface SketchDetail extends Sketch {
   transcription: Transcription | null;
+  /** The sketch's tracks in order (empty for a take). */
+  tracks: Track[];
 }
 
 export interface CreateSketchArgs {
@@ -52,6 +93,10 @@ export interface CreateSketchArgs {
   mediaMime: string;
   captureBackend: string;
   title?: string;
+  /** Record a take for this sketch instead of a new sketch. */
+  parentId?: string;
+  /** With `parentId`: the track the take is for; omitted starts a new track. */
+  trackId?: string;
 }
 
 export interface CreatedSketch {
@@ -60,6 +105,7 @@ export interface CreatedSketch {
   mediaPath: string;
   analysisPath: string;
   createdAt: number;
+  trackId: string;
 }
 
 export interface FinalizeSketchArgs {
@@ -68,6 +114,10 @@ export interface FinalizeSketchArgs {
   hasVideo: boolean;
   videoWidth: number | null;
   videoHeight: number | null;
+  /** Where the take starts on the sketch's timeline (ms). */
+  offsetMs?: number;
+  /** Where the count-in ended in the recording (ms). */
+  countInMs?: number | null;
 }
 
 export interface UpdateSketchArgs {
@@ -119,7 +169,13 @@ export interface SketchLibrary {
   finalize(args: FinalizeSketchArgs): Promise<Sketch>;
   discard(id: string): Promise<void>;
   update(args: UpdateSketchArgs): Promise<Sketch>;
+  /** Delete a sketch with all of its tracks and takes (or, given a take, that take). */
   remove(id: string): Promise<void>;
+  updateTrack(args: UpdateTrackArgs): Promise<Track>;
+  /** Delete a track and its takes (not the one holding the sketch's own recording). */
+  removeTrack(id: string): Promise<void>;
+  /** Delete one take (not the sketch's own recording). */
+  removeTake(id: string): Promise<void>;
   /** Set or clear (nulls) the playback crop range. The recording is untouched. */
   setCrop(id: string, startMs: number | null, endMs: number | null): Promise<Sketch>;
   setTranscriptionStatus(id: string, status: TranscriptionStatus, error?: string | null): Promise<Sketch>;

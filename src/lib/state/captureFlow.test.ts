@@ -94,7 +94,7 @@ function makeApp(engine: FakeEngine) {
     capabilities: { tauri: false, nativeCapture: true, nativeAudioExtraction: false, nativeShare: false, platform: 'test' },
     startTimeoutMs: 60,
   });
-  app.updateSettings({ autoTranscribe: false });
+  app.updateSettings({ autoTranscribe: false, countIn: false });
   return { app, library };
 }
 
@@ -220,5 +220,87 @@ describe('capture flow', () => {
     await sleep(STOP_GUARD_MS);
     await app.stopRecording();
     expect(await library.list()).toHaveLength(1);
+  });
+});
+
+describe('count-in and takes', () => {
+  /** Count-in at the fastest tempo: three beats in 0.6 s. */
+  function withCountIn(engine: FakeEngine) {
+    const made = makeApp(engine);
+    made.app.updateSettings({ countIn: true, countInBpm: 300 });
+    return made;
+  }
+
+  it('counts in, then records; the downbeat is stored with the take', async () => {
+    const engine = new FakeEngine(['ok']);
+    const { app, library } = withCountIn(engine);
+    await app.init();
+    await app.startRecording();
+    await until(() => app.recording?.phase === 'recording');
+    expect(app.recording?.countIn).toEqual({ beat: 0, beats: 3 });
+    await until(() => (app.recording?.countIn?.beat ?? 0) === 2);
+    await until(() => app.recording?.countIn === null && app.recording?.downbeatMs !== null);
+    const downbeat = app.recording!.downbeatMs!;
+    expect(downbeat).toBeGreaterThan(550);
+    expect(downbeat).toBeLessThan(1500);
+    await sleep(50);
+    await app.stopRecording();
+    const [sketch] = await library.list();
+    expect(sketch.status).toBe('saved');
+    expect(sketch.countInMs).toBe(Math.round(downbeat));
+    expect(sketch.offsetMs).toBe(0);
+  });
+
+  it('cancels the take when stopped during the count-in', async () => {
+    const engine = new FakeEngine(['ok']);
+    const { app, library } = withCountIn(engine);
+    await app.init();
+    await app.startRecording();
+    await until(() => app.recording?.phase === 'recording');
+    await app.stopRecording(); // during the count-in: allowed, and cancels
+    expect(engine.stops).toBe(1);
+    expect(app.recording).toBeNull();
+    expect(await library.list()).toHaveLength(0);
+    expect(app.toasts.map((t) => t.message)).toContain('Recording cancelled.');
+  });
+
+  it('records a new track into a sketch, lined up with where playback started', async () => {
+    const engine = new FakeEngine(['ok', 'ok']);
+    const { app, library } = withCountIn(engine);
+    await app.init();
+    app.updateSettings({ countIn: false });
+    await recordAndStop(app);
+    const [first] = await library.list();
+    app.updateSettings({ countIn: true });
+
+    let ended: unknown = undefined;
+    let downbeats = 0;
+    await app.startRecording({
+      take: {
+        sketchId: first.id,
+        trackId: null,
+        label: 'Track 2',
+        onDownbeat: () => {
+          downbeats++;
+          return 5; // the other tracks started at 0:05
+        },
+        onEnd: (saved) => (ended = saved),
+      },
+    });
+    await until(() => app.recording?.downbeatMs != null);
+    const downbeat = app.recording!.downbeatMs!;
+    expect(downbeats).toBe(1);
+    expect(app.recording?.take?.label).toBe('Track 2');
+    await sleep(STOP_GUARD_MS);
+    await app.stopRecording();
+
+    const detail = await library.get(first.id);
+    expect(detail.tracks).toHaveLength(2);
+    const take = await library.get(detail.tracks[1].takeId);
+    expect(take.parentId).toBe(first.id);
+    expect(take.offsetMs).toBe(Math.round(5000 - downbeat));
+    expect((ended as { id: string } | null)?.id).toBe(take.id);
+    expect(app.topLevel.map((s) => s.id)).toEqual([first.id]);
+    expect(app.toasts.map((t) => t.message)).toContain('Track 2: take saved.');
   });
 });

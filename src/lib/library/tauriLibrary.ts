@@ -14,8 +14,10 @@ import type {
   Sketch,
   SketchDetail,
   SketchLibrary,
+  Track,
   TranscriptionStatus,
   UpdateSketchArgs,
+  UpdateTrackArgs,
 } from './types';
 
 export class TauriLibrary implements SketchLibrary {
@@ -44,6 +46,15 @@ export class TauriLibrary implements SketchLibrary {
   }
   remove(id: string) {
     return invoke<void>('delete_sketch', { id });
+  }
+  updateTrack(args: UpdateTrackArgs) {
+    return invoke<Track>('update_track', { args });
+  }
+  removeTrack(id: string) {
+    return invoke<void>('delete_track', { id });
+  }
+  removeTake(id: string) {
+    return invoke<void>('delete_take', { id });
   }
   setCrop(id: string, startMs: number | null, endMs: number | null) {
     return invoke<Sketch>('set_crop', { id, startMs, endMs });

@@ -12,6 +12,7 @@
 //!     notes-audio.wav         notes rendered with the synth (on export)
 //!     take-audio.m4a|wav      the take's audio track (on export)
 //!     exports/                friendly-named hard links handed to share/save
+//!   (every take of a multi-track sketch has a folder like this of its own)
 //!   inbox/                    recordings received from the Apple Watch,
 //!                             waiting to be imported as sketches
 //! ```
@@ -123,6 +124,11 @@ pub fn safe_file_stem(name: &str) -> String {
     stem
 }
 
+/// A fresh id in the same form as sketch ids (uuid v4, 32 hex characters).
+fn new_id() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
 fn validate_notes(notes: &[PianoNote]) -> Result<()> {
     for (i, note) in notes.iter().enumerate() {
         note.validate()
@@ -173,35 +179,105 @@ impl Library {
 
     // ---------------------------------------------------------------- capture
 
-    /// Reserve a sketch before recording starts. The row is persisted first so
-    /// that a crash mid-recording still leaves a trace that can be recovered.
+    /// Reserve a sketch (or, with `parent_id`, a take for one of its tracks)
+    /// before recording starts. The row is persisted first so that a crash
+    /// mid-recording still leaves a trace that can be recovered.
+    ///
+    /// A take for a new track creates the track at once, with the take as
+    /// the one it plays; a take for an existing track becomes the one it
+    /// plays when it is finalized.
     pub fn create_sketch(&self, args: CreateSketchArgs) -> Result<CreatedSketch> {
         validate_extension(&args.media_extension)?;
+        if let Some(parent) = &args.parent_id {
+            validate_id(parent)?;
+        }
+        if let Some(track) = &args.track_id {
+            validate_id(track)?;
+            if args.parent_id.is_none() {
+                return Err(Error::Invalid("a track can only be given with a parent sketch".into()));
+            }
+        }
         let id = uuid::Uuid::new_v4().simple().to_string();
         let dir = self.sketch_dir(&id);
         fs::create_dir_all(&dir)?;
         let media_file = format!("{MEDIA_STEM}.{}", args.media_extension.to_ascii_lowercase());
         let now = now_ms();
-        self.conn().execute(
-            "INSERT INTO sketches (id, title, created_at, updated_at, status, media_file,
-                                   media_mime, capture_backend)
-             VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                id,
-                args.title.unwrap_or_default().trim(),
-                now,
-                SketchStatus::Recording.as_str(),
-                media_file,
-                args.media_mime,
-                args.capture_backend,
-            ],
-        )?;
+        let inserted = (|| -> Result<String> {
+            let mut conn = self.conn();
+            let tx = conn.transaction()?;
+            let (track_id, new_track) = match (&args.parent_id, &args.track_id) {
+                (None, _) => (new_id(), Some((0_i64, "Track 1".to_string()))),
+                (Some(parent), Some(track)) => {
+                    let owner: Option<String> = tx
+                        .query_row("SELECT sketch_id FROM tracks WHERE id = ?1", [track], |r| r.get(0))
+                        .optional()?;
+                    if owner.as_deref() != Some(parent.as_str()) {
+                        return Err(Error::NotFound(format!("track {track} of sketch {parent}")));
+                    }
+                    (track.clone(), None)
+                }
+                (Some(parent), None) => {
+                    let position: i64 = tx.query_row(
+                        "SELECT COALESCE(MAX(position) + 1, 0) FROM tracks WHERE sketch_id = ?1",
+                        [parent],
+                        |r| r.get(0),
+                    )?;
+                    (new_id(), Some((position, format!("Track {}", position + 1))))
+                }
+            };
+            if let Some(parent) = &args.parent_id {
+                let grandparent: Option<Option<String>> = tx
+                    .query_row("SELECT parent_id FROM sketches WHERE id = ?1", [parent], |r| r.get(0))
+                    .optional()?;
+                match grandparent {
+                    None => return Err(Error::NotFound(parent.clone())),
+                    Some(Some(_)) => {
+                        return Err(Error::Invalid("takes belong to a sketch, not to another take".into()))
+                    }
+                    Some(None) => {}
+                }
+            }
+            tx.execute(
+                "INSERT INTO sketches (id, title, created_at, updated_at, status, media_file,
+                                       media_mime, capture_backend, parent_id, track_id)
+                 VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    id,
+                    args.title.clone().unwrap_or_default().trim(),
+                    now,
+                    SketchStatus::Recording.as_str(),
+                    media_file,
+                    args.media_mime,
+                    args.capture_backend,
+                    args.parent_id,
+                    track_id,
+                ],
+            )?;
+            if let Some((position, name)) = new_track {
+                let sketch = args.parent_id.clone().unwrap_or_else(|| id.clone());
+                tx.execute(
+                    "INSERT INTO tracks (id, sketch_id, position, name, take_id, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![track_id, sketch, position, name, id, now],
+                )?;
+            }
+            tx.commit()?;
+            Ok(track_id)
+        })();
+        let track_id = match inserted {
+            Ok(track_id) => track_id,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&dir);
+                return Err(error);
+            }
+        };
         Ok(CreatedSketch {
             media_path: dir.join(&media_file).display().to_string(),
             analysis_path: dir.join(ANALYSIS_FILE).display().to_string(),
             dir: dir.display().to_string(),
             id,
             created_at: now,
+            track_id,
         })
     }
 
@@ -217,23 +293,37 @@ impl Library {
                 args.id
             )));
         }
-        let changed = self.conn().execute(
-            "UPDATE sketches
-                SET status = ?2, duration_ms = COALESCE(?3, duration_ms), has_video = ?4,
-                    video_width = ?5, video_height = ?6, updated_at = ?7
-              WHERE id = ?1",
-            params![
-                args.id,
-                SketchStatus::Saved.as_str(),
-                args.duration_ms,
-                args.has_video,
-                args.video_width,
-                args.video_height,
-                now_ms(),
-            ],
-        )?;
-        if changed == 0 {
-            return Err(Error::NotFound(args.id));
+        {
+            let mut conn = self.conn();
+            let tx = conn.transaction()?;
+            let changed = tx.execute(
+                "UPDATE sketches
+                    SET status = ?2, duration_ms = COALESCE(?3, duration_ms), has_video = ?4,
+                        video_width = ?5, video_height = ?6, updated_at = ?7,
+                        offset_ms = COALESCE(?8, offset_ms), count_in_ms = COALESCE(?9, count_in_ms)
+                  WHERE id = ?1",
+                params![
+                    args.id,
+                    SketchStatus::Saved.as_str(),
+                    args.duration_ms,
+                    args.has_video,
+                    args.video_width,
+                    args.video_height,
+                    now_ms(),
+                    args.offset_ms,
+                    args.count_in_ms,
+                ],
+            )?;
+            if changed == 0 {
+                return Err(Error::NotFound(args.id));
+            }
+            // A new take becomes the one its track plays.
+            tx.execute(
+                "UPDATE tracks SET take_id = ?1
+                  WHERE id = (SELECT track_id FROM sketches WHERE id = ?1)",
+                [&args.id],
+            )?;
+            tx.commit()?;
         }
         Ok(self.get(&args.id)?.sketch)
     }
@@ -266,22 +356,34 @@ impl Library {
             fs::copy(source, &dest)?;
             fs::remove_file(source)?;
         }
-        let inserted = self.conn().execute(
-            "INSERT INTO sketches (id, title, created_at, updated_at, status, duration_ms,
-                                   media_file, media_mime, has_video, capture_backend)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9)",
-            params![
-                args.id,
-                args.title.trim(),
-                args.created_at,
-                now_ms(),
-                SketchStatus::Saved.as_str(),
-                args.duration_ms,
-                media_file,
-                args.media_mime,
-                args.capture_backend,
-            ],
-        );
+        let inserted = (|| -> rusqlite::Result<()> {
+            let track_id = new_id();
+            let mut conn = self.conn();
+            let tx = conn.transaction()?;
+            tx.execute(
+                "INSERT INTO sketches (id, title, created_at, updated_at, status, duration_ms,
+                                       media_file, media_mime, has_video, capture_backend, track_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10)",
+                params![
+                    args.id,
+                    args.title.trim(),
+                    args.created_at,
+                    now_ms(),
+                    SketchStatus::Saved.as_str(),
+                    args.duration_ms,
+                    media_file,
+                    args.media_mime,
+                    args.capture_backend,
+                    track_id,
+                ],
+            )?;
+            tx.execute(
+                "INSERT INTO tracks (id, sketch_id, position, name, take_id, created_at)
+                 VALUES (?1, ?2, 0, 'Track 1', ?2, ?3)",
+                params![track_id, args.id, args.created_at],
+            )?;
+            tx.commit()
+        })();
         if let Err(error) = inserted {
             // Put the file back so the import can be retried.
             if fs::rename(&dest, source).is_ok() {
@@ -292,15 +394,21 @@ impl Library {
         Ok(Some(self.get(&args.id)?.sketch))
     }
 
-    /// Remove a sketch whose recording never produced data. Refuses to touch
-    /// saved sketches: those can only go through `delete_sketch`.
+    /// Remove a sketch (or take) whose recording never produced data. Refuses
+    /// to touch saved recordings: those can only go through `delete_sketch`
+    /// or `delete_take`.
     pub fn discard_sketch(&self, id: &str) -> Result<()> {
         validate_id(id)?;
-        let status: Option<String> = self
+        let row: Option<(String, Option<String>)> = self
             .conn()
-            .query_row("SELECT status FROM sketches WHERE id = ?1", [id], |r| r.get(0))
+            .query_row("SELECT status, parent_id FROM sketches WHERE id = ?1", [id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
             .optional()?;
-        match status.as_deref().map(SketchStatus::parse) {
+        let status = row.as_ref().map(|(status, _)| status.as_str());
+        let is_take = row.as_ref().is_some_and(|(_, parent)| parent.is_some());
+        match status.map(SketchStatus::parse) {
+            Some(SketchStatus::Recording) if is_take => self.remove_take(id),
             Some(SketchStatus::Recording) => self.delete_sketch(id),
             Some(SketchStatus::Saved) => Err(Error::Invalid(
                 "refusing to discard a saved sketch".into(),
@@ -354,15 +462,56 @@ impl Library {
             has_edits: edited != 0,
             crop_start_ms: row.get("crop_start_ms")?,
             crop_end_ms: row.get("crop_end_ms")?,
+            parent_id: row.get("parent_id")?,
+            track_id: row.get("track_id")?,
+            offset_ms: row.get("offset_ms")?,
+            count_in_ms: row.get("count_in_ms")?,
             id,
         })
+    }
+
+    /// The tracks of a sketch, in order, each with its takes (oldest first).
+    fn tracks_of(&self, conn: &Connection, sketch_id: &str) -> Result<Vec<Track>> {
+        let mut stmt = conn.prepare(
+            "SELECT id, sketch_id, position, name, take_id, muted, solo, collapsed, created_at
+               FROM tracks WHERE sketch_id = ?1 ORDER BY position, created_at",
+        )?;
+        let tracks = stmt
+            .query_map([sketch_id], |r| {
+                Ok(Track {
+                    id: r.get(0)?,
+                    sketch_id: r.get(1)?,
+                    position: r.get(2)?,
+                    name: r.get(3)?,
+                    take_id: r.get(4)?,
+                    muted: r.get(5)?,
+                    solo: r.get(6)?,
+                    collapsed: r.get(7)?,
+                    created_at: r.get(8)?,
+                    takes: Vec::new(),
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut takes_stmt = conn.prepare(&format!(
+            "{} WHERE s.track_id = ?1 ORDER BY s.created_at, s.id",
+            Self::SKETCH_SELECT
+        ))?;
+        tracks
+            .into_iter()
+            .map(|mut track| {
+                track.takes = takes_stmt
+                    .query_map([&track.id], |row| self.row_to_sketch(row))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(track)
+            })
+            .collect()
     }
 
     const SKETCH_SELECT: &'static str = "SELECT s.*, t.summary_json AS summary_json,
                 (t.edited_notes_json IS NOT NULL) AS has_edits
            FROM sketches s LEFT JOIN transcriptions t ON t.sketch_id = s.id";
 
-    /// All sketches, newest first.
+    /// All sketches and their takes, newest first. Takes have a `parent_id`.
     pub fn list(&self) -> Result<Vec<Sketch>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
@@ -417,9 +566,15 @@ impl Library {
                 },
             )
             .transpose()?;
+        let tracks = if sketch.parent_id.is_none() {
+            self.tracks_of(&conn, id)?
+        } else {
+            Vec::new()
+        };
         Ok(SketchDetail {
             sketch,
             transcription,
+            tracks,
         })
     }
 
@@ -472,13 +627,196 @@ impl Library {
         Ok(self.get(id)?.sketch)
     }
 
-    /// Permanently delete a sketch and every file that belongs to it.
+    /// Permanently delete a sketch, all of its tracks and takes, and every
+    /// file that belongs to them. Given a take, deletes only that take.
     pub fn delete_sketch(&self, id: &str) -> Result<()> {
         validate_id(id)?;
-        self.conn().execute("DELETE FROM sketches WHERE id = ?1", [id])?;
+        let parent: Option<Option<String>> = self
+            .conn()
+            .query_row("SELECT parent_id FROM sketches WHERE id = ?1", [id], |r| r.get(0))
+            .optional()?;
+        if let Some(Some(_)) = parent {
+            return self.remove_take(id);
+        }
+        let takes: Vec<String> = {
+            let mut conn = self.conn();
+            let tx = conn.transaction()?;
+            let takes = {
+                let mut stmt = tx.prepare("SELECT id FROM sketches WHERE parent_id = ?1")?;
+                let ids = stmt
+                    .query_map([id], |r| r.get(0))?
+                    .collect::<rusqlite::Result<Vec<String>>>()?;
+                ids
+            };
+            tx.execute("DELETE FROM sketches WHERE parent_id = ?1", [id])?;
+            tx.execute("DELETE FROM sketches WHERE id = ?1", [id])?;
+            tx.commit()?;
+            takes
+        };
+        for dir in takes.iter().map(|t| self.sketch_dir(t)).chain([self.sketch_dir(id)]) {
+            if dir.exists() {
+                fs::remove_dir_all(dir)?;
+            }
+        }
+        Ok(())
+    }
+
+    // ----------------------------------------------------------------- tracks
+
+    /// Rename, mute, solo, collapse a track, choose which of its takes plays,
+    /// or move that take on the timeline.
+    pub fn update_track(&self, args: UpdateTrackArgs) -> Result<Track> {
+        validate_id(&args.id)?;
+        let sketch_id: String = self
+            .conn()
+            .query_row("SELECT sketch_id FROM tracks WHERE id = ?1", [&args.id], |r| r.get(0))
+            .optional()?
+            .ok_or_else(|| Error::NotFound(args.id.clone()))?;
+        if let Some(take) = &args.take_id {
+            validate_id(take)?;
+            let row: Option<(Option<String>, String)> = self
+                .conn()
+                .query_row("SELECT track_id, status FROM sketches WHERE id = ?1", [take], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .optional()?;
+            match row {
+                Some((Some(track), status)) if track == args.id => {
+                    if SketchStatus::parse(&status) != SketchStatus::Saved {
+                        return Err(Error::Invalid("that take is still being recorded".into()));
+                    }
+                }
+                _ => return Err(Error::NotFound(format!("take {take} of track {}", args.id))),
+            }
+        }
+        let name = args.name.as_deref().map(|n| n.trim().chars().take(60).collect::<String>());
+        {
+            let mut conn = self.conn();
+            let tx = conn.transaction()?;
+            tx.execute(
+                "UPDATE tracks
+                    SET name = COALESCE(?2, name), muted = COALESCE(?3, muted),
+                        solo = COALESCE(?4, solo), collapsed = COALESCE(?5, collapsed),
+                        take_id = COALESCE(?6, take_id)
+                  WHERE id = ?1",
+                params![args.id, name, args.muted, args.solo, args.collapsed, args.take_id],
+            )?;
+            if let Some(offset) = args.offset_ms {
+                tx.execute(
+                    "UPDATE sketches SET offset_ms = ?2, updated_at = ?3
+                      WHERE id = (SELECT take_id FROM tracks WHERE id = ?1)",
+                    params![args.id, offset, now_ms()],
+                )?;
+            }
+            tx.commit()?;
+        }
+        let conn = self.conn();
+        self.tracks_of(&conn, &sketch_id)?
+            .into_iter()
+            .find(|t| t.id == args.id)
+            .ok_or_else(|| Error::NotFound(args.id.clone()))
+    }
+
+    /// Delete a track and all of its takes. The track that holds the
+    /// sketch's own (first) recording cannot be deleted; delete the sketch.
+    pub fn delete_track(&self, id: &str) -> Result<()> {
+        validate_id(id)?;
+        let takes: Vec<(String, Option<String>)> = {
+            let conn = self.conn();
+            let exists: Option<String> = conn
+                .query_row("SELECT id FROM tracks WHERE id = ?1", [id], |r| r.get(0))
+                .optional()?;
+            if exists.is_none() {
+                return Err(Error::NotFound(id.to_string()));
+            }
+            let mut stmt = conn.prepare("SELECT id, parent_id FROM sketches WHERE track_id = ?1")?;
+            let rows = stmt
+                .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        if takes.iter().any(|(_, parent)| parent.is_none()) {
+            return Err(Error::Invalid(
+                "this track holds the sketch's first recording; delete the sketch instead".into(),
+            ));
+        }
+        {
+            let mut conn = self.conn();
+            let tx = conn.transaction()?;
+            tx.execute("DELETE FROM sketches WHERE track_id = ?1", [id])?;
+            tx.execute("DELETE FROM tracks WHERE id = ?1", [id])?;
+            tx.commit()?;
+        }
+        for (take, _) in takes {
+            let dir = self.sketch_dir(&take);
+            if dir.exists() {
+                fs::remove_dir_all(dir)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Delete one take of a track. Its track then plays its latest remaining
+    /// take, and a track left without takes is removed. The sketch's own
+    /// (first) recording cannot be deleted this way; delete the sketch.
+    pub fn delete_take(&self, id: &str) -> Result<()> {
+        validate_id(id)?;
+        let parent: Option<String> = self
+            .conn()
+            .query_row("SELECT parent_id FROM sketches WHERE id = ?1", [id], |r| r.get(0))
+            .optional()?
+            .ok_or_else(|| Error::NotFound(id.to_string()))?;
+        if parent.is_none() {
+            return Err(Error::Invalid(
+                "this is the sketch's first recording; delete the sketch instead".into(),
+            ));
+        }
+        self.remove_take(id)
+    }
+
+    fn remove_take(&self, id: &str) -> Result<()> {
+        let track: Option<String> = {
+            let conn = self.conn();
+            let track: Option<Option<String>> = conn
+                .query_row("SELECT track_id FROM sketches WHERE id = ?1", [id], |r| r.get(0))
+                .optional()?;
+            conn.execute("DELETE FROM sketches WHERE id = ?1", [id])?;
+            track.flatten()
+        };
         let dir = self.sketch_dir(id);
         if dir.exists() {
             fs::remove_dir_all(dir)?;
+        }
+        if let Some(track) = track {
+            self.repair_track(&track)?;
+        }
+        Ok(())
+    }
+
+    /// After a take is gone: play the latest remaining take, or drop the track.
+    fn repair_track(&self, track: &str) -> Result<()> {
+        let conn = self.conn();
+        let remaining: Vec<String> = {
+            let mut stmt = conn.prepare(
+                "SELECT id FROM sketches WHERE track_id = ?1
+                  ORDER BY (status = 'saved') DESC, created_at DESC",
+            )?;
+            let ids = stmt
+                .query_map([track], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()?;
+            ids
+        };
+        match remaining.first() {
+            None => {
+                conn.execute("DELETE FROM tracks WHERE id = ?1", [track])?;
+            }
+            Some(latest) => {
+                conn.execute(
+                    "UPDATE tracks SET take_id = ?2
+                      WHERE id = ?1 AND take_id NOT IN (SELECT id FROM sketches WHERE track_id = ?1)",
+                    params![track, latest],
+                )?;
+            }
         }
         Ok(())
     }
@@ -755,6 +1093,7 @@ impl Library {
                 )?;
                 report.recovered.push(id);
             } else {
+                // A take goes on its own; a sketch with all of its tracks.
                 self.delete_sketch(&id)?;
                 report.discarded.push(id);
             }

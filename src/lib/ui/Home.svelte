@@ -49,7 +49,7 @@
     const row = (e.target as HTMLElement).closest('[data-sketch-id]');
     if (row?.getAttribute('data-sketch-id') !== openRow) openRow = null;
   }
-  const groups = $derived(groupByDay(app.sketches));
+  const groups = $derived(groupByDay(app.topLevel));
   const captureHint = $derived(
     app.settings.camera === 'none'
       ? 'Audio only'
@@ -69,8 +69,8 @@
       <div class="select-actions">
         <button
           class="pill-button"
-          onclick={() => (selectedIds = selectedIds.length === app.sketches.length ? [] : app.sketches.map((s) => s.id))}
-          >{selectedIds.length === app.sketches.length ? 'None' : 'All'}</button
+          onclick={() => (selectedIds = selectedIds.length === app.topLevel.length ? [] : app.topLevel.map((s) => s.id))}
+          >{selectedIds.length === app.topLevel.length ? 'None' : 'All'}</button
         >
         <button class="icon-button" onclick={() => share(selectedIds)} disabled={selectedIds.length === 0} aria-label="Share selected">
           <Icon name="share" />
@@ -96,7 +96,7 @@
   </header>
 
   <main onpointerdowncapture={closeOpenRow}>
-    {#if app.ready && app.sketches.length === 0}
+    {#if app.ready && app.topLevel.length === 0}
       <div class="empty">
         <p class="serif lead">An empty page.</p>
         <p>
@@ -131,7 +131,7 @@
       </section>
     {/each}
 
-    {#if app.sketches.length > 0 && !selecting}
+    {#if app.topLevel.length > 0 && !selecting}
       <p class="gesture-hint">Swipe a sketch left to share or delete it. Press and hold to select several.</p>
     {/if}
   </main>

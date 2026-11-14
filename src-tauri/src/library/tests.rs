@@ -13,6 +13,35 @@ fn create(lib: &Library) -> CreatedSketch {
         media_mime: "video/quicktime".into(),
         capture_backend: "test".into(),
         title: None,
+        parent_id: None,
+        track_id: None,
+    })
+    .unwrap()
+}
+
+/// Reserve a take for `parent`: on `track`, or on a new track.
+fn create_take(lib: &Library, parent: &str, track: Option<&str>) -> CreatedSketch {
+    lib.create_sketch(CreateSketchArgs {
+        media_extension: "mov".into(),
+        media_mime: "video/quicktime".into(),
+        capture_backend: "test".into(),
+        title: None,
+        parent_id: Some(parent.into()),
+        track_id: track.map(String::from),
+    })
+    .unwrap()
+}
+
+fn finalize_take(lib: &Library, created: &CreatedSketch, offset_ms: i64) -> Sketch {
+    fs::write(&created.media_path, b"take").unwrap();
+    lib.finalize_sketch(FinalizeSketchArgs {
+        id: created.id.clone(),
+        duration_ms: Some(8_000),
+        has_video: false,
+        video_width: None,
+        video_height: None,
+        offset_ms: Some(offset_ms),
+        count_in_ms: Some(2_000),
     })
     .unwrap()
 }
@@ -34,6 +63,8 @@ fn finalize(lib: &Library, id: &str) -> Sketch {
         has_video: true,
         video_width: Some(1280),
         video_height: Some(720),
+        offset_ms: None,
+        count_in_ms: None,
     })
     .unwrap()
 }
@@ -57,6 +88,8 @@ fn record_and_finalize_roundtrip() {
             has_video: true,
             video_width: None,
             video_height: None,
+            offset_ms: None,
+            count_in_ms: None,
         })
         .is_err());
 
@@ -317,4 +350,174 @@ fn migrates_a_v1_database() {
     assert_eq!(sketches.len(), 1);
     assert_eq!(sketches[0].title, "Old");
     assert_eq!(sketches[0].crop_start_ms, None);
+    // v3: the old sketch is the only take of its one track.
+    let detail = lib.get("0123456789abcdef0123456789abcdef").unwrap();
+    assert_eq!(detail.tracks.len(), 1);
+    assert_eq!(detail.tracks[0].name, "Track 1");
+    assert_eq!(detail.tracks[0].take_id, detail.sketch.id);
+    assert_eq!(detail.sketch.track_id.as_deref(), Some(detail.tracks[0].id.as_str()));
+    assert_eq!(detail.sketch.offset_ms, 0);
+    assert_eq!(detail.sketch.parent_id, None);
+}
+
+#[test]
+fn a_new_sketch_has_one_track() {
+    let (_tmp, lib) = lib();
+    let created = create(&lib);
+    fs::write(&created.media_path, b"movie").unwrap();
+    finalize(&lib, &created.id);
+    let detail = lib.get(&created.id).unwrap();
+    assert_eq!(detail.tracks.len(), 1);
+    let track = &detail.tracks[0];
+    assert_eq!(track.id, created.track_id);
+    assert_eq!(track.take_id, created.id);
+    assert_eq!(track.takes.len(), 1);
+    assert!(!track.muted && !track.solo && !track.collapsed);
+}
+
+#[test]
+fn tracks_and_takes() {
+    let (_tmp, lib) = lib();
+    let sketch = create(&lib);
+    fs::write(&sketch.media_path, b"movie").unwrap();
+    finalize(&lib, &sketch.id);
+
+    // A take on a new track: the track exists from the start, at the end.
+    let second = create_take(&lib, &sketch.id, None);
+    assert_ne!(second.track_id, sketch.track_id);
+    let saved = finalize_take(&lib, &second, -1_500);
+    assert_eq!(saved.parent_id.as_deref(), Some(sketch.id.as_str()));
+    assert_eq!(saved.offset_ms, -1_500);
+    assert_eq!(saved.count_in_ms, Some(2_000));
+    let detail = lib.get(&sketch.id).unwrap();
+    assert_eq!(detail.tracks.len(), 2);
+    assert_eq!(detail.tracks[1].name, "Track 2");
+    assert_eq!(detail.tracks[1].take_id, second.id);
+
+    // Takes are listed with their sketch, and are sketch rows of their own.
+    assert_eq!(lib.list().unwrap().len(), 2);
+    assert!(lib.get(&second.id).unwrap().tracks.is_empty());
+
+    // A new take on track 1 plays once it is saved; the first take is kept.
+    let retake = create_take(&lib, &sketch.id, Some(&sketch.track_id));
+    assert_eq!(lib.get(&sketch.id).unwrap().tracks[0].take_id, sketch.id);
+    finalize_take(&lib, &retake, 250);
+    let track = lib.get(&sketch.id).unwrap().tracks.remove(0);
+    assert_eq!(track.take_id, retake.id);
+    assert_eq!(track.takes.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), [sketch.id.as_str(), retake.id.as_str()]);
+
+    // Mute, solo, collapse, rename, pick the other take, move it.
+    let track = lib
+        .update_track(UpdateTrackArgs {
+            id: sketch.track_id.clone(),
+            name: Some("  Left hand ".into()),
+            muted: Some(true),
+            solo: Some(true),
+            collapsed: Some(true),
+            take_id: Some(sketch.id.clone()),
+            offset_ms: Some(40),
+        })
+        .unwrap();
+    assert_eq!(track.name, "Left hand");
+    assert!(track.muted && track.solo && track.collapsed);
+    assert_eq!(track.take_id, sketch.id);
+    assert_eq!(lib.get(&sketch.id).unwrap().sketch.offset_ms, 40);
+    // A take of another track cannot be chosen.
+    assert!(lib
+        .update_track(UpdateTrackArgs {
+            id: sketch.track_id.clone(),
+            name: None,
+            muted: None,
+            solo: None,
+            collapsed: None,
+            take_id: Some(second.id.clone()),
+            offset_ms: None,
+        })
+        .is_err());
+
+    // Takes cannot hang off takes, and tracks belong to their own sketch.
+    assert!(lib
+        .create_sketch(CreateSketchArgs {
+            media_extension: "mov".into(),
+            media_mime: "video/quicktime".into(),
+            capture_backend: "test".into(),
+            title: None,
+            parent_id: Some(second.id.clone()),
+            track_id: None,
+        })
+        .is_err());
+    let other = create(&lib);
+    assert!(lib
+        .create_sketch(CreateSketchArgs {
+            media_extension: "mov".into(),
+            media_mime: "video/quicktime".into(),
+            capture_backend: "test".into(),
+            title: None,
+            parent_id: Some(other.id.clone()),
+            track_id: Some(sketch.track_id.clone()),
+        })
+        .is_err());
+}
+
+#[test]
+fn deleting_takes_tracks_and_sketches() {
+    let (_tmp, lib) = lib();
+    let sketch = create(&lib);
+    fs::write(&sketch.media_path, b"movie").unwrap();
+    finalize(&lib, &sketch.id);
+    let retake = create_take(&lib, &sketch.id, Some(&sketch.track_id));
+    finalize_take(&lib, &retake, 0);
+    let second = create_take(&lib, &sketch.id, None);
+    finalize_take(&lib, &second, 0);
+    let third = create_take(&lib, &sketch.id, Some(&second.track_id));
+    finalize_take(&lib, &third, 0);
+
+    // The sketch's own recording and its track stay.
+    assert!(lib.delete_take(&sketch.id).is_err());
+    assert!(lib.delete_track(&sketch.track_id).is_err());
+
+    // Deleting the take that plays falls back to the track's latest other take.
+    lib.delete_take(&retake.id).unwrap();
+    assert!(!Path::new(&retake.dir).exists());
+    assert_eq!(lib.get(&sketch.id).unwrap().tracks[0].take_id, sketch.id);
+
+    // A track goes with every take.
+    lib.delete_track(&second.track_id).unwrap();
+    assert!(!Path::new(&second.dir).exists() && !Path::new(&third.dir).exists());
+    assert_eq!(lib.get(&sketch.id).unwrap().tracks.len(), 1);
+
+    // Deleting the sketch removes its takes and their folders.
+    let fourth = create_take(&lib, &sketch.id, None);
+    finalize_take(&lib, &fourth, 0);
+    lib.delete_sketch(&sketch.id).unwrap();
+    assert!(!Path::new(&fourth.dir).exists());
+    assert!(lib.get(&fourth.id).is_err());
+    assert!(lib.list().unwrap().is_empty());
+}
+
+#[test]
+fn discarded_and_recovered_takes() {
+    let (_tmp, lib) = lib();
+    let sketch = create(&lib);
+    fs::write(&sketch.media_path, b"movie").unwrap();
+    finalize(&lib, &sketch.id);
+
+    // A new track whose recording never started goes away with its take.
+    let failed = create_take(&lib, &sketch.id, None);
+    assert_eq!(lib.get(&sketch.id).unwrap().tracks.len(), 2);
+    lib.discard_sketch(&failed.id).unwrap();
+    assert_eq!(lib.get(&sketch.id).unwrap().tracks.len(), 1);
+    assert!(!Path::new(&failed.dir).exists());
+
+    // After a crash: a take with data is kept (not yet playing), an empty one removed.
+    let kept = create_take(&lib, &sketch.id, Some(&sketch.track_id));
+    fs::write(&kept.media_path, b"partial").unwrap();
+    let empty = create_take(&lib, &sketch.id, None);
+    let report = lib.recover().unwrap();
+    assert_eq!(report.recovered, vec![kept.id.clone()]);
+    assert_eq!(report.discarded, vec![empty.id.clone()]);
+    let detail = lib.get(&sketch.id).unwrap();
+    assert_eq!(detail.tracks.len(), 1);
+    assert_eq!(detail.tracks[0].takes.len(), 2);
+    assert_eq!(detail.tracks[0].take_id, sketch.id);
 }

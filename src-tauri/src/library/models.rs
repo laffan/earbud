@@ -139,6 +139,48 @@ pub struct Sketch {
     /// Playback crop range in milliseconds (None = whole take).
     pub crop_start_ms: Option<i64>,
     pub crop_end_ms: Option<i64>,
+    /// The sketch this take belongs to (None: this row is a sketch, and the
+    /// first take of its first track).
+    pub parent_id: Option<String>,
+    /// The track this take belongs to.
+    pub track_id: Option<String>,
+    /// Where the recording's time 0 lies on the sketch's timeline, in
+    /// milliseconds (negative when it began before, e.g. during a count-in).
+    pub offset_ms: i64,
+    /// Where the count-in ended in the recording (milliseconds), if there was one.
+    pub count_in_ms: Option<i64>,
+}
+
+/// One track of a sketch: a lane of takes, of which one plays.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Track {
+    pub id: String,
+    pub sketch_id: String,
+    pub position: i64,
+    pub name: String,
+    /// The take that plays (and is shown).
+    pub take_id: String,
+    pub muted: bool,
+    pub solo: bool,
+    pub collapsed: bool,
+    pub created_at: i64,
+    /// Every take of the track, oldest first.
+    pub takes: Vec<Sketch>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateTrackArgs {
+    pub id: String,
+    pub name: Option<String>,
+    pub muted: Option<bool>,
+    pub solo: Option<bool>,
+    pub collapsed: Option<bool>,
+    /// Make another take of this track the one that plays.
+    pub take_id: Option<String>,
+    /// Move the take that plays on the timeline (milliseconds).
+    pub offset_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -161,6 +203,8 @@ pub struct SketchDetail {
     #[serde(flatten)]
     pub sketch: Sketch,
     pub transcription: Option<Transcription>,
+    /// The sketch's tracks in order (empty when this row is a take of another sketch).
+    pub tracks: Vec<Track>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -172,6 +216,12 @@ pub struct CreateSketchArgs {
     pub capture_backend: String,
     #[serde(default)]
     pub title: Option<String>,
+    /// Record a take for this sketch instead of a new sketch.
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    /// With `parent_id`: the track the take is for; None starts a new track.
+    #[serde(default)]
+    pub track_id: Option<String>,
 }
 
 /// A finished recording made elsewhere (the Apple Watch companion) that is
@@ -198,6 +248,7 @@ pub struct CreatedSketch {
     pub media_path: String,
     pub analysis_path: String,
     pub created_at: i64,
+    pub track_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -208,6 +259,12 @@ pub struct FinalizeSketchArgs {
     pub has_video: bool,
     pub video_width: Option<i64>,
     pub video_height: Option<i64>,
+    /// Where the take starts on the sketch's timeline (milliseconds).
+    #[serde(default)]
+    pub offset_ms: Option<i64>,
+    /// Where the count-in ended in the recording (milliseconds).
+    #[serde(default)]
+    pub count_in_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

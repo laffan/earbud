@@ -17,6 +17,7 @@
   const elapsed = $derived(
     recording.phase === 'recording' ? Math.max(recording.elapsedMs, now - recording.startedAt) : 0,
   );
+  const counting = $derived(recording.phase === 'recording' && recording.countIn !== null);
   // Map -60…0 dBFS onto 0…1.
   const level = $derived(Math.max(0, Math.min(1, (recording.levelDb + 60) / 60)));
   const peak = $derived(Math.max(0, Math.min(1, (recording.peakDb + 60) / 60)));
@@ -47,11 +48,14 @@
   {/if}
 
   <div class="top">
+    {#if recording.take}<div class="take-label">{recording.take.label}{recording.take.trackId ? ' · new take' : ''}</div>{/if}
     <div class="status">
       {#if recording.phase === 'starting'}
         <span class="label">{recording.retry ? 'Restarting…' : 'Starting…'}</span>
       {:else if recording.phase === 'saving'}
         <span class="label">Saving…</span>
+      {:else if counting}
+        <span class="label">Count-in</span>
       {:else}
         <span class="dot"></span>
         <span class="clock tabular">{formatClock(elapsed / 1000)}</span>
@@ -64,16 +68,31 @@
     {#if recording.warning}<div class="warning">{recording.warning}</div>{/if}
   </div>
 
+  {#if counting && recording.countIn}
+    <div class="count-in" aria-live="assertive">
+      {#key recording.countIn.beat}
+        <span class="beat tabular">{recording.countIn.beat > 0 ? recording.countIn.beat : ''}</span>
+      {/key}
+      <span class="beats" aria-hidden="true">
+        {#each Array(recording.countIn.beats) as _, i (i)}
+          <span class="pip" class:on={i < recording.countIn.beat}></span>
+        {/each}
+      </span>
+    </div>
+  {/if}
+
   <div class="bottom">
     <button
       class="stop"
       onclick={() => app.stopRecording()}
-      disabled={recording.phase !== 'recording' || now < recording.armedAt}
-      aria-label="Stop and save"
+      disabled={recording.phase !== 'recording' || (now < recording.armedAt && !counting)}
+      aria-label={counting ? 'Cancel recording' : 'Stop and save'}
     >
       <span class="square"></span>
     </button>
-    <p class="hint">{recording.phase === 'recording' ? 'Play. Tap to stop and save.' : ' '}</p>
+    <p class="hint">
+      {#if counting}Get ready. Tap to cancel.{:else if recording.phase === 'recording'}Play. Tap to stop and save.{:else}&nbsp;{/if}
+    </p>
   </div>
 </div>
 
@@ -171,6 +190,61 @@
     bottom: 0;
     width: 2px;
     background: #fff;
+  }
+  .take-label {
+    padding: 4px 12px;
+    border-radius: 999px;
+    background: rgb(0 0 0 / 55%);
+    color: #fff;
+    font-size: 0.85rem;
+  }
+  .audio-only .take-label {
+    background: var(--paper-sunk);
+    color: var(--ink-2);
+  }
+  .count-in {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-content: center;
+    justify-items: center;
+    gap: 18px;
+    pointer-events: none;
+  }
+  .beat {
+    font-size: min(38vw, 220px);
+    font-weight: 700;
+    line-height: 1;
+    min-height: 1em;
+    color: #fff;
+    text-shadow: 0 2px 16px rgb(0 0 0 / 55%);
+    animation: beat 240ms ease-out;
+  }
+  .audio-only .beat {
+    color: var(--accent);
+    text-shadow: none;
+  }
+  .beats {
+    display: flex;
+    gap: 10px;
+  }
+  .pip {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 2px solid currentColor;
+    opacity: 0.8;
+  }
+  .pip.on {
+    background: var(--accent);
+    border-color: var(--accent);
+    opacity: 1;
+  }
+  @keyframes beat {
+    from {
+      transform: scale(1.25);
+      opacity: 0.4;
+    }
   }
   .warning {
     padding: 6px 12px;

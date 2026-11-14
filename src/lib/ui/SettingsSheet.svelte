@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { app } from '../state/app.svelte';
+  import { app, COUNT_IN_BEATS } from '../state/app.svelte';
   import Sheet from './Sheet.svelte';
   import TranscriptionSettings from './TranscriptionSettings.svelte';
   import WatchSettings from './WatchSettings.svelte';
@@ -57,6 +57,36 @@
         {/each}
       </div>
       <p class="help">Ultra wide fits the whole keyboard when the phone is close to the keys.</p>
+    {/if}
+  </section>
+
+  <section>
+    <h3>Count-in</h3>
+    <label class="toggle">
+      <input
+        type="checkbox"
+        checked={app.settings.countIn}
+        onchange={(e) => app.updateSettings({ countIn: e.currentTarget.checked })}
+      />
+      <span>
+        <strong>Count in {COUNT_IN_BEATS} beats before recording</strong>
+        <span class="help">Ticks and a countdown, then the take begins. Stop during the count-in to cancel.</span>
+      </span>
+    </label>
+    {#if app.settings.countIn}
+      <label class="tempo">
+        <span>Tempo</span>
+        <input
+          type="range"
+          min="40"
+          max="200"
+          step="1"
+          value={app.settings.countInBpm}
+          oninput={(e) => app.updateSettings({ countInBpm: Number(e.currentTarget.value) })}
+          aria-label="Count-in tempo"
+        />
+        <span class="tabular bpm">{app.settings.countInBpm} BPM</span>
+      </label>
     {/if}
   </section>
 
@@ -152,6 +182,22 @@
     width: 18px;
     height: 18px;
     accent-color: var(--accent);
+  }
+  .tempo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    font-size: 0.9rem;
+  }
+  .tempo input {
+    flex: 1;
+    accent-color: var(--accent);
+  }
+  .bpm {
+    min-width: 7ch;
+    text-align: right;
+    color: var(--ink-2);
   }
   .about p {
     margin: 0;

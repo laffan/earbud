@@ -39,6 +39,10 @@ function sketch(id: string, createdAt: number): Sketch {
     hasEdits: false,
     cropStartMs: null,
     cropEndMs: null,
+    parentId: null,
+    trackId: null,
+    offsetMs: 0,
+    countInMs: null,
   };
 }
 

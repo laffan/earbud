@@ -20,9 +20,11 @@ import type {
   Sketch,
   SketchDetail,
   SketchLibrary,
+  Track,
   Transcription,
   TranscriptionStatus,
   UpdateSketchArgs,
+  UpdateTrackArgs,
 } from './types';
 
 interface Entry {
@@ -32,11 +34,15 @@ interface Entry {
   files: Map<string, { blob: Blob; url: string }>;
 }
 
+type TrackRow = Omit<Track, 'takes'>;
+
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+const newId = () => crypto.randomUUID().replace(/-/g, '');
 
 export class MemoryLibrary implements SketchLibrary {
   readonly persistent = false;
   private entries = new Map<string, Entry>();
+  private tracks = new Map<string, TrackRow>();
 
   private entry(id: string): Entry {
     const entry = this.entries.get(id);
@@ -60,12 +66,47 @@ export class MemoryLibrary implements SketchLibrary {
 
   async get(id: string): Promise<SketchDetail> {
     const entry = this.entry(id);
-    return { ...this.snapshot(entry), transcription: entry.transcription ? clone(entry.transcription) : null };
+    return {
+      ...this.snapshot(entry),
+      transcription: entry.transcription ? clone(entry.transcription) : null,
+      tracks: entry.sketch.parentId === null ? this.tracksOf(id) : [],
+    };
+  }
+
+  private tracksOf(sketchId: string): Track[] {
+    return [...this.tracks.values()]
+      .filter((t) => t.sketchId === sketchId)
+      .sort((a, b) => a.position - b.position || a.createdAt - b.createdAt)
+      .map((t) => ({
+        ...t,
+        takes: [...this.entries.values()]
+          .filter((e) => e.sketch.trackId === t.id)
+          .map((e) => this.snapshot(e))
+          .sort((a, b) => a.createdAt - b.createdAt),
+      }));
   }
 
   async create(args: CreateSketchArgs): Promise<CreatedSketch> {
-    const id = crypto.randomUUID().replace(/-/g, '');
+    const id = newId();
     const now = Date.now();
+    let trackId: string;
+    let newTrack: TrackRow | null = null;
+    if (args.parentId) {
+      const parent = this.entry(args.parentId);
+      if (parent.sketch.parentId !== null) throw new Error('takes belong to a sketch, not to another take');
+      if (args.trackId) {
+        if (this.tracks.get(args.trackId)?.sketchId !== args.parentId) throw new Error(`track not found: ${args.trackId}`);
+        trackId = args.trackId;
+      } else {
+        const positions = [...this.tracks.values()].filter((t) => t.sketchId === args.parentId).map((t) => t.position);
+        const position = positions.length ? Math.max(...positions) + 1 : 0;
+        trackId = newId();
+        newTrack = { id: trackId, sketchId: args.parentId, position, name: `Track ${position + 1}`, takeId: id, muted: false, solo: false, collapsed: false, createdAt: now };
+      }
+    } else {
+      trackId = newId();
+      newTrack = { id: trackId, sketchId: id, position: 0, name: 'Track 1', takeId: id, muted: false, solo: false, collapsed: false, createdAt: now };
+    }
     const dir = `memory://${id}`;
     const mediaPath = `${dir}/recording.${args.mediaExtension}`;
     this.entries.set(id, {
@@ -91,12 +132,17 @@ export class MemoryLibrary implements SketchLibrary {
         hasEdits: false,
         cropStartMs: null,
         cropEndMs: null,
+        parentId: args.parentId ?? null,
+        trackId,
+        offsetMs: 0,
+        countInMs: null,
       },
       transcription: null,
       chunks: [],
       files: new Map(),
     });
-    return { id, dir, mediaPath, analysisPath: `${dir}/analysis.wav`, createdAt: now };
+    if (newTrack) this.tracks.set(trackId, newTrack);
+    return { id, dir, mediaPath, analysisPath: `${dir}/analysis.wav`, createdAt: now, trackId };
   }
 
   async finalize(args: FinalizeSketchArgs): Promise<Sketch> {
@@ -114,7 +160,11 @@ export class MemoryLibrary implements SketchLibrary {
       videoHeight: args.videoHeight,
       mediaPath: url,
       updatedAt: Date.now(),
+      offsetMs: args.offsetMs ?? entry.sketch.offsetMs,
+      countInMs: args.countInMs ?? entry.sketch.countInMs,
     } satisfies Partial<Sketch>);
+    const track = entry.sketch.trackId ? this.tracks.get(entry.sketch.trackId) : undefined;
+    if (track) track.takeId = args.id;
     return this.snapshot(entry);
   }
 
@@ -123,6 +173,60 @@ export class MemoryLibrary implements SketchLibrary {
     if (!entry) return;
     if (entry.sketch.status === 'saved') throw new Error('refusing to discard a saved sketch');
     await this.remove(id);
+  }
+
+  async updateTrack(args: UpdateTrackArgs): Promise<Track> {
+    const track = this.tracks.get(args.id);
+    if (!track) throw new Error(`track not found: ${args.id}`);
+    if (args.takeId !== undefined) {
+      const take = this.entries.get(args.takeId);
+      if (take?.sketch.trackId !== args.id) throw new Error(`take not found: ${args.takeId}`);
+      if (take.sketch.status !== 'saved') throw new Error('that take is still being recorded');
+      track.takeId = args.takeId;
+    }
+    if (args.name !== undefined) track.name = args.name.trim().slice(0, 60);
+    if (args.muted !== undefined) track.muted = args.muted;
+    if (args.solo !== undefined) track.solo = args.solo;
+    if (args.collapsed !== undefined) track.collapsed = args.collapsed;
+    if (args.offsetMs !== undefined) this.entry(track.takeId).sketch.offsetMs = args.offsetMs;
+    return this.tracksOf(track.sketchId).find((t) => t.id === args.id)!;
+  }
+
+  async removeTrack(id: string): Promise<void> {
+    if (!this.tracks.has(id)) throw new Error(`track not found: ${id}`);
+    const takes = [...this.entries.values()].filter((e) => e.sketch.trackId === id);
+    if (takes.some((e) => e.sketch.parentId === null)) {
+      throw new Error("this track holds the sketch's first recording; delete the sketch instead");
+    }
+    for (const e of takes) this.drop(e.sketch.id);
+    this.tracks.delete(id);
+  }
+
+  async removeTake(id: string): Promise<void> {
+    if (this.entry(id).sketch.parentId === null) {
+      throw new Error("this is the sketch's first recording; delete the sketch instead");
+    }
+    this.removeTakeRow(id);
+  }
+
+  private drop(id: string) {
+    const entry = this.entries.get(id);
+    if (!entry) return;
+    for (const f of entry.files.values()) URL.revokeObjectURL(f.url);
+    this.entries.delete(id);
+  }
+
+  /** Remove a take; its track plays its latest remaining take, or goes. */
+  private removeTakeRow(id: string) {
+    const trackId = this.entries.get(id)?.sketch.trackId;
+    this.drop(id);
+    const track = trackId ? this.tracks.get(trackId) : undefined;
+    if (!track) return;
+    const remaining = [...this.entries.values()]
+      .filter((e) => e.sketch.trackId === track.id)
+      .sort((a, b) => Number(b.sketch.status === 'saved') - Number(a.sketch.status === 'saved') || b.sketch.createdAt - a.sketch.createdAt);
+    if (remaining.length === 0) this.tracks.delete(track.id);
+    else if (!remaining.some((e) => e.sketch.id === track.takeId)) track.takeId = remaining[0].sketch.id;
   }
 
   async update(args: UpdateSketchArgs): Promise<Sketch> {
@@ -145,8 +249,13 @@ export class MemoryLibrary implements SketchLibrary {
   async remove(id: string): Promise<void> {
     const entry = this.entries.get(id);
     if (!entry) return;
-    for (const f of entry.files.values()) URL.revokeObjectURL(f.url);
-    this.entries.delete(id);
+    if (entry.sketch.parentId !== null) {
+      this.removeTakeRow(id);
+      return;
+    }
+    for (const e of [...this.entries.values()]) if (e.sketch.parentId === id) this.drop(e.sketch.id);
+    for (const t of [...this.tracks.values()]) if (t.sketchId === id) this.tracks.delete(t.id);
+    this.drop(id);
   }
 
   async setTranscriptionStatus(id: string, status: TranscriptionStatus, error: string | null = null) {

@@ -12,6 +12,7 @@ import {
   type PlatformCapabilities,
   type RecordingResult,
 } from '../capture';
+import { Metronome } from '../capture/countIn';
 import { getLibrary, type Sketch, type SketchLibrary } from '../library';
 import { ProcessingQueue, type JobProgress } from '../pipeline/processingQueue';
 import { errorCode, errorMessage, isIOSLike } from '../platform/tauri';
@@ -29,6 +30,33 @@ export interface Settings extends CaptureSettings {
   /** Recording environment and held-note handling used for new transcriptions. */
   transcription: TranscriptionSettings;
   autoTranscribe: boolean;
+  /** Count in (COUNT_IN_BEATS beats) before every take. */
+  countIn: boolean;
+  /** Tempo of the count-in, in beats per minute. */
+  countInBpm: number;
+}
+
+/** Beats of the count-in. */
+export const COUNT_IN_BEATS = 3;
+
+/**
+ * Recording a take into an open sketch: a new track, or a new take of a
+ * track. The sketch view starts the other tracks at the downbeat.
+ */
+export interface TakeTarget {
+  sketchId: string;
+  /** The track to record a new take for; null adds a track. */
+  trackId: string | null;
+  /** Shown while recording, e.g. "Track 2". */
+  label: string;
+  /**
+   * The downbeat: start playing the other tracks and return where on the
+   * sketch's timeline they started (seconds). The take is placed so that
+   * its downbeat lines up with that point.
+   */
+  onDownbeat?: () => number;
+  /** The take was saved, discarded or failed; stop playback. */
+  onEnd?: (saved: Sketch | null) => void;
 }
 
 export type View = { name: 'home' } | { name: 'sketch'; id: string };
@@ -50,6 +78,14 @@ export interface RecordingState {
   nativePreview: boolean;
   previewStream?: MediaStream;
   warning: string | null;
+  /** The count-in is running: the beat sounding now (1-based; 0 before the first). */
+  countIn: { beat: number; beats: number } | null;
+  /** Where the downbeat fell in the recording (ms), once it has. */
+  downbeatMs: number | null;
+  /** Where the other tracks started playing on the sketch's timeline (seconds). */
+  playFrom: number | null;
+  /** Recording a take into an open sketch (null: a new sketch). */
+  take: { sketchId: string; trackId: string | null; label: string } | null;
 }
 
 export interface Toast {
@@ -82,6 +118,8 @@ export interface AppStateOptions {
   startTimeoutMs?: number;
   /** Override the Apple Watch link (tests); `null` disables it. */
   watchLink?: WatchLinkClient | null;
+  /** Override the count-in clock and sound (tests). */
+  metronome?: Metronome;
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -90,6 +128,8 @@ const DEFAULT_SETTINGS: Settings = {
   rawAudio: false,
   transcription: DEFAULT_TRANSCRIPTION_SETTINGS,
   autoTranscribe: true,
+  countIn: true,
+  countInBpm: 90,
 };
 
 function loadSettings(): Settings {
@@ -119,7 +159,10 @@ export class AppState {
   readonly library: SketchLibrary;
   capabilities = $state<PlatformCapabilities | null>(null);
   ready = $state(false);
+  /** Every sketch and take (takes of multi-track sketches have a `parentId`). */
   sketches = $state<Sketch[]>([]);
+  /** The sketches shown in the list (not their takes). */
+  readonly topLevel = $derived(this.sketches.filter((s) => s.parentId === null));
   view = $state<View>({ name: 'home' });
   settings = $state<Settings>(loadSettings());
   recording = $state<RecordingState | null>(null);
@@ -139,6 +182,12 @@ export class AppState {
   private attempt = 0;
   /** A `finished` event that arrived before the start request resolved. */
   private pendingFinish: RecordingResult | null = null;
+  /** The take being recorded into an open sketch (kept across the automatic retry). */
+  private takeTarget: TakeTarget | null = null;
+  private readonly metronome: Metronome;
+  private countInAbort: AbortController | null = null;
+  /** Last level event: the recorder's own clock, to place the downbeat in the recording. */
+  private lastLevel: { elapsedMs: number; at: number } | null = null;
   private captureLog: string[] = [];
   private readonly options: AppStateOptions;
   readonly queue: ProcessingQueue;
@@ -146,6 +195,7 @@ export class AppState {
   constructor(options: AppStateOptions = {}) {
     this.options = options;
     this.library = options.library ?? getLibrary();
+    this.metronome = options.metronome ?? new Metronome();
     this.queue = new ProcessingQueue({
       library: this.library,
       capture: () => this.captureEngine,
@@ -273,11 +323,10 @@ export class AppState {
   }
 
   async deleteSketches(ids: string[]) {
-    for (const id of ids) {
-      this.queue.cancel(id);
-      await this.library.remove(id);
-    }
     const gone = new Set(ids);
+    for (const s of this.sketches) if (s.parentId && gone.has(s.parentId)) gone.add(s.id);
+    for (const id of gone) this.queue.cancel(id);
+    for (const id of ids) await this.library.remove(id);
     this.sketches = this.sketches.filter((s) => !gone.has(s.id));
     if (this.view.name === 'sketch' && gone.has(this.view.id)) this.goHome();
     this.toast(ids.length === 1 ? 'Sketch deleted.' : `${ids.length} sketches deleted.`);
@@ -365,13 +414,20 @@ export class AppState {
    * A start that fails, times out, or dies within the first moments is
    * retried once automatically before the user sees an error.
    */
-  async startRecording(options: { retry?: boolean } = {}) {
+  async startRecording(options: { retry?: boolean; take?: TakeTarget } = {}) {
     const engine = this.captureEngine;
     if (this.recording && !options.retry) return;
     if (!engine) {
       this.toast('Recording is not available on this device.', 'error');
+      options.take?.onEnd?.(null);
       return;
     }
+    if (!options.retry) {
+      this.takeTarget = options.take ?? null;
+      // Still inside the tap: the only moment iOS lets audio start.
+      if (this.settings.countIn) this.metronome.prepare();
+    }
+    const take = this.takeTarget;
     const settings: CaptureSettings = {
       camera: this.settings.camera,
       lens: this.settings.lens,
@@ -394,7 +450,12 @@ export class AppState {
       hasVideo: wantsVideo,
       nativePreview: engine.nativePreview && wantsVideo,
       warning: retry ? 'Restarting the recording…' : null,
+      countIn: null,
+      downbeatMs: null,
+      playFrom: null,
+      take: take ? { sketchId: take.sketchId, trackId: take.trackId, label: take.label } : null,
     };
+    this.lastLevel = null;
     this.queue.setPaused(true);
     this.logCapture(`${retry ? 'automatic retry' : 'record tapped'} (attempt ${attempt}, ${engine.id}, camera=${settings.camera})`);
 
@@ -419,6 +480,7 @@ export class AppState {
         mediaExtension: format.extension,
         mediaMime: format.mime,
         captureBackend: engine.id,
+        ...(take ? { parentId: take.sketchId, trackId: take.trackId ?? undefined } : {}),
       });
       sketchId = created.id;
       if (this.recording?.nativePreview) document.documentElement.classList.add('native-preview');
@@ -456,7 +518,9 @@ export class AppState {
         this.pendingFinish = null;
         this.recording = { ...this.recording, phase: 'saving' };
         await this.finishRecording(early, false);
+        return;
       }
+      void this.countInThenPlay(attempt);
     } catch (error) {
       if (attempt !== this.attempt) return;
       document.documentElement.classList.remove('native-preview');
@@ -476,6 +540,53 @@ export class AppState {
       this.endRecordingUi();
       this.toast(`Could not start recording: ${errorMessage(error)} Details: Settings → Diagnostics.`, 'error');
     }
+  }
+
+  /** Where the recorder is in the take right now (ms), by its own clock where possible. */
+  private recordingElapsedMs(): number {
+    const now = performance.now();
+    const level = this.lastLevel;
+    if (level) return level.elapsedMs + (now - level.at);
+    return now - (this.recording?.startedAt ?? now);
+  }
+
+  /**
+   * Once the recorder runs: the count-in, then the downbeat. A take into an
+   * open sketch starts the other tracks there.
+   */
+  private async countInThenPlay(attempt: number) {
+    if (this.settings.countIn) {
+      const abort = new AbortController();
+      this.countInAbort = abort;
+      const recording = this.recording;
+      if (recording) recording.countIn = { beat: 0, beats: COUNT_IN_BEATS };
+      if (!this.metronome.audible) this.logCapture('count-in without sound (no running audio context)');
+      const reached = await this.metronome.run({
+        beats: COUNT_IN_BEATS,
+        bpm: this.settings.countInBpm,
+        signal: abort.signal,
+        onBeat: (beat) => {
+          if (attempt === this.attempt && this.recording?.countIn) this.recording.countIn.beat = beat;
+        },
+      });
+      if (this.countInAbort === abort) this.countInAbort = null;
+      if (!reached || attempt !== this.attempt || this.recording?.phase !== 'recording') return;
+      this.recording.countIn = null;
+    }
+    const recording = this.recording;
+    if (!recording || attempt !== this.attempt || recording.phase !== 'recording') return;
+    recording.downbeatMs = Math.max(0, this.recordingElapsedMs());
+    if (this.takeTarget?.onDownbeat) {
+      try {
+        recording.playFrom = this.takeTarget.onDownbeat();
+      } catch (error) {
+        this.logCapture(`could not start the other tracks: ${errorMessage(error)}`);
+      }
+    }
+    this.logCapture(
+      `downbeat at ${Math.round(recording.downbeatMs)} ms into the take` +
+        (recording.playFrom !== null ? `; other tracks from ${recording.playFrom.toFixed(2)} s` : ''),
+    );
   }
 
   /** Reject the start if the engine never answers, and reset the engine. */
@@ -516,12 +627,19 @@ export class AppState {
     const recording = this.recording;
     const active = this.active;
     if (!recording || recording.phase !== 'recording' || !active) return;
-    if (performance.now() < recording.armedAt) {
+    const counting = recording.countIn !== null;
+    if (performance.now() < recording.armedAt && !counting) {
       this.logCapture('ignored a stop tap right after recording started');
       return;
     }
+    this.countInAbort?.abort();
     this.recording = { ...recording, phase: 'saving' };
-    this.logCapture('stop tapped');
+    this.logCapture(counting ? 'stopped during the count-in: cancelling the take' : 'stop tapped');
+    if (counting) {
+      await active.stop().catch(() => {});
+      await this.cancelRecording();
+      return;
+    }
     let result: RecordingResult;
     try {
       result = await active.stop();
@@ -556,6 +674,7 @@ export class AppState {
         recording.levelDb = event.averageDb;
         recording.peakDb = event.peakDb;
         recording.elapsedMs = event.elapsedMs;
+        this.lastLevel = { elapsedMs: event.elapsedMs, at: performance.now() };
         break;
       case 'interrupted':
         this.logCapture(`interrupted: ${event.reason}`);
@@ -582,10 +701,22 @@ export class AppState {
     }
   }
 
+  /** Stopped during the count-in: nothing was played, so nothing is kept. */
+  private async cancelRecording() {
+    const id = this.recording?.sketchId;
+    this.active = null;
+    document.documentElement.classList.remove('native-preview');
+    if (id) await this.library.discard(id).catch(() => {});
+    this.endRecordingUi();
+    this.toast('Recording cancelled.');
+    void this.refresh();
+  }
+
   private async finishRecording(result: RecordingResult, userStopped: boolean) {
     const recording = this.recording;
     const id = recording?.sketchId;
     this.active = null;
+    this.countInAbort?.abort();
     document.documentElement.classList.remove('native-preview');
     if (!id) {
       this.endRecordingUi();
@@ -609,6 +740,14 @@ export class AppState {
       return;
     }
 
+    const take = recording?.take ?? null;
+    const downbeatMs = recording?.downbeatMs ?? null;
+    // A take into a sketch is placed so its downbeat meets the point where the
+    // other tracks started; without a count-in the downbeat is the take's start.
+    const offsetMs = take
+      ? Math.round((recording?.playFrom ?? 0) * 1000 - (downbeatMs ?? 0))
+      : undefined;
+    let saved: Sketch | null = null;
     try {
       const sketch = await this.library.finalize({
         id,
@@ -616,28 +755,51 @@ export class AppState {
         hasVideo: result.hasVideo,
         videoWidth: result.width ?? null,
         videoHeight: result.height ?? null,
+        offsetMs,
+        countInMs: recording?.countIn === null && downbeatMs !== null && this.settings.countIn ? Math.round(downbeatMs) : null,
       });
-      this.logCapture(`saved ${Math.round(result.durationMs)} ms take${userStopped ? '' : ' (ended on its own)'}`);
-      this.upsert(sketch);
-      this.toast(
-        userStopped || result.ok ? 'Sketch saved.' : 'Recording was interrupted, but the take was saved.',
-        'info',
-        { label: 'Open', run: () => this.openSketch(id) },
+      saved = sketch;
+      this.logCapture(
+        `saved ${Math.round(result.durationMs)} ms take${userStopped ? '' : ' (ended on its own)'}` +
+          (take ? ` for ${take.label} at ${offsetMs} ms` : ''),
       );
+      this.upsert(sketch);
+      if (take) {
+        this.touch(take.sketchId);
+        this.toast(userStopped || result.ok ? `${take.label}: take saved.` : 'Recording was interrupted, but the take was saved.');
+      } else {
+        this.toast(
+          userStopped || result.ok ? 'Sketch saved.' : 'Recording was interrupted, but the take was saved.',
+          'info',
+          { label: 'Open', run: () => this.openSketch(id) },
+        );
+      }
       if (this.settings.autoTranscribe) this.queue.enqueue(id);
     } catch (error) {
       this.logCapture(`could not save the take: ${errorMessage(error)}`);
       await this.library.discard(id).catch(() => {});
+      if (take) this.touch(take.sketchId);
       this.toast(`Nothing was recorded: ${errorMessage(error)}`, 'error');
     } finally {
-      this.endRecordingUi();
+      this.endRecordingUi(saved);
       void this.refresh();
     }
   }
 
-  private endRecordingUi() {
+  /** Tell open views that a sketch changed (e.g. a track was added). */
+  touch(id: string) {
+    this.revision[id] = (this.revision[id] ?? 0) + 1;
+  }
+
+  private endRecordingUi(saved: Sketch | null = null) {
     this.recording = null;
     this.queue.setPaused(false);
+    this.countInAbort?.abort();
+    this.countInAbort = null;
+    const target = this.takeTarget;
+    this.takeTarget = null;
+    if (this.settings.countIn) this.metronome.close();
+    target?.onEnd?.(saved);
   }
 }
 

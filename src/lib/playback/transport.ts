@@ -16,6 +16,10 @@
  *  - Playback can be limited to a crop range, optionally looping.
  *  - A seek is over when the element stops `seeking`, not only on 'seeked':
  *    WebKit drops some seeks without firing either event (see `settleSeek`).
+ *  - Several tracks: the clock follows one media element at a time, placed
+ *    on the timeline by an offset. `select` says which element covers a
+ *    time; the transport switches to it on a seek and when the current one
+ *    reaches its end while another continues (see `TrackMixer`).
  */
 
 /** The parts of HTMLMediaElement the transport uses (fakeable in tests). */
@@ -34,6 +38,12 @@ export interface MediaLike {
   pause(): void;
   addEventListener(type: string, listener: (event: Event) => void): void;
   removeEventListener(type: string, listener: (event: Event) => void): void;
+}
+
+/** A media element and where its time 0 lies on the transport's timeline (seconds). */
+export interface MediaSlot {
+  media: MediaLike;
+  offset: number;
 }
 
 export interface TransportState {
@@ -57,6 +67,12 @@ export interface TransportOptions {
    */
   onUnseekable?: () => void;
   log?: (message: string) => void;
+  /**
+   * Several tracks: the media that should drive the clock at `time`. Asked
+   * on every seek and when the current media reaches its end. Without it
+   * the attached media is used throughout.
+   */
+  select?: (time: number) => MediaSlot | null;
   requestFrame?: (callback: () => void) => number;
   cancelFrame?: (id: number) => void;
   /** Milliseconds clock (tests); defaults to `performance.now`. */
@@ -74,6 +90,10 @@ const SEEK_TIMEOUT_MS = 3000;
 const MAX_SEEK_RETRIES = 3;
 /** How long a loaded source may report no seekable ranges before it is called unseekable (ms). */
 const UNSEEKABLE_AFTER_MS = 1500;
+/** Switch to the next track this long before the current media ends (seconds). */
+const HANDOVER_LEAD = 0.06;
+/** A media element already this close to the timeline position is not sought when taking over (seconds). */
+const HANDOVER_TOLERANCE = 0.25;
 const MEDIA_EVENTS = [
   'play',
   'playing',
@@ -98,6 +118,10 @@ const MEDIA_EVENTS = [
 
 export class MediaTransport {
   private media: MediaLike | null = null;
+  /** Timeline position of the attached media's time 0 (seconds). */
+  private offset = 0;
+  /** Length of the timeline when it is longer than the attached media (several tracks). */
+  private timelineDuration: number | null = null;
   private position = 0;
   private playing = false;
   private buffering = false;
@@ -141,10 +165,23 @@ export class MediaTransport {
     return { position: this.position, playing: this.playing, buffering: this.buffering };
   }
 
-  attach(media: MediaLike | null) {
-    if (this.media === media) return;
+  /** The media element driving the clock. */
+  get current(): MediaLike | null {
+    return this.media;
+  }
+
+  /** Follow `media`, whose time 0 lies at `offset` on the timeline. */
+  attach(media: MediaLike | null, offset = 0) {
+    if (this.media === media) {
+      if (offset !== this.offset) {
+        this.offset = offset;
+        if (media && media.readyState >= HAVE_METADATA) this.applySeek(this.position);
+      }
+      return;
+    }
     if (this.media) for (const type of MEDIA_EVENTS) this.media.removeEventListener(type, this.listener);
     this.media = media;
+    this.offset = offset;
     this.seekInFlight = false;
     this.queuedSeek = null;
     this.forgetDroppedSeek();
@@ -156,6 +193,27 @@ export class MediaTransport {
     for (const type of MEDIA_EVENTS) media.addEventListener(type, this.listener);
     if (media.readyState >= HAVE_METADATA) this.applySeek(this.position);
     else this.restoreAt = this.position;
+  }
+
+  /**
+   * Switch the clock to another media element without stopping: an element
+   * that already plays near the position is taken as it is.
+   */
+  use(slot: MediaSlot | null) {
+    if (!slot) {
+      this.attach(null);
+      return;
+    }
+    if (slot.media === this.media) {
+      this.attach(slot.media, slot.offset);
+      return;
+    }
+    this.switchTo(slot);
+  }
+
+  /** Timeline length when several tracks make it longer than one media element (null: the media's own). */
+  setDuration(duration: number | null) {
+    this.timelineDuration = duration !== null && Number.isFinite(duration) && duration > 0 ? duration : null;
   }
 
   /** Limit playback to [start, end]; `end = null` means the whole take. */
@@ -204,7 +262,9 @@ export class MediaTransport {
     // A new target replaces one the engine dropped earlier.
     this.forgetDroppedSeek();
     this.emit();
-    this.applySeek(t);
+    const slot = this.options.select?.(t);
+    if (slot && slot.media !== this.media) this.switchTo(slot);
+    else this.applySeek(t);
     if (this.playing) this.options.onJump?.(t);
   }
 
@@ -217,9 +277,64 @@ export class MediaTransport {
   // -------------------------------------------------------------- internals
 
   private effectiveEnd(): number | null {
-    const duration = this.media && Number.isFinite(this.media.duration) ? this.media.duration : null;
+    const mediaEnd = this.media && Number.isFinite(this.media.duration) ? this.offset + this.media.duration : null;
+    const duration = this.timelineDuration ?? mediaEnd;
     if (this.rangeEnd === null) return duration;
     return duration === null ? this.rangeEnd : Math.min(this.rangeEnd, duration);
+  }
+
+  /** Where the attached media is on the timeline. */
+  private timeOf(media: MediaLike): number {
+    return media.currentTime + this.offset;
+  }
+
+  /** The attached media's own time for timeline position `t`. */
+  private mediaTarget(media: MediaLike, t: number): number {
+    const local = Math.max(0, t - this.offset);
+    return Number.isFinite(media.duration) ? Math.min(local, media.duration) : local;
+  }
+
+  /** Move the clock to another element, keeping the position and the play state. */
+  private switchTo(slot: MediaSlot) {
+    const previous = this.media;
+    if (previous) for (const type of MEDIA_EVENTS) previous.removeEventListener(type, this.listener);
+    const media = slot.media;
+    this.media = media;
+    this.offset = slot.offset;
+    this.seekInFlight = false;
+    this.queuedSeek = null;
+    this.restoreAt = null;
+    this.forgetDroppedSeek();
+    this.reportedUnseekable = false;
+    for (const type of MEDIA_EVENTS) media.addEventListener(type, this.listener);
+    if (previous) media.playbackRate = previous.playbackRate;
+    if (media.readyState >= HAVE_METADATA) {
+      const near = Math.abs(this.timeOf(media) - this.position) <= HANDOVER_TOLERANCE;
+      if (!(near && !media.paused)) this.applySeek(this.position);
+    } else {
+      this.restoreAt = this.position;
+    }
+    if (this.wantPlaying && media.paused) void this.startMedia();
+    else this.sync();
+  }
+
+  /**
+   * At the end of the attached media, hand the clock to the track that goes
+   * on from there (if any). Returns whether it switched.
+   */
+  private handOver(): boolean {
+    const media = this.media;
+    const select = this.options.select;
+    if (!select || !media || !Number.isFinite(media.duration)) return false;
+    const end = this.offset + media.duration;
+    if (this.position < end - HANDOVER_LEAD && !media.ended) return false;
+    const limit = this.effectiveEnd();
+    if (limit !== null && end >= limit - END_EPSILON) return false;
+    const next = select(end + 0.01);
+    if (!next || next.media === media) return false;
+    this.options.log?.(`handing playback over to the next track at ${end.toFixed(2)} s`);
+    this.switchTo(next);
+    return true;
   }
 
   private clampToRange(time: number): number {
@@ -245,7 +360,7 @@ export class MediaTransport {
       }
       this.droppedSeek = null; // superseded by this target
     }
-    if (Math.abs(media.currentTime - t) < 0.001) return;
+    if (Math.abs(media.currentTime - this.mediaTarget(media, t)) < 0.001) return;
     this.sendSeek(media, t);
   }
 
@@ -254,7 +369,7 @@ export class MediaTransport {
     this.seekInFlight = true;
     this.seekTarget = t;
     this.seekSentAt = this.now();
-    media.currentTime = t;
+    media.currentTime = this.mediaTarget(media, t);
   }
 
   private forgetDroppedSeek() {
@@ -290,7 +405,7 @@ export class MediaTransport {
       return;
     }
     const target = this.seekTarget;
-    if (sawSeeked || Math.abs(media.currentTime - target) <= SEEK_TOLERANCE) {
+    if (sawSeeked || Math.abs(this.timeOf(media) - target) <= SEEK_TOLERANCE) {
       this.seekRetries = 0;
       return;
     }
@@ -378,7 +493,7 @@ export class MediaTransport {
         if (this.restoreAt !== null) {
           const t = this.clampToRange(this.restoreAt);
           this.restoreAt = null;
-          if (t > 0.001) this.sendSeek(media, t);
+          if (this.mediaTarget(media, t) > 0.001) this.sendSeek(media, t);
         }
         break;
       case 'error': {
@@ -398,7 +513,8 @@ export class MediaTransport {
         // Backstop for the frame loop (animation frames can be throttled,
         // e.g. in Low Power Mode): follow the media while playing too.
         if (!media.paused && !this.seekInFlight && this.queuedSeek === null) {
-          this.position = media.currentTime;
+          this.position = this.timeOf(media);
+          if (this.handOver()) return;
           this.checkRangeEnd(media);
         }
         break;
@@ -415,6 +531,7 @@ export class MediaTransport {
         void this.startMedia();
       }
     }
+    if (type === 'ended' && this.wantPlaying && this.handOver()) return;
     if (type === 'ended' && this.wantPlaying && this.loop) {
       this.seek(this.rangeStart);
       void this.startMedia();
@@ -435,7 +552,7 @@ export class MediaTransport {
     // pending (a dropped one included: it is sent again once the media can seek).
     const pending = this.seekInFlight || this.queuedSeek !== null || this.restoreAt !== null || this.droppedSeek !== null;
     if (media && !playing && !pending) {
-      if (media.readyState >= HAVE_METADATA) this.position = media.currentTime;
+      if (media.readyState >= HAVE_METADATA) this.position = this.timeOf(media);
     }
     this.emit();
   }
@@ -463,7 +580,13 @@ export class MediaTransport {
       // While playing, a dropped seek does not hold the playhead: it shows
       // what is playing until the seek is sent again and lands.
       if (!this.seekInFlight && this.queuedSeek === null) {
-        this.position = media.currentTime;
+        this.position = this.timeOf(media);
+        if (this.handOver()) {
+          // Switching may have started a loop of its own: keep exactly one.
+          this.cancelFrame(this.frame);
+          this.frame = this.playing ? this.requestFrame(step) : 0;
+          return;
+        }
         if (this.checkRangeEnd(media)) return;
         this.emit();
         this.options.onFrame?.(this.position, media.playbackRate);

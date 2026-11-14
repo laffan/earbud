@@ -45,6 +45,36 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE sketches ADD COLUMN crop_start_ms INTEGER;
     ALTER TABLE sketches ADD COLUMN crop_end_ms INTEGER;
     "#,
+    // v3: tracks. A sketch (a row with no parent) holds one or more tracks;
+    // each track has one or more takes (recordings) and plays one of them.
+    // Every take is a `sketches` row of its own, so recordings, analysis
+    // audio and transcriptions work the same for every take. The sketch's
+    // own row is the first take of its first track.
+    r#"
+    ALTER TABLE sketches ADD COLUMN parent_id TEXT;
+    ALTER TABLE sketches ADD COLUMN track_id TEXT;
+    ALTER TABLE sketches ADD COLUMN offset_ms INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE sketches ADD COLUMN count_in_ms INTEGER;
+    CREATE INDEX sketches_parent ON sketches(parent_id);
+    CREATE INDEX sketches_track ON sketches(track_id);
+
+    CREATE TABLE tracks (
+        id         TEXT PRIMARY KEY NOT NULL,
+        sketch_id  TEXT NOT NULL REFERENCES sketches(id) ON DELETE CASCADE,
+        position   INTEGER NOT NULL,
+        name       TEXT NOT NULL DEFAULT '',
+        take_id    TEXT NOT NULL,
+        muted      INTEGER NOT NULL DEFAULT 0,
+        solo       INTEGER NOT NULL DEFAULT 0,
+        collapsed  INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL
+    );
+    CREATE INDEX tracks_sketch ON tracks(sketch_id, position);
+
+    INSERT INTO tracks (id, sketch_id, position, name, take_id, created_at)
+        SELECT lower(hex(randomblob(16))), id, 0, 'Track 1', id, created_at FROM sketches;
+    UPDATE sketches SET track_id = (SELECT t.id FROM tracks t WHERE t.take_id = sketches.id);
+    "#,
 ];
 
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
