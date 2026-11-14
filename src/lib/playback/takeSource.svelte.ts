@@ -1,8 +1,8 @@
 /**
- * Where a take's media element gets its sound from, with fallbacks:
+ * Where the take's video element gets its picture from, with a fallback:
  * the original file URL, then an in-memory copy (some WebKit builds cannot
- * stream or seek media from a custom URL scheme but play a blob fine), then
- * the extracted analysis audio.
+ * stream or seek media from a custom URL scheme but play a blob fine). The
+ * sound never comes from here: it plays through the audio engine.
  */
 import { fileUrl } from '../platform/tauri';
 
@@ -12,15 +12,13 @@ const BLOB_FALLBACK_LIMIT = 200 * 1024 * 1024;
 export class TakeSource {
   sources = $state<string[]>([]);
   index = $state(0);
-  /** Shown under the video when the take plays from a fallback (or not at all). */
+  /** Shown under the video when it cannot be shown. */
   notice = $state<string | null>(null);
   private blobUrl: string | null = null;
   private disposed = false;
 
   constructor(
     private readonly mediaPath: string | null,
-    /** The analysis WAV, which may appear later (after processing). */
-    private readonly analysisPath: () => string | null,
     private readonly log: (message: string) => void,
   ) {
     if (mediaPath) this.sources = [fileUrl(mediaPath)];
@@ -55,22 +53,12 @@ export class TakeSource {
     }
   }
 
-  /** The current source failed to load: try the next one. */
-  async failed(error: MediaError | null, video: boolean) {
+  /** The current source failed to load: try the in-memory copy. */
+  async failed(error: MediaError | null) {
     if (!this.mediaPath) return;
-    this.log(`source ${this.index} failed (code ${error?.code ?? '?'} ${error?.message ?? ''}); trying the next one`);
+    this.log(`video source ${this.index} failed (code ${error?.code ?? '?'} ${error?.message ?? ''}); trying the next one`);
     if (await this.loadIntoMemory()) return;
-    const analysis = this.analysisPath();
-    if (analysis) {
-      const audio = fileUrl(analysis);
-      if (!this.sources.includes(audio)) {
-        this.sources = [...this.sources, audio];
-        this.index = this.sources.length - 1;
-        if (video) this.notice = 'The video cannot be played here, so you are hearing the extracted audio.';
-        return;
-      }
-    }
-    this.notice = 'This recording cannot be played on this device. It is still saved and can be exported.';
+    this.notice = 'The video cannot be shown on this device. The recording still plays.';
   }
 
   dispose() {

@@ -46,7 +46,7 @@ const OUT = process.env.SMOKE_OUT;
   const total = await noteCount();
   console.log('notes in the demo sketch:', total);
 
-  // The roll area starts right of the 40 px keyboard and below the 42 px chord lane + ruler.
+  // The roll area starts right of the 40 px keyboard and below the 16 px time ruler.
   const left = roll.x + 46;
   const top = roll.y + 46;
   const drag = async (x0, y0, x1, y1, steps = 12) => {
@@ -115,7 +115,7 @@ const OUT = process.env.SMOKE_OUT;
   await page.keyboard.up('Control');
   await page.mouse.click(left, top);
   const before = await page.screenshot({ clip: { x: roll.x, y: roll.y, width: roll.width, height: 40 } });
-  await drag(roll.x + roll.width * 0.8, roll.y + 34, roll.x + roll.width * 0.3, roll.y + 34);
+  await drag(roll.x + roll.width * 0.8, roll.y + 8, roll.x + roll.width * 0.3, roll.y + 8);
   await page.mouse.up();
   await page.waitForTimeout(600);
   const after = await page.screenshot({ clip: { x: roll.x, y: roll.y, width: roll.width, height: 40 } });

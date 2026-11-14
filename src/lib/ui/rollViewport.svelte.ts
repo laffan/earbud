@@ -3,6 +3,9 @@
  * by every track's roll so the tracks stay lined up: pinching or scrolling
  * one moves them all.
  */
+/** Width of the keyboard gutter at the roll's left edge; the chord strip keeps the same margin (px). */
+export const ROLL_GUTTER = 40;
+
 export class RollViewport {
   /** Horizontal zoom (pixels per second). */
   pxPerSec = $state(80);

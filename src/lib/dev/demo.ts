@@ -56,9 +56,35 @@ export function demoSecondPart(): PianoNote[] {
   return notes;
 }
 
+/** A third part: an arpeggiated line in the treble, one chord tone every eighth note. */
+export function demoThirdPart(): PianoNote[] {
+  const notes: PianoNote[] = [];
+  PROGRESSION.forEach(([, triad], i) => {
+    const t = 0.4 + i * 2.5;
+    for (let k = 0; k < 8; k++) {
+      const pitch = triad[k % 3] + 24;
+      notes.push({ pitch, startTime: t + k * 0.3125, endTime: t + k * 0.3125 + 0.28, velocity: 64, confidence: 0.8 });
+    }
+  });
+  return notes;
+}
+
+/** A fourth part: the bass an octave down on beats one and three. */
+export function demoFourthPart(): PianoNote[] {
+  const notes: PianoNote[] = [];
+  PROGRESSION.forEach(([bass], i) => {
+    const t = 0.4 + i * 2.5;
+    notes.push({ pitch: bass - 12, startTime: t, endTime: t + 1.1, velocity: 80, confidence: 0.9 });
+    notes.push({ pitch: bass - 5, startTime: t + 1.25, endTime: t + 2.3, velocity: 72, confidence: 0.85 });
+  });
+  return notes;
+}
+
 /**
  * `?demo`: one sketch. `?demo=tracks`: the same sketch with a second track
- * (whose recording starts 1.5 s into the first).
+ * (whose recording starts 1.5 s into the first). `?demo=tracks3` and
+ * `?demo=tracks4` add a treble arpeggio (starting at 0) and a low bass line
+ * (starting 0.25 s in).
  */
 export async function seedDemo(library: SketchLibrary, options: { tracks?: number } = {}): Promise<void> {
   const notes = demoNotes();
@@ -86,29 +112,37 @@ export async function seedDemo(library: SketchLibrary, options: { tracks?: numbe
     notes,
     summary: summarize(notes),
   });
-  if ((options.tracks ?? 1) < 2) return;
+  const parts: [() => PianoNote[], number][] = [
+    [demoSecondPart, 1.5],
+    [demoThirdPart, 0],
+    [demoFourthPart, 0.25],
+  ];
+  for (const [make, offset] of parts.slice(0, Math.max(0, (options.tracks ?? 1) - 1))) {
+    await addDemoTrack(library, created.id, make(), offset);
+  }
+}
 
-  // Track 2: recorded "later", starting 1.5 s into the sketch.
-  const offset = 1.5;
-  const part = demoSecondPart().map((n) => ({ ...n, startTime: n.startTime - offset, endTime: n.endTime - offset }));
-  const second = await library.create({
+/** A track "recorded later", whose recording starts `offset` seconds into the sketch. */
+async function addDemoTrack(library: SketchLibrary, parentId: string, notes: PianoNote[], offset: number) {
+  const part = notes.map((n) => ({ ...n, startTime: n.startTime - offset, endTime: n.endTime - offset }));
+  const take = await library.create({
     mediaExtension: 'wav',
     mediaMime: 'audio/wav',
     captureBackend: 'demo',
-    parentId: created.id,
+    parentId,
   });
-  await library.writeFile(second.id, 'media-chunk', await renderNotesToWav(part, { sampleRate: 44100 }));
+  await library.writeFile(take.id, 'media-chunk', await renderNotesToWav(part, { sampleRate: 44100 }));
   await library.finalize({
-    id: second.id,
+    id: take.id,
     durationMs: Math.round((part.reduce((t, n) => Math.max(t, n.endTime), 0) + 1.5) * 1000),
     hasVideo: false,
     videoWidth: null,
     videoHeight: null,
     offsetMs: offset * 1000,
   });
-  await library.writeFile(second.id, 'analysis', await renderNotesToWav(part, { sampleRate: ANALYSIS_SAMPLE_RATE }));
+  await library.writeFile(take.id, 'analysis', await renderNotesToWav(part, { sampleRate: ANALYSIS_SAMPLE_RATE }));
   await library.saveTranscription({
-    id: second.id,
+    id: take.id,
     engine: 'demo',
     engineVersion: '1',
     params: {},

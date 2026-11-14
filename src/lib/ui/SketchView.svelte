@@ -1,23 +1,31 @@
 <script lang="ts">
   /**
-   * An open sketch: its tracks (each a piano roll with its waveform), an
-   * "Add track" button, the video, text notes and details. The top bar
+   * An open sketch: its tracks (each a piano roll, its chords and its
+   * waveform; collapsed, the waveform), Record / Import track, the Chords
+   * section (the key, the chords used and how to play them, the circle of
+   * fifths), the video, text notes and details. The top bar
    * (title, timecode, tempo) and the transport (play, what plays, loop)
-   * stay on screen. All tracks play together on one timeline
-   * (`TrackMixer`), honouring mute and solo; each can play its recording,
-   * its notes or both ("Separate").
+   * stay on screen. All tracks play together on one timeline through one
+   * Web Audio graph (`AudioEngine`), honouring mute and solo; each can play
+   * its recording, its notes or both ("Separate"). The video only shows the
+   * picture (muted), following the sound.
    */
   import { onDestroy, onMount, untrack } from 'svelte';
   import { ClickTrack } from '../capture/countIn';
   import type { Sketch, SketchDetail, TempoSource, Track, UpdateTrackArgs } from '../library/types';
+  import { detectChords, type ChordSegment } from '../music/chords';
+  import { detectKey, spellChord } from '../music/key';
   import { notesEndTime } from '../music/notes';
   import { NoteSynth } from '../music/synth';
   import { confidentTempo, nearestBeat, nextBeat } from '../music/tempo';
-  import { TrackMixer, type MixerTrack } from '../playback/mixer';
+  import { AudioEngine, type EngineTrack } from '../playback/audioEngine';
+  import { loadTakeBuffer, stretchBuffer } from '../playback/takeBuffers';
   import { TakeSource } from '../playback/takeSource.svelte';
+  import { VideoFollower } from '../playback/videoFollower';
   import { errorMessage } from '../platform/tauri';
   import { app } from '../state/app.svelte';
   import type { PianoNote } from '../transcription/types';
+  import ChordsPanel from './ChordsPanel.svelte';
   import Icon from './Icon.svelte';
   import ImportSheet from './ImportSheet.svelte';
   import { RollViewport } from './rollViewport.svelte';
@@ -52,13 +60,16 @@
       .map((track) => ({ track, take: takeOf(track) }))
       .filter((e): e is { track: Track; take: Sketch } => !!e.take && e.take.status === 'saved' && !!e.take.mediaPath),
   );
-  /** The take shown as video: the first one with video, else the first one (its element is a <video>). */
-  const shown = $derived(playable.find((e) => e.take.hasVideo) ?? playable[0] ?? null);
+  /** The take shown as video: the first one with video. */
+  const shown = $derived(playable.find((e) => e.take.hasVideo) ?? null);
 
   // --------------------------------------------------------- playback
-  let mediaEls = $state<Record<string, HTMLMediaElement | null>>({});
-  let mediaDurations = $state<Record<string, number>>({});
-  let sources = $state<Record<string, TakeSource>>({});
+  /** Each take's decoded sound, by take id. */
+  let buffers = $state.raw<Record<string, AudioBuffer>>({});
+  /** Takes being decoded, and those that could not be (with the analysis audio they were tried with). */
+  let decoding = $state.raw<Record<string, { state: 'loading' | 'failed'; analysis: string | null }>>({});
+  let videoEl = $state<HTMLVideoElement | null>(null);
+  let videoSource = $state<TakeSource | null>(null);
   let currentTime = $state(0);
   let playing = $state(false);
   let rate = $state(1);
@@ -75,9 +86,8 @@
   let armedTrack = $state<string | null>(null);
   /** Recording into this sketch: the track getting a new take, null for a new track, undefined when not. */
   let recordingInto = $state<string | null | undefined>(undefined);
-  const synth = new NoteSynth();
   const view = new RollViewport();
-  const unlocked = new WeakSet<HTMLMediaElement>();
+  let disposed = false;
 
   /** What a track plays. */
   const modeOf = (track: Track): ListenMode => (listen === 'separate' ? (trackListen[track.id] ?? 'recording') : listen);
@@ -100,75 +110,112 @@
     click.setGrid(tempo.bpm, tempo.beat);
   });
 
-  /** One clock for every track, the waveforms, the piano rolls and the synth. */
-  const mixer = new TrackMixer({
+  /**
+   * Every sound of the sketch: the tracks' recordings and the synth, on one
+   * audio clock. The waveforms, piano rolls, video and click follow it.
+   */
+  const engine = new AudioEngine({
     onState: (state) => {
       currentTime = state.position;
       buffering = state.buffering;
       if (state.playing !== playing) {
         playing = state.playing;
-        if (playing && synthOn) void synth.start(state.position, rate);
-        if (!playing) {
-          synth.stop();
-          click.stop();
-        } else if (showTempo) click.start();
+        if (!playing) click.stop();
+        else if (showTempo) click.start();
       }
+      video.update(state.position, state.playing && !state.buffering, rate);
     },
     onFrame: (position, playbackRate) => {
-      if (synthOn) synth.tick(position, playbackRate);
+      synth.pump();
       if (showTempo) click.tick(position, playbackRate);
+      video.update(position, true, playbackRate);
     },
-    onJump: (position) => {
-      if (synthOn) void synth.start(position, rate);
+    onCue: (clock) => {
+      if (clock && synthOn) synth.cue(clock);
+      else synth.stop();
     },
-    onError: (message) => app.toast(message, 'error'),
-    // WebKit can play a file URL it cannot seek in; an in-memory copy can.
-    onUnseekable: () => {
-      const current = mixer.transport.current;
-      const takeId = Object.keys(mediaEls).find((k) => mediaEls[k] === current);
-      const source = takeId ? sources[takeId] : undefined;
-      void source?.loadIntoMemory().then((switched) =>
-        app.logCapture(`[playback] ${switched ? 'playing an in-memory copy so seeking works' : 'no seekable source available'}`),
-      );
-    },
+    stretch: stretchBuffer,
     log: (message) => app.logCapture(`[playback] ${message}`),
   });
+  const synth = new NoteSynth({ context: () => engine.context, destination: () => engine.input });
+  const video = new VideoFollower({
+    // WebKit can play a file URL it cannot seek in; an in-memory copy can.
+    onUnseekable: () => {
+      void videoSource?.loadIntoMemory().then((switched) =>
+        app.logCapture(`[playback] ${switched ? 'showing an in-memory copy of the video so seeking works' : 'the video cannot seek'}`),
+      );
+    },
+  });
 
-  // Media sources per take, created as takes appear and released as they go.
+  // Each take's sound is decoded as it appears (and again once its analysis audio exists, if it failed before).
   $effect(() => {
     const wanted = playable.map((e) => e.take);
     untrack(() => {
-      const keep = new Set(wanted.map((t) => t.id));
+      const capture = app.exportDeps().capture;
       for (const take of wanted) {
-        if (sources[take.id]) continue;
+        const analysis = take.analysisPath;
+        const tried = decoding[take.id];
+        if (buffers[take.id] || tried?.state === 'loading' || (tried && tried.analysis === analysis)) continue;
         const takeId = take.id;
-        sources[takeId] = new TakeSource(
-          take.mediaPath,
-          () => app.sketches.find((s) => s.id === takeId)?.analysisPath ?? take.analysisPath,
-          (message) => app.logCapture(`[playback] ${message}`),
+        decoding = { ...decoding, [takeId]: { state: 'loading', analysis } };
+        loadTakeBuffer(
+          engine.context,
+          { mediaPath: take.mediaPath, analysisPath: analysis, hasVideo: take.hasVideo },
+          {
+            exportAudio: capture?.exportAudio ? (media, out) => capture.exportAudio!(media, out) : undefined,
+            log: (message) => app.logCapture(`[playback] ${message}`),
+          },
+        ).then(
+          (buffer) => {
+            if (disposed) return;
+            buffers = { ...buffers, [takeId]: buffer };
+            const { [takeId]: _done, ...rest } = decoding;
+            decoding = rest;
+          },
+          (error) => {
+            if (disposed) return;
+            app.logCapture(`[playback] could not decode take ${takeId}: ${errorMessage(error)}`);
+            decoding = { ...decoding, [takeId]: { state: 'failed', analysis } };
+          },
         );
       }
-      for (const key of Object.keys(sources)) {
-        if (!keep.has(key)) {
-          sources[key].dispose();
-          delete sources[key];
-        }
+      // Let go of the sound of takes no longer played.
+      const keep = new Set(wanted.map((t) => t.id));
+      if (Object.keys(buffers).some((k) => !keep.has(k))) {
+        buffers = Object.fromEntries(Object.entries(buffers).filter(([k]) => keep.has(k)));
       }
     });
   });
 
-  const mixerTracks = $derived<MixerTrack[]>(
+  // The video's source follows the take shown.
+  $effect(() => {
+    const take = shown?.take ?? null;
+    untrack(() => {
+      videoSource?.dispose();
+      videoSource = take ? new TakeSource(take.mediaPath, (message) => app.logCapture(`[playback] ${message}`)) : null;
+    });
+  });
+  $effect(() => {
+    const el = videoEl;
+    const offset = (shown?.take.offsetMs ?? 0) / 1000;
+    untrack(() => {
+      video.attach(el, offset);
+      video.update(currentTime, playing && !buffering, rate);
+    });
+  });
+
+  const engineTracks = $derived<EngineTrack[]>(
     playable.map(({ track, take }) => ({
       id: track.id,
-      media: mediaEls[take.id] ?? null,
+      buffer: buffers[take.id] ?? null,
+      loading: !buffers[take.id] && decoding[take.id]?.state !== 'failed',
       offset: take.offsetMs / 1000,
-      duration: mediaDurations[take.id] || (take.durationMs ?? 0) / 1000 || notesEndTime(takeNotes[take.id] ?? []),
       audible: takeHeard(track),
     })),
   );
   $effect(() => {
-    const list = mixerTracks;
-    untrack(() => mixer.setTracks(list));
+    const list = engineTracks;
+    untrack(() => engine.setTracks(list));
   });
 
   /** Length of the sketch: the end of its latest take (or of its notes). */
@@ -178,10 +225,13 @@
       const take = takeOf(track);
       if (!take) continue;
       const offset = take.offsetMs / 1000;
-      const length = mediaDurations[take.id] || (take.durationMs ?? 0) / 1000;
+      const length = buffers[take.id]?.duration || (take.durationMs ?? 0) / 1000;
       end = Math.max(end, offset + length, offset + notesEndTime(takeNotes[take.id] ?? []));
     }
     return end;
+  });
+  $effect(() => {
+    engine.setDuration(duration);
   });
 
   /** The notes the synth plays: those of the tracks whose notes are heard, on the sketch's timeline. */
@@ -198,6 +248,33 @@
     }),
   );
   const noteCount = $derived(playable.reduce((sum, e) => sum + (takeNotes[e.take.id]?.length ?? 0), 0));
+
+  // ---------------------------------------------------------- analysis
+  /** The notes of the tracks being heard (mute and solo apply), together on the sketch's timeline. */
+  const heardNotes = $derived(
+    playable.flatMap(({ track, take }) => {
+      if (!audible(track)) return [];
+      const offset = take.offsetMs / 1000;
+      const notes = takeNotes[take.id] ?? [];
+      return offset === 0 ? notes : notes.map((n) => ({ ...n, startTime: n.startTime + offset, endTime: n.endTime + offset }));
+    }),
+  );
+  const sketchChords = $derived(detectChords(heardNotes));
+  const sketchKey = $derived(detectKey(heardNotes));
+  /** Chord symbols spelled for the sketch's key, everywhere they are shown. */
+  const spell = $derived((chord: ChordSegment) => spellChord(chord, sketchKey));
+  const analysisState = $derived.by(() => {
+    if (heardNotes.length > 0) return 'ready' as const;
+    const waiting = playable.some(({ take }) => {
+      const live = app.sketches.find((s) => s.id === take.id) ?? take;
+      return !!app.jobs[take.id] || live.transcriptionStatus === 'pending' || live.transcriptionStatus === 'running';
+    });
+    return waiting ? ('pending' as const) : ('empty' as const);
+  });
+
+  function playPitches(pitches: number[], spread: number) {
+    synth.playChord(pitches, 80, 1.6, spread);
+  }
   const anyEdits = $derived(playable.some((e) => e.take.hasEdits));
 
   $effect(() => {
@@ -206,17 +283,17 @@
   $effect(() => {
     // While recording into the sketch the other tracks play to the end: no crop, no loop.
     const overdub = recordingInto !== undefined;
-    mixer.setRange(overdub ? 0 : (cropStart ?? 0), overdub ? null : cropEnd);
+    engine.setRange(overdub ? 0 : (cropStart ?? 0), overdub ? null : cropEnd);
   });
   $effect(() => {
-    mixer.setLoop(loopPlayback && recordingInto === undefined);
+    engine.setLoop(loopPlayback && recordingInto === undefined);
   });
   $effect(() => {
     // Notes switched on or off while playing.
     const on = synthOn;
     untrack(() => {
       if (!on) synth.stop();
-      else if (playing) void synth.start(currentTime, rate);
+      else if (engine.clock) synth.cue(engine.clock);
     });
   });
   $effect(() => {
@@ -287,77 +364,52 @@
   });
 
   onDestroy(() => {
+    disposed = true;
     window.clearTimeout(notesTimer);
     if (detail && textNotes !== detail.textNotes) void app.saveNotesText(id, textNotes);
     if (tempoTimer !== undefined) void saveTempo();
-    mixer.dispose();
     synth.dispose();
+    engine.dispose();
     click.dispose();
-    // Release the media pipelines (and WebKit's audio session) right away
-    // instead of waiting for garbage collection.
-    for (const el of Object.values(mediaEls)) {
-      if (!el) continue;
-      el.pause();
-      el.removeAttribute('src');
-      el.load();
+    // Release the video pipeline right away instead of waiting for garbage collection.
+    if (videoEl) {
+      videoEl.pause();
+      videoEl.removeAttribute('src');
+      videoEl.load();
     }
-    for (const source of Object.values(sources)) source.dispose();
+    videoSource?.dispose();
   });
 
   // ------------------------------------------------------------ media
 
-  function onMetadata(takeId: string, el: HTMLMediaElement) {
+  function onVideoMetadata(el: HTMLVideoElement) {
     if (el.duration === Infinity) {
-      // MediaRecorder WebM files have no duration until scanned once.
+      // MediaRecorder WebM files have no duration (and seek badly) until scanned once.
       const reset = () => {
         el.removeEventListener('durationchange', reset);
         el.currentTime = 0;
+        video.update(currentTime, playing && !buffering, rate);
       };
       el.addEventListener('durationchange', reset);
       el.currentTime = 1e101;
       return;
     }
-    if (Number.isFinite(el.duration)) mediaDurations[takeId] = el.duration;
-  }
-
-  function onDurationChange(takeId: string, el: HTMLMediaElement) {
-    if (Number.isFinite(el.duration) && el.duration > 0) mediaDurations[takeId] = el.duration;
-  }
-
-  /**
-   * iOS lets a media element play with sound only after a play() inside a
-   * tap. The clock's element gets one from the play button; the other
-   * tracks' elements are started later by the mixer, so give each of them
-   * one here (played and paused at once).
-   */
-  function unlockMedia() {
-    const clock = mixer.transport.current;
-    for (const el of Object.values(mediaEls)) {
-      if (!el || el === clock || !el.paused || unlocked.has(el)) continue;
-      unlocked.add(el);
-      const started = el.play();
-      el.pause();
-      void started?.catch(() => {});
-    }
+    video.update(currentTime, playing && !buffering, rate);
   }
 
   function togglePlay() {
-    if (!playing) {
-      unlockMedia();
-      // The synth starts when the media does, after this tap: wake its audio now (WebKit).
-      if (synthOn) synth.unlock();
-    }
-    mixer.toggle();
+    // Wake the audio inside this tap (WebKit starts audio only in a gesture).
+    if (!playing) engine.unlock();
+    engine.toggle();
   }
 
   function seek(t: number) {
-    mixer.seek(t);
+    engine.seek(t);
   }
 
   function setRate(next: number) {
     rate = next;
-    mixer.setRate(rate);
-    if (playing && synthOn) void synth.start(currentTime, rate);
+    engine.setRate(rate);
   }
 
   function setListen(mode: typeof listen) {
@@ -521,7 +573,7 @@
   const canImport = $derived(!app.recording && !!detail && detail.status === 'saved');
 
   async function importTrack(kind: 'midi' | 'audio', file: File, offsetMs: number): Promise<boolean> {
-    mixer.pause();
+    engine.pause();
     return app.importTrack(id, kind, file, offsetMs);
   }
 
@@ -547,13 +599,12 @@
     if (!canRecordTake) return;
     const track = trackId ? tracks.find((t) => t.id === trackId) : undefined;
     const label = track ? trackLabel(track) : nextTrackLabel;
-    unlockMedia();
-    if (synthOn) synth.unlock();
-    mixer.pause();
+    engine.unlock();
+    engine.pause();
     const from = takeStart();
     recordingInto = trackId;
     // The take is recorded in real time: the others play at full speed meanwhile.
-    if (rate !== 1) mixer.setRate(1);
+    if (rate !== 1) engine.setRate(1);
     void app.startRecording({
       take: {
         sketchId: id,
@@ -561,13 +612,17 @@
         label,
         tempo: tempo.bpm !== null ? { bpm: tempo.bpm, beat: tempo.beat ?? from } : undefined,
         onDownbeat: () => {
-          mixer.seek(from);
-          void mixer.play();
-          return from;
+          engine.seek(from);
+          engine.play();
+          // What is heard at this instant: the start sounds after the engine's lead and the output
+          // latency, so the downbeat meets a point just before `from`.
+          const heard = engine.heardPosition();
+          if (!engine.clock) app.logCapture('[playback] the other tracks could not start at the downbeat; the take may need lining up');
+          return heard;
         },
         onEnd: () => {
-          mixer.pause();
-          mixer.setRate(rate);
+          engine.pause();
+          engine.setRate(rate);
           recordingInto = undefined;
           armedTrack = null;
         },
@@ -737,6 +792,7 @@
               onnotes={(notes) => (takeNotes = { ...takeNotes, [take.id]: notes })}
               listenMode={listen === 'separate' ? modeOf(track) : null}
               onlisten={(mode) => setTrackListen(track, mode)}
+              {spell}
             />
           {/if}
         {/each}
@@ -750,52 +806,48 @@
         </div>
       </section>
 
-      <!-- 2. The take (video, or the audio-only badge) -->
+      <!-- 2. The harmony of what is heard -->
+      <div class="analysis-area">
+      <ChordsPanel
+        chords={sketchChords}
+        key={sketchKey}
+        {currentTime}
+        status={analysisState}
+        combined={playable.filter((e) => audible(e.track)).length > 1}
+        onplay={playPitches}
+        onseek={seek}
+      />
+      </div>
+
+      <!-- 3. The take's video (its sound plays with the tracks), or the audio-only badge -->
       <section class="take" aria-label="Recording">
-        <div class="media" class:audio-only={!shown?.take.hasVideo || !!sources[shown?.take.id ?? '']?.notice}>
-          {#if shown && sources[shown.take.id]}
-            {@const source = sources[shown.take.id]}
-            {@const takeId = shown.take.id}
+        <div class="media" class:audio-only={!shown || !!videoSource?.notice}>
+          {#if shown && videoSource && !videoSource.notice}
             <!-- svelte-ignore a11y_media_has_caption -->
             <video
-              bind:this={mediaEls[takeId]}
-              src={source.src}
+              bind:this={videoEl}
+              src={videoSource.src}
               playsinline
+              muted
               preload="auto"
-              onloadedmetadata={(e) => onMetadata(takeId, e.currentTarget)}
-              ondurationchange={(e) => onDurationChange(takeId, e.currentTarget)}
-              onerror={(e) => source.failed((e.currentTarget as HTMLMediaElement).error, true)}
+              onloadedmetadata={(e) => onVideoMetadata(e.currentTarget)}
+              onerror={(e) => videoSource?.failed((e.currentTarget as HTMLMediaElement).error)}
               onclick={togglePlay}
             ></video>
-          {/if}
-          {#if !shown?.take.hasVideo || sources[shown?.take.id ?? '']?.notice}
+          {:else}
             <div class="audio-badge"><Icon name="mic" size={16} /> Audio-only {tracks.length > 1 ? 'tracks' : 'take'}</div>
           {/if}
         </div>
-        {#if shown && tracks.length > 1 && shown.take.hasVideo}
+        {#if shown && tracks.length > 1 && !videoSource?.notice}
           <p class="notice small">Video of {trackLabel(shown.track)}.</p>
         {/if}
-        {#if shown && sources[shown.take.id]?.notice}<p class="notice small">{sources[shown.take.id].notice}</p>{/if}
-        <!-- The other tracks play through hidden audio elements. -->
-        <div class="hidden-media" aria-hidden="true">
-          {#each playable.filter((e) => e !== shown) as entry (entry.take.id)}
-            {@const takeId = entry.take.id}
-            {#if sources[takeId]}
-              {@const source = sources[takeId]}
-              <audio
-                bind:this={mediaEls[takeId]}
-                src={source.src}
-                preload="auto"
-                onloadedmetadata={(e) => onMetadata(takeId, e.currentTarget)}
-                ondurationchange={(e) => onDurationChange(takeId, e.currentTarget)}
-                onerror={(e) => source.failed((e.currentTarget as HTMLMediaElement).error, false)}
-              ></audio>
-            {/if}
-          {/each}
-        </div>
+        {#if videoSource?.notice}<p class="notice small">{videoSource.notice}</p>{/if}
+        {#each playable.filter((e) => decoding[e.take.id]?.state === 'failed') as entry (entry.take.id)}
+          <p class="notice small">{trackLabel(entry.track)} cannot be played on this device yet. Its recording is saved.</p>
+        {/each}
       </section>
 
-      <!-- 3. Notes and details -->
+      <!-- 4. Notes and details -->
       <section class="about" aria-label="Notes and details">
         <label class="notes-field">
           <span class="label">Notes</span>
@@ -1038,7 +1090,8 @@
     padding: 10px calc(var(--safe-right) + 12px) calc(var(--safe-bottom) + var(--transport-h) + 56px)
       calc(var(--safe-left) + 12px);
   }
-  .content > section {
+  .content > section,
+  .analysis-area {
     min-width: 0;
   }
   .tracks {
@@ -1213,9 +1266,6 @@
     color: var(--ink-3);
     font-size: 0.9rem;
   }
-  .hidden-media {
-    display: none;
-  }
 
   .notes-field {
     display: grid;
@@ -1283,11 +1333,15 @@
       grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
       grid-template-areas:
         'tracks tracks'
+        'analysis analysis'
         'take about';
       align-items: start;
     }
     .tracks {
       grid-area: tracks;
+    }
+    .analysis-area {
+      grid-area: analysis;
     }
     .take {
       grid-area: take;

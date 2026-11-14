@@ -9,23 +9,24 @@
    *    With a finger, a drag scrolls as in review; press and hold first to
    *    draw a selection rectangle (or, on a note, to pick it up). With a
    *    mouse, dragging across empty space selects (Shift adds).
-   *  - Compact: a short strip of the notes (a collapsed track).
+   *  - Compact: a short strip of the notes.
+   *
+   * Chord names are not drawn here: the track shows them in its chord strip
+   * (`ChordStrip.svelte`), under the roll and scrolled with it.
    *
    * Times: notes are in their take's time; the view (zoom, scroll, playhead,
    * crop) is in sketch time. `offset` is where the take starts in the sketch.
    * Rolls that share a `view` scroll and zoom together.
    */
   import { onMount, untrack } from 'svelte';
-  import type { ChordSegment } from '../music/chords';
   import { isBlackKey, noteName, normalizeNote, pitchClass, PIANO_MAX, PIANO_MIN } from '../music/notes';
   import { mergeSelection, notesInBox, shiftNotes, type NoteShift } from '../music/selection';
   import type { PianoNote } from '../transcription/types';
   import { formatClock } from './format';
-  import { RollViewport } from './rollViewport.svelte';
+  import { ROLL_GUTTER, RollViewport } from './rollViewport.svelte';
 
   interface Props {
     notes: PianoNote[];
-    chords?: ChordSegment[];
     duration: number;
     currentTime: number;
     playing?: boolean;
@@ -36,8 +37,6 @@
     /** The notes changed; `focus` are the notes that should be selected afterwards. */
     onchange?: (notes: PianoNote[], focus: PianoNote[]) => void;
     onpreview?: (pitch: number) => void;
-    /** A chord in the chord lane was tapped. */
-    onchordtap?: (chord: ChordSegment) => void;
     /** Playback crop range (seconds); outside it is dimmed. */
     cropStart?: number | null;
     cropEnd?: number | null;
@@ -45,13 +44,12 @@
     offset?: number;
     /** Zoom and scroll, shared with the other tracks' rolls. */
     view?: RollViewport;
-    /** A short strip without keyboard, chord lane or ruler (a collapsed track). */
+    /** A short strip without keyboard or ruler. */
     compact?: boolean;
   }
 
   let {
     notes,
-    chords = [],
     duration,
     currentTime,
     playing = false,
@@ -60,7 +58,6 @@
     onseek,
     onchange,
     onpreview,
-    onchordtap,
     cropStart = null,
     cropEnd = null,
     offset = 0,
@@ -68,17 +65,15 @@
     compact = false,
   }: Props = $props();
 
-  const GUTTER = 40;
-  const CHORD_LANE_H = 26;
+  const GUTTER = ROLL_GUTTER;
   const RULER_H = 16;
   const MIN_PX = 12;
   const MAX_PX = 700;
   /** Press this long without moving to select (or pick up a note) with a finger (ms). */
   const HOLD_MS = 300;
 
-  /** Chord lane height, and where the note rows begin (no lane or ruler when compact). */
-  const CHORD_LANE = $derived(compact ? 0 : CHORD_LANE_H);
-  const TOP = $derived(compact ? 0 : CHORD_LANE_H + RULER_H);
+  /** Where the note rows begin (under the ruler; no ruler when compact). */
+  const TOP = $derived(compact ? 0 : RULER_H);
 
   let container: HTMLDivElement;
   let canvas: HTMLCanvasElement;
@@ -323,25 +318,11 @@
       ctx.fillRect(x, TOP, 1, height - TOP);
       if (compact) continue;
       ctx.fillStyle = c.ink3;
-      ctx.fillText(step < 1 ? t.toFixed(2).replace(/\.?0+$/, '') + 's' : formatClock(t), x + 3, CHORD_LANE + RULER_H / 2);
+      ctx.fillText(step < 1 ? t.toFixed(2).replace(/\.?0+$/, '') + 's' : formatClock(t), x + 3, RULER_H / 2);
     }
     if (!compact) {
       ctx.fillStyle = c.rule;
       ctx.fillRect(GUTTER, TOP - 0.5, rollWidth, 1);
-    }
-
-    // Chord lane.
-    ctx.font = '600 13px ui-serif, "New York", Georgia, serif';
-    for (const chord of compact ? [] : chords) {
-      if (chord.endTime < t0 || chord.startTime > t1) continue;
-      const active = now >= chord.startTime && now < chord.endTime;
-      const x0 = Math.max(GUTTER, xOf(chord.startTime));
-      const x1 = Math.min(width, xOf(chord.endTime));
-      ctx.fillStyle = active ? c.accent : c.chord;
-      ctx.globalAlpha = 0.35;
-      ctx.fillRect(x0, CHORD_LANE - 4, Math.max(1, x1 - x0 - 3), 2);
-      ctx.globalAlpha = 1;
-      ctx.fillText(chord.symbol, x0 + 2, CHORD_LANE / 2 - 1);
     }
 
     // Notes.
@@ -395,16 +376,16 @@
       ctx.fillStyle = c.paper;
       const a = cropStart ?? 0;
       const b = cropEnd ?? totalSeconds;
-      if (a > s0) ctx.fillRect(GUTTER, CHORD_LANE, Math.min(rollWidth, xAt(a) - GUTTER), height - CHORD_LANE);
+      if (a > s0) ctx.fillRect(GUTTER, 0, Math.min(rollWidth, xAt(a) - GUTTER), height);
       if (b < s1) {
         const x = Math.max(GUTTER, xAt(b));
-        ctx.fillRect(x, CHORD_LANE, width - x, height - CHORD_LANE);
+        ctx.fillRect(x, 0, width - x, height);
       }
       ctx.globalAlpha = 1;
       ctx.fillStyle = c.chord;
       for (const edge of [cropStart, cropEnd]) {
         if (edge === null || edge < s0 || edge > s1) continue;
-        ctx.fillRect(Math.round(xAt(edge)) - 1, CHORD_LANE, 2, height - CHORD_LANE);
+        ctx.fillRect(Math.round(xAt(edge)) - 1, 0, 2, height);
       }
     }
 
@@ -412,12 +393,12 @@
     if (currentTime >= s0 && currentTime <= s1) {
       const x = Math.round(xAt(currentTime)) + 0.5;
       ctx.fillStyle = c.accent;
-      ctx.fillRect(x - 1, CHORD_LANE, 2, height - CHORD_LANE);
+      ctx.fillRect(x - 1, 0, 2, height);
       if (!compact) {
         ctx.beginPath();
-        ctx.moveTo(x - 5, CHORD_LANE);
-        ctx.lineTo(x + 5, CHORD_LANE);
-        ctx.lineTo(x, CHORD_LANE + 6);
+        ctx.moveTo(x - 5, 0);
+        ctx.lineTo(x + 5, 0);
+        ctx.lineTo(x, 6);
         ctx.fill();
       }
     }
@@ -784,14 +765,6 @@
       selection = [d.held.index];
       onpreview?.(notes[d.held.index].pitch);
       return;
-    }
-    // Tap in the chord lane: hand the chord to the parent (e.g. to play it).
-    if (d.startY < CHORD_LANE && d.startX >= GUTTER && onchordtap) {
-      const chord = chords.find((c) => t >= c.startTime && t < c.endTime);
-      if (chord) {
-        onchordtap(chord);
-        return;
-      }
     }
     if (editing && d.startY > TOP) {
       const tapAt = performance.now();

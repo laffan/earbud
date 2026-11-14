@@ -1,7 +1,9 @@
 /**
  * A small Web Audio piano-ish synth.
- *  - `NoteSynth` plays transcribed notes in sync with an external media clock
- *    (the <video> element), previews single notes and plays chords.
+ *  - `NoteSynth` plays transcribed notes in step with playback: it follows
+ *    the playback engine's clock mapping on the same audio context, so its
+ *    notes land exactly with the recordings. It also previews single notes
+ *    and plays chords.
  *  - `renderNotesToWav` renders notes offline with the same voice, for export.
  */
 import { encodeWav16 } from '../audio/wav';
@@ -11,19 +13,30 @@ import { notesEndTime, sortNotes } from './notes';
 interface Voice {
   oscillators: OscillatorNode[];
   gain: GainNode;
+  start: number;
   end: number;
 }
 
-/** Seconds of media time scheduled ahead of the clock. */
+/** Seconds of timeline scheduled ahead of the clock. */
 const LOOKAHEAD = 0.25;
-/** Disagreement with the media clock that is ignored (coarse/jittery video clocks). */
-const TOLERANCE = 0.3;
-/** How long a moderate disagreement must persist before rescheduling. */
-const PERSISTENCE = 0.25;
-/** Jumps larger than this are seeks and are followed immediately. */
-const JUMP = 1.0;
-/** Output latency allowance when anchoring. */
-const START_OFFSET = 0.03;
+/** Voices sounding at once; past this the oldest is faded out (keeps dense, multi-track passages from overloading the audio thread). */
+const MAX_VOICES = 48;
+
+/** Which timeline position sounds at which audio-clock time (see `ClockMapping` in the playback engine). */
+export interface SynthClock {
+  position: number;
+  time: number;
+  rate: number;
+  /** End of the pass on the timeline: no note starts at or after it. */
+  until: number | null;
+}
+
+export interface NoteSynthOptions {
+  /** The audio context to play in (the playback engine's), instead of one of its own. */
+  context?: () => AudioContext;
+  /** Where its output goes (the engine's mix bus) instead of the speakers. */
+  destination?: () => AudioNode;
+}
 
 type Ctx = BaseAudioContext;
 
@@ -78,14 +91,14 @@ export function scheduleVoice(
     osc.stop(end + 0.05);
     return osc;
   });
-  return { oscillators, gain, end };
+  return { oscillators, gain, start: when, end };
 }
 
-function createOutput(ctx: Ctx, volume: number): GainNode {
+function createOutput(ctx: Ctx, volume: number, destination: AudioNode = ctx.destination): GainNode {
   const master = ctx.createGain();
   master.gain.value = volume;
   const compressor = ctx.createDynamicsCompressor();
-  master.connect(compressor).connect(ctx.destination);
+  master.connect(compressor).connect(destination);
   return master;
 }
 
@@ -96,20 +109,20 @@ export class NoteSynth {
   private nextIndex = 0;
   private volume = 0.6;
   private voices: Voice[] = [];
+  /** The clock being followed while playing; null when stopped. */
+  private clock: SynthClock | null = null;
 
-  /** Playback requested (between start() and stop()). */
-  private active = false;
-  private rate = 1;
-  /** Media time ↔ audio time mapping; null until the audio clock runs. */
-  private anchor: { media: number; ctx: number } | null = null;
-  /** Audio clock value when start() was called (to detect a running clock). */
-  private clockAtStart = 0;
-  /** When the current moderate disagreement began (audio time), if any. */
-  private driftSince: number | null = null;
+  constructor(private readonly options: NoteSynthOptions = {}) {}
 
   setNotes(notes: PianoNote[]) {
     this.notes = sortNotes(notes);
-    if (this.anchor) this.reschedule(this.mediaTimeNow());
+    const clock = this.clock;
+    if (clock && this.ctx) {
+      // Start again from what is playing now, with the new notes.
+      this.stopVoices(0.03);
+      this.nextIndex = this.firstIndexAtOrAfter(this.positionAt(Math.max(this.ctx.currentTime, clock.time)));
+      this.pump();
+    }
   }
 
   setVolume(volume: number) {
@@ -118,17 +131,14 @@ export class NoteSynth {
   }
 
   get running(): boolean {
-    return this.active;
+    return this.clock !== null;
   }
 
   /**
    * Create or wake the audio context. Call it synchronously inside the tap or
-   * key press that should lead to notes playing (play, the Take / Notes /
-   * Both choice): Safari and the iOS and macOS web views only let an audio
-   * context start during a user gesture, and `start()` itself runs later,
-   * once the media actually plays. Outside a gesture WebKit leaves
-   * `resume()` pending, which is why the synth used to stay silent until the
-   * listen mode was switched during playback.
+   * key press that should lead to notes sounding: Safari and the iOS and
+   * macOS web views only let an audio context start during a user gesture,
+   * and leave `resume()` pending outside one.
    */
   unlock() {
     const ctx = this.ensureContext();
@@ -146,65 +156,40 @@ export class NoteSynth {
   }
 
   /**
-   * Start following the media clock from `mediaTime`. Notes are scheduled
-   * once the audio clock actually runs: right away if `unlock()` ran in the
-   * user's tap, else as soon as a later tap wakes the context. The resume is
-   * not awaited, so a context that cannot start yet never leaves the synth
-   * stuck.
+   * Follow `clock` (null: stop). A clock that takes over in the future (the
+   * next pass of a loop) lets the notes before the switch play out first.
    */
-  async start(mediaTime: number, rate = 1) {
+  cue(clock: SynthClock | null) {
+    if (!clock) {
+      this.stop();
+      return;
+    }
     const ctx = this.ensureContext();
-    if (ctx.state !== 'running') void ctx.resume().catch(() => {});
-    this.stopVoices(0.02);
-    this.active = true;
-    this.rate = rate;
-    this.anchor = null;
-    this.driftSince = null;
-    this.clockAtStart = ctx.currentTime;
-    this.tick(mediaTime, rate);
+    const previous = this.clock;
+    if (previous && clock.time > ctx.currentTime) {
+      // Everything the old pass still has to play before the switch, then cut what rings past it.
+      this.scheduleUntil(previous, this.positionAt(clock.time, previous), clock.time);
+      this.cutAt(clock.time);
+    } else {
+      this.stopVoices(0.02);
+    }
+    this.clock = clock;
+    // From the pass's start, or from now when it is already under way (notes switched on mid-playback).
+    this.nextIndex = this.firstIndexAtOrAfter(Math.max(clock.position, this.positionAt(ctx.currentTime, clock)));
+    this.pump();
   }
 
-  /** Call regularly (each animation frame) with the media clock. */
-  tick(mediaTime: number, rate = 1) {
+  /** Schedule the notes coming up (call every animation frame while playing). */
+  pump() {
     const ctx = this.ctx;
-    if (!this.active || !ctx) return;
-
-    if (!this.anchor) {
-      // Wait until the audio clock has demonstrably started.
-      if (ctx.state !== 'running' || ctx.currentTime <= this.clockAtStart) return;
-      this.rate = rate;
-      this.reschedule(mediaTime);
-      return;
-    }
-    if (rate !== this.rate) {
-      this.rate = rate;
-      this.reschedule(mediaTime);
-      return;
-    }
-
-    const predicted = this.mediaTimeNow();
-    const error = mediaTime - predicted;
-    if (Math.abs(error) > JUMP) {
-      this.reschedule(mediaTime); // a seek
-      return;
-    }
-    if (Math.abs(error) > TOLERANCE) {
-      // Persistent disagreement (stall, clock problem): follow the media clock.
-      this.driftSince ??= ctx.currentTime;
-      if (ctx.currentTime - this.driftSince >= PERSISTENCE) {
-        this.reschedule(mediaTime);
-        return;
-      }
-    } else {
-      this.driftSince = null;
-    }
-    // Schedule from the synth's own smooth clock, not the (possibly coarse) video clock.
-    this.schedule(predicted);
+    const clock = this.clock;
+    if (!ctx || !clock) return;
+    const now = this.positionAt(Math.max(ctx.currentTime, clock.time));
+    this.scheduleUntil(clock, now + LOOKAHEAD * clock.rate, Infinity);
   }
 
   stop() {
-    this.active = false;
-    this.anchor = null;
+    this.clock = null;
     this.stopVoices(0.05);
   }
 
@@ -214,14 +199,15 @@ export class NoteSynth {
   }
 
   /** Play several notes together, e.g. a chord from the chord strip. */
-  playChord(pitches: number[], velocity = 80, length = 1.4) {
+  playChord(pitches: number[], velocity = 80, length = 1.4, spread = 0.012) {
     // Slight roll from the bass up, like a pianist's hand.
-    this.playNow([...pitches].sort((a, b) => a - b), velocity, length, 0.012);
+    this.playNow([...pitches].sort((a, b) => a - b), velocity, length, spread);
   }
 
   dispose() {
     this.stop();
-    void this.ctx?.close();
+    // A shared context belongs to the playback engine.
+    if (!this.options.context) void this.ctx?.close();
     this.ctx = null;
     this.master = null;
   }
@@ -231,32 +217,23 @@ export class NoteSynth {
     if (ctx.state !== 'running') void ctx.resume().catch(() => {});
     const at = ctx.currentTime + 0.01;
     pitches.forEach((pitch, i) => {
-      this.voices.push(scheduleVoice(ctx, this.master!, pitch, velocity, at + i * spread, length));
+      this.addVoice(scheduleVoice(ctx, this.master!, pitch, velocity, at + i * spread, length));
     });
   }
 
   private ensureContext(): AudioContext {
     if (!this.ctx) {
-      const Ctx = audioContextClass();
-      this.ctx = new Ctx({ latencyHint: 'playback' });
-      this.master = createOutput(this.ctx, this.volume);
+      const shared = this.options.context?.();
+      this.ctx = shared ?? new (audioContextClass())({ latencyHint: 'playback' });
+      this.master = createOutput(this.ctx, this.volume, this.options.destination?.());
     }
     return this.ctx;
   }
 
-  private mediaTimeNow(): number {
-    if (!this.anchor || !this.ctx) return 0;
-    return this.anchor.media + (this.ctx.currentTime - this.anchor.ctx) * this.rate;
-  }
-
-  /** Drop scheduled voices and restart scheduling from `mediaTime`. */
-  private reschedule(mediaTime: number) {
-    if (!this.ctx) return;
-    this.stopVoices(0.03);
-    this.anchor = { media: mediaTime, ctx: this.ctx.currentTime + START_OFFSET };
-    this.driftSince = null;
-    this.nextIndex = this.firstIndexAtOrAfter(mediaTime);
-    this.schedule(mediaTime);
+  /** Timeline position at audio time `time` under `clock`. */
+  private positionAt(time: number, clock = this.clock): number {
+    if (!clock) return 0;
+    return clock.position + (time - clock.time) * clock.rate;
   }
 
   private firstIndexAtOrAfter(t: number): number {
@@ -270,38 +247,72 @@ export class NoteSynth {
     return lo;
   }
 
-  private schedule(mediaTime: number) {
+  /** Schedule notes of `clock` that start before timeline `horizon`, and at audio times before `latest`. */
+  private scheduleUntil(clock: SynthClock, horizon: number, latest: number) {
     const ctx = this.ctx;
-    const anchor = this.anchor;
-    if (!ctx || !anchor) return;
-    const horizon = mediaTime + LOOKAHEAD * this.rate;
-    while (this.nextIndex < this.notes.length && this.notes[this.nextIndex].startTime < horizon) {
+    if (!ctx) return;
+    const limit = clock.until === null ? horizon : Math.min(horizon, clock.until);
+    const endTime = clock.until === null ? Infinity : clock.time + (clock.until - clock.position) / clock.rate;
+    while (this.nextIndex < this.notes.length && this.notes[this.nextIndex].startTime < limit) {
       const note = this.notes[this.nextIndex++];
-      const when = anchor.ctx + (note.startTime - anchor.media) / this.rate;
-      if (when < ctx.currentTime - 0.05) continue;
-      const length = (note.endTime - note.startTime) / this.rate;
-      this.voices.push(
-        scheduleVoice(ctx, this.master!, note.pitch, note.velocity, Math.max(when, ctx.currentTime), length),
-      );
+      const when = clock.time + (note.startTime - clock.position) / clock.rate;
+      if (when < ctx.currentTime - 0.05 || when >= latest) continue;
+      // A note is cut at the end of the pass (crop end).
+      const length = Math.min(note.endTime - note.startTime, Math.max(0.02, (endTime - when) * clock.rate)) / clock.rate;
+      this.addVoice(scheduleVoice(ctx, this.master!, note.pitch, note.velocity, Math.max(when, ctx.currentTime), length));
     }
-    const now = ctx.currentTime;
+  }
+
+  private addVoice(voice: Voice) {
+    const now = this.ctx?.currentTime ?? 0;
     this.voices = this.voices.filter((v) => v.end > now);
+    this.voices.push(voice);
+    // Too many at once: fade out the oldest of those still sounding when this one starts.
+    const sounding = this.voices.filter((v) => v.start <= voice.start && v.end > voice.start);
+    if (sounding.length > MAX_VOICES) {
+      const oldest = sounding.reduce((a, b) => (b.start < a.start ? b : a));
+      this.fadeVoice(oldest, voice.start, 0.03);
+      this.voices = this.voices.filter((v) => v !== oldest);
+    }
+  }
+
+  /** Voices still sounding at audio time `t` stop there; those starting after it never sound. */
+  private cutAt(t: number) {
+    const keep: Voice[] = [];
+    for (const v of this.voices) {
+      if (v.end <= t) keep.push(v);
+      else this.fadeVoice(v, Math.max(t, v.start), 0.02);
+    }
+    this.voices = keep;
+  }
+
+  private fadeVoice(v: Voice, at: number, fade: number) {
+    if (v.start >= at) {
+      // Not started yet: it never sounds. (Cancelling its envelope instead would leave the gain at 1.)
+      for (const osc of v.oscillators) {
+        try {
+          osc.stop(v.start);
+        } catch {
+          // already stopped
+        }
+      }
+      return;
+    }
+    v.gain.gain.cancelScheduledValues(at);
+    v.gain.gain.setTargetAtTime(0, at, fade / 3);
+    for (const osc of v.oscillators) {
+      try {
+        osc.stop(at + fade * 2);
+      } catch {
+        // already stopped
+      }
+    }
   }
 
   private stopVoices(fade: number) {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
-    for (const v of this.voices) {
-      v.gain.gain.cancelScheduledValues(now);
-      v.gain.gain.setTargetAtTime(0, now, fade / 3);
-      for (const osc of v.oscillators) {
-        try {
-          osc.stop(now + fade * 2);
-        } catch {
-          // already stopped
-        }
-      }
-    }
+    for (const v of this.voices) this.fadeVoice(v, now, fade);
     this.voices = [];
   }
 }

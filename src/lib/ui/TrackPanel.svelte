@@ -6,10 +6,10 @@
 <script lang="ts">
   /**
    * One track of a sketch: a title bar (collapse, name, mute / solo /
-   * record-a-new-take toggles, menu), then the piano roll with the waveform
-   * attached underneath, or, collapsed, a short strip of the notes. With
-   * "Separate" listening, its own Take / Notes / Both choice below. Editing
-   * the notes of the take that plays happens here.
+   * record-a-new-take toggles, menu), then the piano roll, its chords and the
+   * waveform, as one block; collapsed, just the waveform. With "Separate"
+   * listening, its own Take / Notes / Both choice below. Editing the notes of
+   * the take that plays happens here.
    */
   import { onDestroy, onMount, untrack } from 'svelte';
   import type { Sketch, SketchDetail, Track, UpdateTrackArgs } from '../library/types';
@@ -23,6 +23,7 @@
   import { app } from '../state/app.svelte';
   import { environmentName, type Environment, type HeldNotes } from '../transcription/settings';
   import type { PianoNote } from '../transcription/types';
+  import ChordStrip from './ChordStrip.svelte';
   import Icon from './Icon.svelte';
   import PianoRoll from './PianoRoll.svelte';
   import type { RollViewport } from './rollViewport.svelte';
@@ -63,6 +64,8 @@
     /** This track's own Take / Notes / Both choice ("Separate" listening), or null. */
     listenMode?: ListenMode | null;
     onlisten?: (mode: ListenMode) => void;
+    /** A chord's symbol as the sketch shows it (spelled for its key). */
+    spell?: (chord: ChordSegment) => string;
   }
 
   let {
@@ -90,6 +93,7 @@
     onnotes,
     listenMode = null,
     onlisten,
+    spell,
   }: Props = $props();
 
   // ------------------------------------------------------------ data
@@ -520,10 +524,18 @@
   </header>
 
   {#if collapsed}
-    <div class="stack compact">
-      <div class="roll-wrap compact">
-        <PianoRoll {notes} {duration} {currentTime} {playing} {cropStart} {cropEnd} {offset} {view} compact {onseek} />
-      </div>
+    <div class="stack">
+      <Waveform
+        path={live.analysisPath}
+        {duration}
+        {currentTime}
+        {offset}
+        {cropStart}
+        {cropEnd}
+        flush
+        onseek={(t) => onseek(t)}
+        {oncropchange}
+      />
     </div>
   {:else}
     {#if transcribing}
@@ -596,7 +608,6 @@
       <div class="roll-wrap" class:multi>
         <PianoRoll
           {notes}
-          {chords}
           {cropStart}
           {cropEnd}
           {duration}
@@ -609,7 +620,6 @@
           {onseek}
           onchange={commit}
           onpreview={(pitch) => synth.preview(pitch)}
-          onchordtap={playChord}
         />
         <button
           class="pencil"
@@ -623,6 +633,15 @@
           <Icon name={editing ? 'check' : 'edit'} size={17} />
         </button>
       </div>
+      <ChordStrip
+        {chords}
+        {offset}
+        {currentTime}
+        {view}
+        {spell}
+        empty={hasTranscription ? 'No chords found: they show where three or more notes sound together' : 'Chords appear once the take is transcribed'}
+        onchordtap={playChord}
+      />
       <Waveform
         path={live.analysisPath}
         {duration}
@@ -927,19 +946,12 @@
     border-radius: 0;
     border-bottom: 1px solid var(--rule);
   }
-  .stack.compact :global(.roll) {
-    border-bottom: none;
-    min-height: 0;
-  }
   .roll-wrap {
     position: relative;
     height: clamp(240px, 44vh, 560px);
   }
   .roll-wrap.multi {
     height: clamp(200px, 32vh, 440px);
-  }
-  .roll-wrap.compact {
-    height: 44px;
   }
   /* The pencil sits in the corner above the keyboard. */
   .pencil {
@@ -1026,7 +1038,7 @@
   }
 
   @media (orientation: landscape) and (max-height: 540px) {
-    .roll-wrap:not(.compact) {
+    .roll-wrap {
       height: 62vh;
     }
   }

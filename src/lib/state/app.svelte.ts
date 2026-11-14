@@ -251,7 +251,9 @@ export class AppState {
       const demo = new URLSearchParams(location.search).get('demo');
       if (!this.library.persistent && demo !== null) {
         const { seedDemo } = await import('../dev/demo');
-        await seedDemo(this.library, { tracks: demo === 'tracks' ? 2 : 1 });
+        // `?demo`, `?demo=tracks` (two tracks) or `?demo=tracks4` (up to four).
+        const tracks = demo.startsWith('tracks') ? Math.min(4, Math.max(2, Number(demo.slice(6)) || 2)) : 1;
+        await seedDemo(this.library, { tracks });
       }
       this.sketches = await this.library.list();
       if (report.recovered.length > 0) {

@@ -1,19 +1,40 @@
 /**
  * Minimal Web Audio stand-in for tests: a controllable clock plus node
- * stubs that record which oscillators were started and when.
+ * stubs that record which oscillators and buffer sources were started and
+ * when.
  */
 export interface StartedVoice {
   frequency: number;
+  /** Oscillator type when it started. */
+  type: string;
   when: number;
   stoppedAt: number | null;
 }
 
+/** A buffer source that was started: what it plays, when, and from where in the buffer. */
+export interface StartedSource {
+  buffer: unknown;
+  when: number;
+  offset: number;
+  stoppedAt: number | null;
+}
+
 class FakeParam {
-  value = 0;
+  value = 1;
   setValueAtTime() {}
   linearRampToValueAtTime() {}
-  setTargetAtTime() {}
+  /** Jumps straight to the target (enough to tell audible from silent). */
+  setTargetAtTime(target: number) {
+    this.value = target;
+  }
   cancelScheduledValues() {}
+}
+
+/** An AudioBuffer stand-in of `duration` seconds. */
+export function fakeBuffer(duration: number, sampleRate = 48000, channels = 1): AudioBuffer {
+  const length = Math.round(duration * sampleRate);
+  const data = Array.from({ length: channels }, () => new Float32Array(length));
+  return { duration, length, sampleRate, numberOfChannels: channels, getChannelData: (c: number) => data[c] } as unknown as AudioBuffer;
 }
 
 class FakeNode {
@@ -28,17 +49,36 @@ export class FakeAudioContext {
   currentTime = 0;
   state: 'running' | 'suspended' | 'closed' = 'running';
   sampleRate = 48000;
+  baseLatency = 0;
+  outputLatency = 0;
   destination = new FakeNode();
   started: StartedVoice[] = [];
+  sources: StartedSource[] = [];
+  private listeners: (() => void)[] = [];
 
   constructor() {
     FakeAudioContext.instances.push(this);
   }
+  addEventListener(type: string, listener: () => void) {
+    if (type === 'statechange') this.listeners.push(listener);
+  }
+  removeEventListener(_type: string, listener: () => void) {
+    this.listeners = this.listeners.filter((l) => l !== listener);
+  }
+  protected setState(state: 'running' | 'suspended' | 'closed') {
+    if (state === this.state) return;
+    this.state = state;
+    for (const listener of this.listeners) listener();
+  }
   async resume() {
-    this.state = 'running';
+    this.setState('running');
   }
   async close() {
-    this.state = 'closed';
+    this.setState('closed');
+  }
+  /** Sources still due to sound at `time` (started, not stopped before it). */
+  playingAt(time: number): StartedSource[] {
+    return this.sources.filter((s) => s.when <= time && (s.stoppedAt === null || s.stoppedAt > time));
   }
   createGain() {
     return Object.assign(new FakeNode(), { gain: new FakeParam() });
@@ -47,23 +87,44 @@ export class FakeAudioContext {
     return Object.assign(new FakeNode(), { type: 'lowpass', frequency: new FakeParam(), Q: new FakeParam() });
   }
   createDynamicsCompressor() {
-    return new FakeNode();
+    return Object.assign(new FakeNode(), {
+      threshold: new FakeParam(),
+      knee: new FakeParam(),
+      ratio: new FakeParam(),
+      attack: new FakeParam(),
+      release: new FakeParam(),
+    });
   }
   createBuffer(channels: number, length: number, sampleRate: number) {
-    return { numberOfChannels: channels, length, sampleRate, getChannelData: () => new Float32Array(length) };
+    return fakeBuffer(length / sampleRate, sampleRate, channels);
   }
   createBufferSource() {
-    return Object.assign(new FakeNode(), { buffer: null as unknown, start() {}, stop() {} });
+    const ctx = this;
+    const record: StartedSource = { buffer: null, when: -1, offset: 0, stoppedAt: null };
+    return Object.assign(new FakeNode(), {
+      buffer: null as unknown,
+      onended: null as (() => void) | null,
+      start(this: { buffer: unknown }, when = 0, offset = 0) {
+        record.buffer = this.buffer;
+        record.when = when;
+        record.offset = offset;
+        ctx.sources.push(record);
+      },
+      stop(when = 0) {
+        if (record.stoppedAt === null || when < record.stoppedAt) record.stoppedAt = when;
+      },
+    });
   }
   createOscillator() {
     const ctx = this;
-    const voice: StartedVoice = { frequency: 0, when: -1, stoppedAt: null };
+    const voice: StartedVoice = { frequency: 0, type: 'sine', when: -1, stoppedAt: null };
     const frequency = new FakeParam();
     return Object.assign(new FakeNode(), {
       type: 'sine',
       frequency,
-      start(when: number) {
+      start(this: { type: string }, when: number) {
         voice.frequency = frequency.value;
+        voice.type = this.type;
         voice.when = when;
         ctx.started.push(voice);
       },
@@ -91,7 +152,7 @@ export class GestureGatedAudioContext extends FakeAudioContext {
   override state: 'running' | 'suspended' | 'closed' = 'suspended';
   override async resume() {
     if (!GestureGatedAudioContext.inGesture) return new Promise<void>(() => {});
-    this.state = 'running';
+    this.setState('running');
   }
 }
 

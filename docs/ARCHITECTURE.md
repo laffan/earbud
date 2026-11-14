@@ -5,14 +5,14 @@ platform code and AI models can be replaced independently.
 
 ```
 ┌──────────────────────────── UI (Svelte) ────────────────────────────┐
-│ Home · Recorder overlay · Sketch view · Piano roll · Settings       │
+│ Home · Recorder · Sketch view (tracks, Chords) · Settings           │
 └──────┬───────────────────────┬──────────────────────┬───────────────┘
        │ app state / capture flow (src/lib/state)     │
 ┌──────▼──────────┐  ┌─────────▼─────────┐  ┌─────────▼────────────────┐
 │ Capture Engine  │  │ Processing queue  │  │ Music Engine             │
 │ src/lib/capture │  │ src/lib/pipeline  │  │ src/lib/music            │
-│  ├ native (iOS) │  │ audio → notes →   │  │ chords · MIDI · summary  │
-│  └ web          │  │ chords → MIDI     │  │ synth · note helpers     │
+│  ├ native (iOS) │  │ audio → notes →   │  │ chords · key · voicings  │
+│  └ web          │  │ chords → MIDI     │  │ MIDI · summary · synth   │
 └──────┬──────────┘  └──┬──────────────┬─┘  └──────────────────────────┘
        │                │              │
 ┌──────▼──────────┐  ┌──▼────────────┐ │   ┌───────────────────────────┐
@@ -135,18 +135,30 @@ Pure TypeScript, no UI or platform dependencies, unit tested.
 - `midi.ts`: Standard MIDI File export via `@tonejs/midi`.
 - `summary.ts`: per-sketch digest (note count, chord progression, pitch range, ≤240 preview notes) stored in
   SQLite so the list can draw mini piano rolls without loading every note.
-- `synth.ts`: Web Audio piano-ish voice. `NoteSynth` plays notes in sync with the `<video>` clock with look-ahead
-  scheduling. It anchors only once the audio clock is running, schedules from its own smooth clock, ignores
-  disagreements with the video clock under 0.3 s (coarse or jittery media clocks), reschedules immediately on jumps
-  over 1 s (seeks) and only after 0.25 s of persistent drift otherwise. Rescheduling on every small disagreement made
-  a freshly created context retrigger the same note when switching to *Notes* mid-playback.
-  `renderNotesToWav` renders the same voice in an `OfflineAudioContext` for the *Notes audio* export.
+- `synth.ts`: Web Audio piano-ish voice. `NoteSynth` plays notes in step with playback by following the playback
+  engine's clock mapping (`cue(mapping)`, then `pump()` every frame) on the engine's own audio context, so notes and
+  recordings share one clock and need no drift correction. A mapping that takes over in the future (the next pass of
+  a loop) lets the notes before the switch play out; notes never start past the pass's end (`until`). At most 48
+  voices sound at once (the oldest fades out), so dense passages from several tracks cannot overload the audio
+  thread. `renderNotesToWav` renders the same voice in an `OfflineAudioContext` for the *Notes audio* export.
   WebKit (Safari, the iOS and macOS web views) only lets an audio context start inside a user gesture and leaves
-  `resume()` pending outside one. The synth is started when the media reports that it plays, which is after the
-  play tap, so the taps that lead to notes playing (play with *Notes* / *Both* selected, choosing *Notes* / *Both*,
-  recording a track over notes) call `synth.unlock()` synchronously, and `start()` no longer waits on `resume()`:
-  it schedules from the first frame on which the audio clock runs. Before this, *Notes* stayed silent until the
-  listen mode was switched during playback (`synth.test.ts` reproduces it with a gesture-gated fake context).
+  `resume()` pending outside one, so the taps that lead to sound call `unlock()` synchronously.
+- `key.ts`: key finding (Krumhansl–Schmuckler). A pitch-class profile of the notes, each weighted by how long it
+  sounds (capped at 2 s, so a pedal tone does not swamp the rest), its loudness and the engine's confidence, is
+  correlated with the Krumhansl–Kessler major and minor profiles for all 24 keys. A runner-up within 0.08
+  correlation is reported as an alternative (usually the relative major or minor). Also roman numerals in a key
+  (♭ for roots outside the scale; in minor, ♯ for the raised third and sixth and a plain vii for the leading tone),
+  chord spelling with the key's sharps or flats, and chord names in words.
+- `voicings.ts`: how to play a chord. Piano: the bass (root, or the slash chord's bass) in the left hand, the chord
+  tones in root position in the right hand, rooted between G3 and F♯4. Guitar (standard tuning): searched rather
+  than looked up, so all 19 qualities × 12 roots and any bass get shapes. For each position up the neck, each
+  string is muted, open (near the nut) or fretted on a chord tone within a four-fret span. A shape is kept when its
+  lowest note is the bass, it has every chord tone (a four- or five-note chord may leave out its fifth), at least
+  four strings sound with no muted string between them (and no open string between fretted ones past the third
+  fret), it needs at most four fingers (a barre counts as one), and no two fingers on one fret straddle a finger
+  further up the neck. Shapes are ranked by position, fingers, muted strings, open strings and stretch. The usual
+  open shapes (C, G, D, A, E, Am, Em, Dm, G7, E7, Am7, Cmaj7, C/E, C/G) and barre chords (F, Bm, B♭, F♯m) come out
+  first (`voicings.test.ts`); up to three alternatives further up the neck are offered. About 1 ms per chord, cached.
 - `notes.ts`: naming, normalization (used by the editor), ranges.
 - `tempo.ts`: tempo and beat from notes. Note starts within 50 ms are one onset, weighted by loudness and count.
   Candidate beat periods (50–200 BPM) come from the autocorrelation of a 10 ms onset-strength signal, supported by
@@ -232,8 +244,8 @@ which makes the whole UI testable in Chromium.
   audio, then `engine.transcribe`, then `summarize` + `save_transcription`, then the MIDI file. Failures only set
   `transcription_status = failed`.
 - `PianoRoll.svelte`: canvas renderer and gesture handling (seek, pan, pinch/ctrl-wheel zoom, select, move,
-  resize, double-tap to add, keyboard editing). It follows the playhead, lights sounding notes and keys, and draws
-  a chord lane. In edit mode the selection is a list of note indices: a one-finger drag on empty space draws a
+  resize, double-tap to add, keyboard editing). It follows the playhead and lights sounding notes and keys (chord
+  names are in the track's chord strip, not on the roll). In edit mode the selection is a list of note indices: a one-finger drag on empty space draws a
   selection rectangle (Shift adds; the view scrolls when the rectangle reaches an edge), dragging a selected note
   moves or resizes the whole selection rigidly, and panning moves to two fingers, the wheel and the time ruler.
   Group operations (`shiftNotes`, `joinNotes`) live in `src/lib/music/selection.ts`.
@@ -247,26 +259,43 @@ which makes the whole UI testable in Chromium.
   including on the crop handles.
 - `PianoRoll.svelte` details for tracks: notes are in their take's time and the view in sketch time (`offset`);
   rolls share a `RollViewport` (zoom, scroll, "user is scrolling") so all tracks stay lined up; `compact` draws a
-  collapsed track's strip. While editing with a finger, a drag scrolls as in review (the canvas keeps
+  short strip of the notes (not used at the moment). While editing with a finger, a drag scrolls as in review (the canvas keeps
   `touch-action: pan-y`), and a press held for 300 ms turns the drag into a selection rectangle (on an unselected
   note, picks the note up); a non-passive `touchmove` listener stops the page from scrolling during those drags.
   A mouse drag selects at once.
-- `TrackPanel.svelte`: one track. Title bar (collapse, name, current chord, take number, M / S / ● toggles,
-  menu with the takes, transcribe again, revert, *Line up* nudge, delete), the pencil in the roll's top-left
-  corner, the editing toolbar above the roll, the waveform attached underneath. Editing state (notes, selection,
-  undo/redo, debounced autosave) lives here, per take.
-- `SketchView.svelte`: the tracks, *Record track* / *Import track*, the video, text notes and details, and the transport fixed to the
-  bottom. The take shown as video is the first track's take that has video (else the first track's), in a
-  `<video>`; the other tracks play through hidden `<audio>` elements. Each take's element has a source fallback
-  chain (`TakeSource`: `asset://` URL → in-memory blob for files under 200 MB → extracted analysis audio). Also
+- `TrackPanel.svelte`: one track. Title bar (collapse, name, take number, M / S / ● toggles, menu with the takes,
+  transcribe again, revert, *Line up* nudge, delete). Expanded: the piano roll (the pencil in its top-left corner,
+  the editing toolbar above it), the chord strip, then the waveform, as one block. Collapsed: the waveform only.
+  Editing state (notes, selection, undo/redo, debounced autosave) lives here, per take.
+- `ChordStrip.svelte`: a track's chords between its roll and its waveform. It scrolls and zooms with the roll (the
+  shared `RollViewport`, with the same 40 px left margin as the roll's keyboard), so a chord sits under the notes
+  that make it; a chord that began off to the left keeps its name in view. The chord at the playhead is lit; tap
+  one to hear it (and, when stopped, to go there).
+- `ChordsPanel.svelte`: the *Chords* section under the tracks. It analyses the notes of the tracks being heard (mute
+  and solo apply) together on the sketch's timeline: `detectChords` on the merged notes (so a bass track and a
+  chord track make one harmony) and `detectKey`. The header shows the key (with the alternative when it is close).
+  Tab *Chords*: the progression as chips with roman numerals (tap: go there and hear it), then a card per chord
+  used, in order of appearance, with its symbol, numeral, name in words, how often and how long it is played, and
+  how to play it: a keyboard (`PianoDiagram.svelte`) or a guitar box (`GuitarDiagram.svelte`, with alternative
+  shapes). The chord at the playhead is outlined; a card's play button plays the voicing shown. Tab *Circle of
+  fifths* (`CircleOfFifths.svelte`): three rings (major outside, relative minor in the middle, the key's
+  diminished chord inside, so each key's chords form a wedge), the key's wedge shaded and its tonic outlined, the
+  chords used filled by how long they sound, the progression drawn as arrows, the chord at the playhead lit; any
+  chord can be tapped to hear it. The tab and instrument are remembered in `localStorage`. Chord symbols are spelled
+  for the key everywhere (the strips too).
+- `SketchView.svelte`: the tracks, *Record track* / *Import track*, the *Chords* section, the video, text notes and
+  details, and the transport fixed to the bottom. All sound goes through one `AudioEngine` (section 6): each take
+  is decoded into a buffer as it appears (`takeBuffers.ts`); the video, the first take with video, is muted and
+  follows the engine (`VideoFollower`; `TakeSource` gives it an in-memory copy when WebKit cannot seek the file
+  URL). Also
   the listen mode (take / synthesized notes of the audible tracks / both), playback rate and crop. Recording into
   the sketch (*Record track*, or the armed track's record button) pauses playback, records with
   `app.startRecording({ take })`, and at the downbeat starts the other tracks from the playhead (not before the
   first track's downbeat, and on a beat when the sketch has a tempo); the take is placed with
-  `offset = playFrom − downbeat`. With a tempo, the count-in runs at it, and the recording screen flashes a dot on
+  `offset = playFrom − downbeat`, where `playFrom` is the position heard at the downbeat (the start position minus
+  the engine's 50 ms lead and the reported output latency). With a tempo, the count-in runs at it, and the recording screen flashes a dot on
   the sketch's beats (worked out at the downbeat; nothing audible). Crop, loop and slowed playback are off while
-  recording. On iOS a media element only plays sound after a `play()` inside a tap, so the play and record
-  buttons give each follower element one (played and paused at once).
+  recording.
   Listening is *Take*, *Notes*, *Both*, or, with several tracks, *Separate*: each track then has its own choice,
   so a track's recording is muted in the mixer when it plays notes only, and the synth plays the notes of the
   tracks set to *Notes* or *Both*.
@@ -275,49 +304,54 @@ which makes the whole UI testable in Chromium.
   scheduled ahead on the audio clock from a smooth mapping of media time, so the tempo can be matched by ear. A
   tempo changed by hand keeps the beat nearest the playhead in place; a tapped one puts a beat at the last tap.
 
-## 6. Playback transport (`src/lib/playback/transport.ts`)
+## 6. Playback (`src/lib/playback`)
 
-One `MediaTransport` owns "where are we, are we playing" for the video, waveform, piano roll and synth:
+**Why Web Audio and not media elements.** Until this version each track played through its own `<audio>` /
+`<video>` element, with one element as the clock and the others kept in step by changing their `playbackRate`
+(with pitch correction on) and seeking them. On WebKit each element is its own AVFoundation player, and every rate
+change or seek is an audible discontinuity; the summed output of several loud takes was not limited either. With
+three or more tracks (and the synth, in *Separate*) this produced static, stopped playheads and crashes. In desktop
+Chromium the old mixer stayed in step (4 tracks, also with 6× CPU throttling), so the failure was specific to
+WebKit, where it could not be reproduced here; the redesign removes the mechanisms rather than tuning them.
 
-- **Position is authoritative in the UI.** While scrubbing, the playhead follows the finger and the media follows
-  with one seek in flight at a time, always to the latest target (exact seeks; no `fastSeek`, which lands on
-  keyframes and made the views disagree).
-- **Playing is re-derived from the element** on every media event. A source reload stops playback without a
-  `pause` event; relying on play/pause events alone left the app showing *Pause* over a stopped video with a frozen
-  playhead.
-- **Aborted `play()` calls are retried**, not reported. A seek or reload rejects a pending play with AbortError,
-  which had surfaced as a "Playback aborted" error toast.
-- **The position survives a source reload** (e.g. the fallback from the `asset://` URL to an in-memory copy), and
-  playback resumes.
-- **A seek is over when the element stops `seeking`, not only on `seeked`.** WebKit (the iOS, macOS and Linux
-  webviews) drops a seek without firing `seeking` or `seeked` when the media has no seekable ranges yet
-  (AVFoundation reports them only once the item is ready to play, which can be after `loadedmetadata`) and when
-  the engine fails it (`HTMLMediaElement::seekTask`). The transport stops following the media while one of its
-  seeks is pending, so waiting for `seeked` froze both playheads while the audio played on. Now any media event
-  or animation frame settles a seek whose element is no longer seeking. A seek that ended away from its target
-  is sent again once the media reports seekable ranges (up to three times; meanwhile, while playing, the
-  playhead shows what is playing). If a loaded source never becomes seekable, `onUnseekable` makes the sketch
-  view switch to an in-memory copy. `npm run smoke:playback` emulates a dropped seek in Chromium.
-- **Crop and loop.** Playback is limited to the sketch's crop range (stored as `crop_start_ms` / `crop_end_ms`,
-  schema v2). At the end it stops and returns to the crop start, or loops.
-- Media events (errors with codes, stalls, aborts, reloads, retries) go to the diagnostics log in Settings.
+`AudioEngine` (`audioEngine.ts`) plays every track from a decoded `AudioBuffer`, one buffer source per track,
+scheduled against one `AudioContext` clock:
 
-`src/lib/playback/transport.test.ts` drives it with a fake media element: seek coalescing, play after scrub,
-reload during playback, aborted play, crop stop/loop, and throttled animation frames.
+- **Sample-locked tracks.** A pass starts all sources at the same audio time (50 ms ahead of the clock), each at
+  its place on the timeline (a track that starts later is scheduled later; one that began before time 0 starts
+  inside its buffer). Nothing drifts, so nothing is corrected. Mute, solo and the listen mode only move a track's
+  gain. A track whose buffer arrives while playing joins in step; one whose take or offset changes restarts alone.
+- **One output, limited.** Tracks and the synth (which plays into `engine.input` on the same context) are summed
+  through a limiter (threshold −2 dBFS, ratio 20), so several loud takes cannot clip.
+- **Clock mapping.** A `ClockMapping` says which timeline position sounds at which audio time; the synth follows it
+  exactly. The position reported to the UI is the one being heard: the audio clock minus `baseLatency` +
+  `outputLatency` (up to 0.5 s).
+- **Crop and loop.** Playback is limited to the sketch's crop range (stored as `crop_start_ms` / `crop_end_ms`).
+  The end of a pass is scheduled 0.3 s before it: the sources stop exactly there (8 ms fade), and with loop on the
+  next pass is scheduled to start at that same audio time, so loops are gapless. Without loop, playback stops and
+  returns to the crop start (or stays at the end of the sketch).
+- **Slowed playback** (0.75×, 0.5×) plays stretched copies of the buffers, made once per speed in a worker by WSOLA
+  (`stretch.ts`: 25 ms Hann frames, 50 % overlap, each frame moved by up to ±10 ms to where its waveform best
+  continues the previous one, searched on a 4× decimated signal and refined). This is the family of algorithm
+  Chromium uses for `preservesPitch`; AVFoundation's own time-pitch (which WebKit used before) is spectral and
+  likely smoother. Four 40 s tracks took about 0.6 s to prepare in desktop Chromium.
+- **Waiting.** Play waits (shown as *loading…*) until at least one track is decoded and the audio context runs;
+  WebKit only starts an audio context inside a tap, so the play and record buttons call `engine.unlock()`.
 
-**Several tracks** (`src/lib/playback/mixer.ts`). The transport still follows one element at a time, now placed on
-the timeline by an offset. `TrackMixer` tells it which element covers a time (the first track in order whose span
-covers it); the transport switches on a seek, and hands over at the end of an element when another track goes
-on, taking an element that already plays near the position as it is. The other elements follow the clock every
-frame: started, paused and parked with it, and muted unless audible (mute, solo, or the synth-only listen mode).
-A follower is started ahead of the clock by the start-up lag it showed before (measured 0.6 s after each start),
-then kept in step by a rate correction of 2 % (4 % above 60 ms) from 18 ms of smoothed drift until it is back
-within 8 ms, changed at most every 0.4 s because every rate change makes the element reconfigure its output, or by
-seeking when the drift exceeds 0.3 s. In Chromium, a second track measured against the first over 10 s of playback
-was 15 ms off on average on the first start (48 ms at worst, while it learns its lag) and within 4 ms after a
-restart. WebKit has not been measured. With one track nothing of this runs. `mixer.test.ts` covers following
-with offsets, late-starting tracks, handover to a longer track, seeking into another track, mute and drift
-correction.
+`takeBuffers.ts` decodes a take: on iOS, a take with video is read from its audio track written by AVFoundation
+(`exportAudio` → `take-audio.m4a`, also used by export), so a video file is never read into memory; otherwise the
+recording itself is decoded with `decodeAudioData` (files over 400 MB are not); the last resort is the 22.05 kHz
+analysis WAV. Decoded buffers are cached by file for reopening sketches, up to about ten minutes of mono audio
+(~115 MB; least recently used first out): an iOS web view is ended when it uses too much memory, and decoding
+again is quick. `videoFollower.ts` keeps the muted video on the frame for the position: it starts and
+pauses with playback, follows speed changes, seeks when the picture is more than 0.15 s off (at most once a
+second), and parks it while paused. A video that stalls or drops a seek can only delay the picture.
+
+`audioEngine.test.ts` drives the engine with a fake context: placement of tracks on the clock, heard position and
+latency, mute without restart, seeks, tracks that finish decoding while playing, waiting for audio, crop stop,
+gapless loop passes, stretched buffers, and WebKit's gesture-gated start. `stretch.test.ts` checks pitch, length,
+level steadiness and timing. `npm run smoke:playback` checks the same in Chromium by recording every buffer source
+the page starts.
 
 ## 7. Export (`src/lib/export`)
 

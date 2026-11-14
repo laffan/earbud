@@ -193,11 +193,23 @@ function bestChord(profile: Profile, options: ChordOptions): Candidate | null {
 }
 
 function symbolFor(candidate: Candidate, bass: number | null): string {
-  const root = PITCH_CLASS_NAMES[candidate.root];
-  const base = `${root}${candidate.quality.suffix}`;
-  if (bass === null || bass === candidate.root) return base;
-  return `${base}/${PITCH_CLASS_NAMES[bass]}`;
+  return formatChord(candidate.root, candidate.quality.type, bass);
 }
+
+/** Lead-sheet symbol for a root, quality (tonal's name, e.g. `m7`) and bass, with the given note names. */
+export function formatChord(
+  root: number,
+  quality: string,
+  bass: number | null = null,
+  names: readonly string[] = PITCH_CLASS_NAMES,
+): string {
+  const base = `${names[root]}${SUFFIXES[quality] ?? quality}`;
+  if (bass === null || bass === root) return base;
+  return `${base}/${names[bass]}`;
+}
+
+/** The chord qualities that are recognised (tonal's names). */
+export const CHORD_QUALITIES: readonly string[] = Object.keys(SUFFIXES);
 
 function sameChord(a: Candidate | null, b: Candidate | null): boolean {
   return !!a && !!b && a.root === b.root && a.quality.type === b.quality.type;
