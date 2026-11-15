@@ -4,6 +4,7 @@ import type { SketchSummary } from '../music/summary';
 import type {
   CreateRhythmArgs,
   CreateSketchArgs,
+  CreateTextNoteArgs,
   CreatedSketch,
   DuplicateSketchArgs,
   ExportBundle,
@@ -22,6 +23,7 @@ import type {
   Track,
   TranscriptionStatus,
   UpdateRhythmArgs,
+  UpdateTextNoteArgs,
   UpdateSketchArgs,
   UpdateTrackArgs,
 } from './types';
@@ -118,6 +120,12 @@ export class TauriLibrary implements SketchLibrary {
   }
   createRhythm(args: CreateRhythmArgs) {
     return invoke<Sketch>('create_rhythm', { args });
+  }
+  createTextNote(args: CreateTextNoteArgs) {
+    return invoke<Sketch>('create_text_note', { args });
+  }
+  updateTextNote(args: UpdateTextNoteArgs) {
+    return invoke<Sketch>('update_text_note', { args: { ...args, clearSize: args.clearSize ?? false } });
   }
   updateRhythm(args: UpdateRhythmArgs) {
     return invoke<Sketch>('update_rhythm', { args });

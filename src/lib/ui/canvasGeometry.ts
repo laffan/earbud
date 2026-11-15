@@ -8,6 +8,8 @@ import { normalizePattern, playSeconds } from '../music/rhythm';
 
 /** Height of a sketch on the canvas: its title and waveform (px). */
 export const TILE_H = 66;
+/** Width of a text note that has not been resized (px). */
+export const NOTE_W = 220;
 /** Height of the time ruler along the top of the canvas (px). */
 export const RULER_H = 26;
 export const MIN_PPS = 2;
@@ -50,6 +52,8 @@ const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x
  */
 export function sketchSpan(sketch: Sketch, length?: number): Span {
   const origin = sketch.canvasXMs / 1000;
+  // A text note sits at a point in time; its box is in pixels, not seconds.
+  if (sketch.kind === 'text') return { origin, from: 0, to: 0, start: origin, end: origin, cycle: 0, repeats: 1 };
   if (sketch.kind === 'rhythm') {
     const pattern = normalizePattern(sketch.rhythm);
     const seconds = pattern ? playSeconds(pattern) : Math.max(0.5, (sketch.durationMs ?? 1000) / 1000);

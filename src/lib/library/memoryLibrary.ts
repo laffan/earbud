@@ -10,6 +10,7 @@ import type { PianoNote } from '../transcription/types';
 import type {
   CreateRhythmArgs,
   CreateSketchArgs,
+  CreateTextNoteArgs,
   CreatedSketch,
   DuplicateSketchArgs,
   ExportBundle,
@@ -29,6 +30,7 @@ import type {
   Transcription,
   TranscriptionStatus,
   UpdateRhythmArgs,
+  UpdateTextNoteArgs,
   UpdateSketchArgs,
   UpdateTrackArgs,
 } from './types';
@@ -155,6 +157,8 @@ export class MemoryLibrary implements SketchLibrary {
         kind: 'audio',
         rhythm: null,
         canvasRepeats: 1,
+        canvasW: null,
+        canvasH: null,
       },
       transcription: null,
       chunks: [],
@@ -529,12 +533,83 @@ export class MemoryLibrary implements SketchLibrary {
         kind: 'rhythm',
         rhythm: clone(args.rhythm),
         canvasRepeats: 1,
+        canvasW: null,
+        canvasH: null,
       },
       transcription: null,
       chunks: [],
       files: new Map(),
     });
     return this.snapshot(this.entry(id));
+  }
+
+  async createTextNote(args: CreateTextNoteArgs): Promise<Sketch> {
+    this.notebook(args.notebookId);
+    if (args.text.length > 20_000) throw new Error('the note is too long');
+    const id = newId();
+    const now = Date.now();
+    this.entries.set(id, {
+      sketch: {
+        id,
+        title: '',
+        createdAt: now,
+        updatedAt: now,
+        status: 'saved',
+        durationMs: null,
+        mediaPath: null,
+        mediaMime: null,
+        hasVideo: false,
+        videoWidth: null,
+        videoHeight: null,
+        analysisPath: null,
+        textNotes: args.text,
+        transcriptionStatus: 'done',
+        transcriptionError: null,
+        captureBackend: 'text',
+        recovered: false,
+        summary: null,
+        hasEdits: false,
+        cropStartMs: null,
+        cropEndMs: null,
+        parentId: null,
+        trackId: null,
+        offsetMs: 0,
+        countInMs: null,
+        tempoBpm: null,
+        beatMs: null,
+        tempoSource: null,
+        notebookId: args.notebookId,
+        canvasXMs: Math.round(args.canvasXMs),
+        canvasY: validY(args.canvasY),
+        kind: 'text',
+        rhythm: null,
+        canvasRepeats: 1,
+        canvasW: validBox(args.canvasW ?? null),
+        canvasH: validBox(args.canvasH ?? null),
+      },
+      transcription: null,
+      chunks: [],
+      files: new Map(),
+    });
+    return this.snapshot(this.entry(id));
+  }
+
+  async updateTextNote(args: UpdateTextNoteArgs): Promise<Sketch> {
+    const entry = this.entry(args.id);
+    if (entry.sketch.kind !== 'text') throw new Error(`text note not found: ${args.id}`);
+    if (args.text !== undefined) {
+      if (args.text.length > 20_000) throw new Error('the note is too long');
+      entry.sketch.textNotes = args.text;
+    }
+    if (args.clearSize) {
+      entry.sketch.canvasW = null;
+      entry.sketch.canvasH = null;
+    } else {
+      if (args.canvasW !== undefined) entry.sketch.canvasW = validBox(args.canvasW);
+      if (args.canvasH !== undefined) entry.sketch.canvasH = validBox(args.canvasH);
+    }
+    entry.sketch.updatedAt = Date.now();
+    return this.snapshot(entry);
   }
 
   async updateRhythm(args: UpdateRhythmArgs): Promise<Sketch> {
@@ -545,6 +620,12 @@ export class MemoryLibrary implements SketchLibrary {
     entry.sketch.updatedAt = Date.now();
     return this.snapshot(entry);
   }
+}
+
+function validBox(px: number | null): number | null {
+  if (px === null) return null;
+  if (!Number.isFinite(px) || px < 16 || px > 4000) throw new Error(`note size ${px} is out of range`);
+  return px;
 }
 
 function validY(y: number): number {

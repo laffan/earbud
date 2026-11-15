@@ -89,6 +89,8 @@ pub fn run() {
             commands::place_sketch,
             commands::set_sketch_repeats,
             commands::duplicate_sketch,
+            commands::create_text_note,
+            commands::update_text_note,
             commands::create_rhythm,
             commands::update_rhythm,
             commands::update_track,

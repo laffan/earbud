@@ -1,7 +1,8 @@
 <script lang="ts">
   /**
-   * The whole notebook in a strip: every sketch, the part of the canvas in
-   * view, the playhead and, with repeat on, the loop range. Drag on it to
+   * The whole notebook in a strip: every sketch, the text notes (a note that
+   * is only emoji shows its emoji, small), the part of the canvas in view,
+   * the playhead and, with repeat on, the loop range. Drag on it to
    * move the view there; drag the loop's handles to change what repeats.
    */
   import { TILE_H, type CanvasView } from './canvasGeometry';
@@ -14,8 +15,20 @@
     rhythm: boolean;
   }
 
+  interface NoteItem {
+    id: string;
+    /** Where it sits on the timeline, and how long its box is at the current zoom (seconds). */
+    start: number;
+    width: number;
+    y: number;
+    height: number;
+    /** The emoji of a note that is only emoji. */
+    emoji: string | null;
+  }
+
   interface Props {
     items: Item[];
+    notes?: NoteItem[];
     view: CanvasView;
     /** Size of the canvas area in view (px, below the ruler). */
     viewWidth: number;
@@ -29,7 +42,7 @@
     theme: number;
   }
 
-  let { items, view, viewWidth, viewHeight, playhead, loop, onnavigate, onloopchange, theme }: Props = $props();
+  let { items, notes = [], view, viewWidth, viewHeight, playhead, loop, onnavigate, onloopchange, theme }: Props = $props();
 
   const HEIGHT = 54;
   const MIN_LOOP = 0.25;
@@ -40,12 +53,12 @@
   const viewBottom = $derived(view.scrollY + viewHeight);
   /** The world shown: everything placed, the view, the loop, with a little room after. */
   const world = $derived.by(() => {
-    const ends = items.map((i) => i.end);
+    const ends = [...items.map((i) => i.end), ...notes.map((n) => n.start + n.width)];
     const x0 = Math.min(0, view.scrollX, ...items.map((i) => i.start));
     const last = Math.max(30, viewEnd, playhead, loop?.end ?? 0, ...ends);
     const x1 = last + (last - x0) * 0.06;
     const y0 = Math.min(0, view.scrollY);
-    const y1 = Math.max(400, viewBottom, ...items.map((i) => i.y + TILE_H)) + 40;
+    const y1 = Math.max(400, viewBottom, ...items.map((i) => i.y + TILE_H), ...notes.map((n) => n.y + n.height)) + 40;
     return { x0, x1, y0, y1 };
   });
   const mx = (t: number) => ((t - world.x0) / (world.x1 - world.x0)) * width;
@@ -77,6 +90,20 @@
       g.globalAlpha = 0.75;
       const h = Math.max(2.5, my(item.y + TILE_H) - my(item.y));
       g.fillRect(mx(item.start), my(item.y), Math.max(2, mx(item.end) - mx(item.start)), h);
+    }
+    // Notes: a faint block, or their emoji.
+    const faint = color('--ink-3', '#8c8478');
+    for (const note of notes) {
+      if (note.emoji) {
+        g.globalAlpha = 1;
+        g.font = '12px system-ui, sans-serif';
+        g.textBaseline = 'top';
+        g.fillText(note.emoji, mx(note.start), Math.max(0, Math.min(HEIGHT - 13, my(note.y))));
+      } else {
+        g.fillStyle = faint;
+        g.globalAlpha = 0.45;
+        g.fillRect(mx(note.start), my(note.y), Math.max(3, mx(note.start + note.width) - mx(note.start)), Math.max(2, my(note.y + note.height) - my(note.y)));
+      }
     }
     g.globalAlpha = 1;
     // The view.

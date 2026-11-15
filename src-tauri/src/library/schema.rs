@@ -113,6 +113,12 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE sketches ADD COLUMN canvas_repeats INTEGER NOT NULL DEFAULT 1;
     "#,
+    // v7: text notes on the canvas (kind 'text', the markdown in text_notes):
+    // the box's width and minimum height in canvas pixels (NULL = fit the text).
+    r#"
+    ALTER TABLE sketches ADD COLUMN canvas_w REAL;
+    ALTER TABLE sketches ADD COLUMN canvas_h REAL;
+    "#,
 ];
 
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {

@@ -39,6 +39,8 @@ function sketch(patch: Partial<Sketch>): Sketch {
     kind: 'audio',
     rhythm: null,
     canvasRepeats: 1,
+    canvasW: null,
+    canvasH: null,
     ...patch,
   };
 }

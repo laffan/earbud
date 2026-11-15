@@ -126,6 +126,16 @@ pub async fn duplicate_sketch(library: State<'_, Library>, args: DuplicateSketch
 }
 
 #[tauri::command]
+pub async fn create_text_note(library: State<'_, Library>, args: CreateTextNoteArgs) -> Result<Sketch> {
+    library.create_text_note(args)
+}
+
+#[tauri::command]
+pub async fn update_text_note(library: State<'_, Library>, args: UpdateTextNoteArgs) -> Result<Sketch> {
+    library.update_text_note(args)
+}
+
+#[tauri::command]
 pub async fn create_rhythm(library: State<'_, Library>, args: CreateRhythmArgs) -> Result<Sketch> {
     library.create_rhythm(args)
 }

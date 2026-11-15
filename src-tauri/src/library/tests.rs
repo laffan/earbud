@@ -809,3 +809,56 @@ fn duplicating_a_rhythm_and_what_cannot_be_duplicated() {
     assert!(lib.duplicate_sketch(args(&recording.id)).is_err());
     assert!(lib.duplicate_sketch(args(&"0".repeat(32))).is_err());
 }
+
+#[test]
+fn text_notes_are_placed_edited_resized_and_copied() {
+    let (_dir, lib) = lib();
+    let notebook = lib.create_notebook("N").unwrap();
+    let note = lib
+        .create_text_note(CreateTextNoteArgs {
+            notebook_id: notebook.id.clone(),
+            canvas_x_ms: 3_000,
+            canvas_y: 40.0,
+            text: "**Bridge** idea".into(),
+            canvas_w: None,
+            canvas_h: None,
+        })
+        .unwrap();
+    assert_eq!(note.kind, "text");
+    assert_eq!(note.text_notes, "**Bridge** idea");
+    assert_eq!((note.canvas_w, note.canvas_h), (None, None));
+    assert!(note.media_path.is_none());
+    assert_eq!(note.transcription_status, TranscriptionStatus::Done);
+
+    let edited = lib
+        .update_text_note(UpdateTextNoteArgs { id: note.id.clone(), text: Some("🎹".into()), canvas_w: None, canvas_h: None, clear_size: false })
+        .unwrap();
+    assert_eq!(edited.text_notes, "🎹");
+    let resized = lib
+        .update_text_note(UpdateTextNoteArgs { id: note.id.clone(), text: None, canvas_w: Some(300.0), canvas_h: Some(120.0), clear_size: false })
+        .unwrap();
+    assert_eq!((resized.text_notes.as_str(), resized.canvas_w, resized.canvas_h), ("🎹", Some(300.0), Some(120.0)));
+    assert!(lib
+        .update_text_note(UpdateTextNoteArgs { id: note.id.clone(), text: None, canvas_w: Some(f64::NAN), canvas_h: None, clear_size: false })
+        .is_err());
+    assert!(lib
+        .update_text_note(UpdateTextNoteArgs { id: note.id.clone(), text: Some("x".repeat(MAX_NOTE_CHARS + 1)), canvas_w: None, canvas_h: None, clear_size: false })
+        .is_err());
+
+    let copy = lib
+        .duplicate_sketch(DuplicateSketchArgs { id: note.id.clone(), notebook_id: notebook.id.clone(), canvas_x_ms: 3_000, canvas_y: 200.0 })
+        .unwrap();
+    assert_eq!((copy.kind.as_str(), copy.text_notes.as_str(), copy.canvas_w, copy.canvas_h), ("text", "🎹", Some(300.0), Some(120.0)));
+    let fitted = lib
+        .update_text_note(UpdateTextNoteArgs { id: copy.id.clone(), text: None, canvas_w: None, canvas_h: None, clear_size: true })
+        .unwrap();
+    assert_eq!((fitted.canvas_w, fitted.canvas_h), (None, None));
+
+    // Only text notes take text-note edits.
+    let audio = create_on(&lib, &notebook.id, 0, 0.0);
+    assert!(lib
+        .update_text_note(UpdateTextNoteArgs { id: audio.id, text: Some("x".into()), canvas_w: None, canvas_h: None, clear_size: false })
+        .is_err());
+    lib.delete_notebook(&notebook.id).unwrap();
+    assert!(lib.get(&note.id).is_err());
+}

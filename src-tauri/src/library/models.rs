@@ -167,6 +167,38 @@ pub struct Sketch {
     pub rhythm: Option<serde_json::Value>,
     /// How many times a recording plays in a row on the canvas (1 = once).
     pub canvas_repeats: i64,
+    /// A text note's box on the canvas: width and minimum height in pixels (None = fit the text).
+    pub canvas_w: Option<f64>,
+    pub canvas_h: Option<f64>,
+}
+
+/// A text note on a notebook's canvas (markdown).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateTextNoteArgs {
+    pub notebook_id: String,
+    pub canvas_x_ms: i64,
+    pub canvas_y: f64,
+    pub text: String,
+    #[serde(default)]
+    pub canvas_w: Option<f64>,
+    #[serde(default)]
+    pub canvas_h: Option<f64>,
+}
+
+/// Change a text note: its text, or its box (`clear_size` back to fitting the text).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateTextNoteArgs {
+    pub id: String,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub canvas_w: Option<f64>,
+    #[serde(default)]
+    pub canvas_h: Option<f64>,
+    #[serde(default)]
+    pub clear_size: bool,
 }
 
 /// A notebook: a canvas of sketches placed on one timeline.

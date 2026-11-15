@@ -55,8 +55,10 @@
   import { loadTakeBuffer } from '../playback/takeBuffers';
   import { errorMessage } from '../platform/tauri';
   import { app } from '../state/app.svelte';
+  import CanvasNote from './CanvasNote.svelte';
   import CanvasTile from './CanvasTile.svelte';
-  import { clampView, fitView, RULER_H, rulerStep, sketchSpan, TILE_H, zoomAround, type Span } from './canvasGeometry';
+  import { clampView, fitView, NOTE_W, RULER_H, rulerStep, sketchSpan, TILE_H, zoomAround, type Span } from './canvasGeometry';
+  import { isEmojiOnly } from './markdown';
   import { displayTitle, formatClock, formatClockTenths } from './format';
   import Icon from './Icon.svelte';
   import ImportSheet from './ImportSheet.svelte';
@@ -73,7 +75,10 @@
   const SLOP = 8;
 
   const notebook = $derived(app.notebook);
-  const sketches = $derived(app.canvasSketches);
+  /** Everything on the canvas: sketches that sound, and text notes. */
+  const items = $derived(app.canvasSketches);
+  const sketches = $derived(items.filter((s) => s.kind !== 'text'));
+  const textNotes = $derived(items.filter((s) => s.kind === 'text'));
 
   // ------------------------------------------------------------ sound
 
@@ -226,7 +231,7 @@
   });
 
   const spans = $derived<Record<string, Span>>(
-    Object.fromEntries(sketches.map((s) => [s.id, sketchSpan(s, s.kind === 'audio' ? buffers[s.id]?.duration : undefined)])),
+    Object.fromEntries(items.map((s) => [s.id, sketchSpan(s, s.kind === 'audio' ? buffers[s.id]?.duration : undefined)])),
   );
   const itemsEnd = $derived(
     sketches.reduce((end, s) => Math.max(end, spans[s.id].end + (s.kind === 'rhythm' ? RHYTHM_TAIL : 0)), 0),
@@ -392,7 +397,7 @@
 
   function fit() {
     view = fitView(
-      sketches.map((s) => ({ start: spans[s.id].start, end: spans[s.id].end, y: s.canvasY })),
+      items.map((s) => ({ start: spans[s.id].start, end: spans[s.id].end, y: s.canvasY })),
       cw,
       Math.max(0, ch - RULER_H),
     );
@@ -451,6 +456,15 @@
 
   /** A sketch being moved: where its playing part starts (seconds) and its top (px). */
   let dragging = $state<{ id: string; start: number; y: number } | null>(null);
+  /** The text note being edited, or one being written at a point (not saved until it has text). */
+  let editingNote = $state<string | null>(null);
+  let draftNote = $state<{ at: number; canvasY: number } | null>(null);
+  /** A note's box while its corner is dragged, and its size when the drag began. */
+  let resizingNote = $state<{ id: string; w: number; h: number } | null>(null);
+  let noteBox0: { w: number; h: number } | null = null;
+  /** The last tap on empty canvas, to tell a double tap (a new note). */
+  let lastEmptyTap: { x: number; y: number; at: number; before: number } | null = null;
+
   /** A sketch being stretched by its right edge: how many bars (a rhythm) or repeats (a recording) it will play. */
   let resizing = $state<{ id: string; count: number } | null>(null);
 
@@ -497,14 +511,25 @@
       return;
     }
     if (pointers.size > 2) return;
-    const dismiss = dismissedBy === e.pointerId;
+    let dismiss = dismissedBy === e.pointerId;
     dismissedBy = -1;
+    if (editingNote || draftNote) {
+      // Finish the note being written (saved on blur); this press does nothing else.
+      (document.activeElement as HTMLElement | null)?.blur?.();
+      dismiss = true;
+    }
+    const target = targetOf(e.target);
+    noteBox0 = null;
+    if (target.kind === 'resize' && textNotes.some((n) => n.id === target.id)) {
+      const el = canvasEl.querySelector<HTMLElement>(`[data-tile="${target.id}"]`);
+      if (el) noteBox0 = { w: el.offsetWidth, h: el.offsetHeight };
+    }
     press = {
       pointer: e.pointerId,
       type: e.pointerType,
       x0: e.clientX,
       y0: e.clientY,
-      target: targetOf(e.target),
+      target,
       moved: false,
       held: false,
       mode: 'none',
@@ -526,9 +551,9 @@
       press = null;
       navigator.vibrate?.(12);
     } else {
-      // A sketch (or its grip): picked up, with its menu. Moving closes the menu and drags.
+      // A sketch or note (or its grip): picked up, with its menu. Moving closes the menu and drags.
       const id = p.target.id;
-      const s = sketches.find((x) => x.id === id);
+      const s = items.find((x) => x.id === id);
       if (!s) return;
       p.mode = 'drag';
       dragging = { id: s.id, start: spans[s.id].start, y: s.canvasY };
@@ -562,7 +587,7 @@
     if (p.mode === 'pan') {
       view = clampView({ ...p.view0, scrollX: p.view0.scrollX - dx / p.view0.pps, scrollY: p.view0.scrollY - dy });
     } else if (p.mode === 'drag' && dragging) {
-      const s = sketches.find((x) => x.id === dragging!.id);
+      const s = items.find((x) => x.id === dragging!.id);
       if (!s) return;
       const span = spans[s.id];
       dragging = {
@@ -572,8 +597,14 @@
       };
     } else if (p.mode === 'resize' && p.target.kind === 'resize') {
       const id = p.target.id;
-      const s = sketches.find((x) => x.id === id);
+      const s = items.find((x) => x.id === id);
       if (!s) return;
+      if (s.kind === 'text') {
+        // A note's corner: its box, in pixels.
+        const box = noteBox0 ?? { w: NOTE_W, h: 40 };
+        resizingNote = { id, w: Math.max(60, Math.round(box.w + dx)), h: Math.max(28, Math.round(box.h + dy)) };
+        return;
+      }
       const span = spans[id];
       // Relative to where the drag began, so grabbing the grip a little inside the edge changes nothing.
       const end = span.end + dx / view.pps;
@@ -617,12 +648,26 @@
       const r = resizing;
       resizing = null;
       if (r) void stretch(r.id, r.count);
+      const n = resizingNote;
+      resizingNote = null;
+      if (n) void app.updateTextNote({ id: n.id, canvasW: n.w, canvasH: n.h });
       return;
     }
     if (p.moved || p.held || p.dismiss) return;
     // A tap.
     if (p.target.kind === 'empty') {
-      seekTo(localPoint(e.clientX, e.clientY).time);
+      const at = localPoint(e.clientX, e.clientY);
+      const now = performance.now();
+      const last = lastEmptyTap;
+      if (last && now - last.at < DOUBLE_TAP_MS + 60 && Math.hypot(e.clientX - last.x, e.clientY - last.y) < 30) {
+        // A double tap: a note there (and the playhead back where the first tap took it from).
+        lastEmptyTap = null;
+        if (!playing) engine.seek(last.before);
+        draftNote = { at: Math.max(0, at.time), canvasY: Math.max(0, Math.round(at.canvasY - 16)) };
+        return;
+      }
+      lastEmptyTap = { x: e.clientX, y: e.clientY, at: now, before: solo ? solo.resume : currentTime };
+      seekTo(at.time);
     } else {
       // Inside the tap, so the sound can start (WebKit), even though it plays a moment later.
       wakeAudio();
@@ -637,6 +682,7 @@
     press = null;
     dragging = null;
     resizing = null;
+    resizingNote = null;
     window.clearTimeout(holdTimer);
   }
 
@@ -828,6 +874,29 @@
     }
   }
 
+  // -------------------------------------------------------------- notes
+
+  async function submitDraft(text: string) {
+    const draft = draftNote;
+    draftNote = null;
+    if (!draft || !notebook || !text.trim()) return;
+    await app.createTextNote({ notebookId: notebook.id, canvasXMs: Math.round(draft.at * 1000), canvasY: draft.canvasY, text: text.replace(/\s+$/, '') });
+  }
+
+  async function submitNote(id: string, text: string) {
+    if (editingNote === id) editingNote = null;
+    const note = textNotes.find((n) => n.id === id);
+    if (!note) return;
+    if (!text.trim()) await app.removeTextNote(id);
+    else if (text !== note.textNotes) await app.updateTextNote({ id, text: text.replace(/\s+$/, '') });
+  }
+
+  /** A note's first line, without markdown, for its menu. */
+  function noteTitle(text: string): string {
+    const line = text.split('\n').find((l) => l.trim()) ?? '';
+    return line.replace(/[#>*_~`[\]()-]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40) || 'Note';
+  }
+
   // ------------------------------------------- copy, duplicate, export
 
   function copy(id: string) {
@@ -838,8 +907,15 @@
   /** A copy right after the original, at the same height. */
   async function duplicate(id: string) {
     tileMenu = null;
-    const s = sketches.find((x) => x.id === id);
+    const s = items.find((x) => x.id === id);
     if (!s || !notebook) return;
+    if (s.kind === 'text') {
+      // A note's copy goes just below it.
+      const el = canvasEl.querySelector<HTMLElement>(`[data-tile="${id}"]`);
+      const height = el ? el.offsetHeight : 48;
+      await app.duplicateSketch(id, { notebookId: notebook.id, canvasXMs: s.canvasXMs, canvasY: Math.round(s.canvasY + height + 12) });
+      return;
+    }
     const span = spans[id];
     // Its playing part starts where the original's ends (repeats included).
     await app.duplicateSketch(id, { notebookId: notebook.id, canvasXMs: (span.end - span.from) * 1000, canvasY: s.canvasY });
@@ -860,9 +936,13 @@
   }
 
   function openSketch(id: string) {
-    const s = sketches.find((x) => x.id === id);
+    const s = items.find((x) => x.id === id);
     if (!s) return;
     tileMenu = null;
+    if (s.kind === 'text') {
+      editingNote = id;
+      return;
+    }
     if (s.kind === 'rhythm') {
       if (solo) endSolo(false);
       engine.pause();
@@ -944,6 +1024,7 @@
   // ------------------------------------------------------------- misc
 
   function titleOf(s: Sketch): string {
+    if (s.kind === 'text') return noteTitle(s.textNotes);
     if (s.kind === 'rhythm') return s.title.trim() || 'Rhythm';
     return displayTitle(s);
   }
@@ -956,7 +1037,7 @@
   }
 
   function onKey(e: KeyboardEvent) {
-    if ((e.target as HTMLElement).closest('input, textarea') || rhythmEditor) return;
+    if ((e.target as HTMLElement).closest('input, textarea') || rhythmEditor || editingNote || draftNote) return;
     if (e.key === ' ' && !e.repeat) {
       e.preventDefault();
       togglePlay();
@@ -991,7 +1072,7 @@
     engine.dispose();
   });
 
-  const tileMenuSketch = $derived(tileMenu ? (sketches.find((s) => s.id === tileMenu!.id) ?? null) : null);
+  const tileMenuSketch = $derived(tileMenu ? (items.find((s) => s.id === tileMenu!.id) ?? null) : null);
   const editing = $derived(rhythmEditor?.mode === 'edit' ? (sketches.find((s) => s.id === (rhythmEditor as { id: string }).id) ?? null) : null);
   const createSpot = $derived(createMenu ?? (importAt ? { at: importAt.at, canvasY: importAt.canvasY } : rhythmEditor?.mode === 'new' ? rhythmEditor : null));
 </script>
@@ -1096,6 +1177,33 @@
           {theme}
         />
       {/each}
+      {#each textNotes as n (n.id)}
+        {@const moving = dragging?.id === n.id ? dragging : null}
+        {@const size = resizingNote?.id === n.id ? resizingNote : null}
+        <CanvasNote
+          id={n.id}
+          text={n.textNotes}
+          width={size ? size.w : n.canvasW}
+          height={size ? size.h : n.canvasH}
+          left={(moving ? moving.start : spans[n.id].start) * view.pps}
+          top={moving ? moving.y : n.canvasY}
+          editing={editingNote === n.id}
+          lifted={!!moving}
+          onsubmit={(text) => submitNote(n.id, text)}
+        />
+      {/each}
+      {#if draftNote}
+        <CanvasNote
+          id={null}
+          text=""
+          width={null}
+          height={null}
+          left={draftNote.at * view.pps}
+          top={draftNote.canvasY}
+          editing
+          onsubmit={submitDraft}
+        />
+      {/if}
     </div>
 
     {#if createSpot}
@@ -1125,10 +1233,10 @@
       <div class="playhead" class:parked={!!solo} style:left="{playheadX}px"></div>
     {/if}
 
-    {#if app.ready && sketches.length === 0 && !createSpot}
+    {#if app.ready && items.length === 0 && !createSpot && !draftNote}
       <div class="empty">
         <p class="serif lead">An empty page.</p>
-        <p>Press and hold anywhere to record, import or tap out a rhythm. Left to right is time.</p>
+        <p>Press and hold anywhere to record, import or tap out a rhythm; double-tap to write a note. Left to right is time.</p>
       </div>
     {/if}
   </div>
@@ -1136,6 +1244,14 @@
   <footer class="dock">
     <Minimap
       items={sketches.map((s) => ({ id: s.id, start: spans[s.id].start, end: spans[s.id].end, y: s.canvasY, rhythm: s.kind === 'rhythm' }))}
+      notes={textNotes.map((n) => ({
+        id: n.id,
+        start: spans[n.id].start,
+        width: (n.canvasW ?? NOTE_W) / view.pps,
+        y: n.canvasY,
+        height: n.canvasH ?? 40,
+        emoji: isEmojiOnly(n.textNotes) ? n.textNotes.replace(/\s+/g, '') : null,
+      }))}
       {view}
       viewWidth={cw}
       viewHeight={Math.max(0, ch - RULER_H)}
@@ -1198,9 +1314,14 @@
   {@const at = placeMenu(m.x, m.y, 220, 212)}
   <div class="popover" role="menu" style:left="{at.left}px" style:top="{at.top}px" aria-label={titleOf(s)}>
     <div class="menu-label">{titleOf(s)}</div>
+    {#if s.kind === 'text'}
+      <button role="menuitem" onclick={() => openSketch(s.id)}><Icon name="edit" size={18} /> Edit</button>
+    {/if}
     <button role="menuitem" onclick={() => copy(s.id)}><Icon name="copy" size={18} /> Copy</button>
     <button role="menuitem" onclick={() => duplicate(s.id)}><Icon name="duplicate" size={18} /> Duplicate</button>
-    <button role="menuitem" onclick={() => exportSketch(s.id)}><Icon name="share" size={18} /> Export</button>
+    {#if s.kind !== 'text'}
+      <button role="menuitem" onclick={() => exportSketch(s.id)}><Icon name="share" size={18} /> Export</button>
+    {/if}
     <button
       role="menuitem"
       class="danger"
@@ -1250,10 +1371,13 @@
 {#if confirming}
   {@const c = confirming}
   {@const count = app.sketches.filter((s) => s.notebookId === c.id && s.parentId === null).length}
-  <Sheet title={c.kind === 'notebook' ? 'Delete this notebook?' : 'Delete this sketch?'} onclose={() => (confirming = null)}>
+  {@const isNote = c.kind === 'sketch' && textNotes.some((n) => n.id === c.id)}
+  <Sheet title={c.kind === 'notebook' ? 'Delete this notebook?' : isNote ? 'Delete this note?' : 'Delete this sketch?'} onclose={() => (confirming = null)}>
     <p class="confirm-text">
       {#if c.kind === 'notebook'}
         {count === 0 ? 'It is empty.' : `Its ${count === 1 ? 'sketch' : `${count} sketches`}, with recordings, transcriptions and notes, will be permanently removed from this device.`}
+      {:else if isNote}
+        The note will be removed from the notebook.
       {:else}
         The sketch, its recording, its transcription and your notes will be permanently removed from this device.
       {/if}

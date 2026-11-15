@@ -60,6 +60,28 @@ export interface Sketch {
   rhythm: RhythmPattern | null;
   /** How many times a recording plays in a row on the canvas (1 = once; rhythms repeat by bars instead). */
   canvasRepeats: number;
+  /** A text note's box: width and minimum height in canvas pixels (null = fit the text). */
+  canvasW: number | null;
+  canvasH: number | null;
+}
+
+export interface CreateTextNoteArgs {
+  notebookId: string;
+  canvasXMs: number;
+  canvasY: number;
+  /** Markdown. */
+  text: string;
+  canvasW?: number | null;
+  canvasH?: number | null;
+}
+
+export interface UpdateTextNoteArgs {
+  id: string;
+  text?: string;
+  canvasW?: number;
+  canvasH?: number;
+  /** Back to fitting the text. */
+  clearSize?: boolean;
 }
 
 /** Most times a recording may play in a row on the canvas. */
@@ -73,7 +95,8 @@ export interface DuplicateSketchArgs {
   canvasY: number;
 }
 
-export type SketchKind = 'audio' | 'rhythm';
+/** A recording, a rhythm (a step pattern, no media), or a text note (markdown in `textNotes`). */
+export type SketchKind = 'audio' | 'rhythm' | 'text';
 
 /** A notebook: a canvas of sketches placed on one timeline. */
 export interface Notebook {
@@ -280,6 +303,8 @@ export interface SketchLibrary {
   /** A copy of a sketch (recording, notes and settings, or rhythm) on a notebook's canvas. */
   duplicate(args: DuplicateSketchArgs): Promise<Sketch>;
   createRhythm(args: CreateRhythmArgs): Promise<Sketch>;
+  createTextNote(args: CreateTextNoteArgs): Promise<Sketch>;
+  updateTextNote(args: UpdateTextNoteArgs): Promise<Sketch>;
   updateRhythm(args: UpdateRhythmArgs): Promise<Sketch>;
 }
 

@@ -288,6 +288,46 @@ function instrument() {
   await sleep(400);
   expect((await tiles()).length === 6, `back in the demo notebook (${(await tiles()).length} sketches)`);
 
+  // Text notes: double-tap empty canvas to write one (markdown); the playhead stays where it was.
+  const notes = () =>
+    page.$$eval('.note[data-tile]', (els) =>
+      els.map((e) => ({ id: e.dataset.tile, html: e.querySelector('.md')?.innerHTML ?? '', font: getComputedStyle(e).fontSize, r: e.getBoundingClientRect().toJSON() })),
+    );
+  const playheadBefore = await time();
+  await page.mouse.dblclick(40, canvas.bottom - 160);
+  await page.waitForSelector('.note textarea');
+  await page.keyboard.type('**Bridge** in *D minor*\n- [ ] left hand');
+  await page.mouse.click(300, canvas.y + 60);
+  await sleep(300);
+  const written = await notes();
+  expect(written.length === 1 && written[0].html.includes('<strong>Bridge</strong>') && written[0].html.includes('<ul>'), `a markdown note (${JSON.stringify(written.map((n) => n.html))})`);
+  expect((await time()) === playheadBefore, `a double tap should leave the playhead (${playheadBefore} → ${await time()})`);
+  // Resize it by its corner.
+  const corner = await page.$eval(`[data-resize="${written[0].id}"]`, (e) => e.getBoundingClientRect().toJSON());
+  await page.mouse.move(corner.x + 9, corner.y + 9);
+  await page.mouse.down();
+  await page.mouse.move(corner.x + 69, corner.y + 9, { steps: 5 });
+  await page.mouse.up();
+  await sleep(300);
+  const wider = (await notes())[0];
+  expect(Math.round(wider.r.width - written[0].r.width) === 60, `the corner should resize the note (${written[0].r.width} → ${wider.r.width})`);
+  // Only an emoji: shown at 50 px.
+  await page.mouse.dblclick(40, canvas.bottom - 50);
+  await page.waitForSelector('.note textarea');
+  await page.keyboard.type('🔥');
+  await page.keyboard.press('Escape');
+  await sleep(300);
+  const fire = (await notes()).find((n) => n.html === '<p>🔥</p>');
+  expect(fire && fire.font === '50px', `an emoji-only note should be 50 px (${fire?.font})`);
+  // Emptied, a note goes.
+  await page.mouse.dblclick(fire.r.x + 20, fire.r.y + 30);
+  await page.waitForSelector('.note textarea');
+  await page.keyboard.press('Control+A');
+  await page.keyboard.press('Backspace');
+  await page.keyboard.press('Escape');
+  await sleep(300);
+  expect((await notes()).length === 1, 'an emptied note should be removed');
+
   const toasts = await page.$$eval('.toast', (els) => els.map((e) => e.textContent)).catch(() => []);
   if (toasts.some((t) => /could not/i.test(t))) problems.push(`toasts: ${toasts.join(' | ')}`);
   await browser.close();

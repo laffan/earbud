@@ -133,6 +133,25 @@ fn new_id() -> String {
 const MAX_CANVAS_Y: f64 = 1_000_000.0;
 /// Most times a recording may play in a row on the canvas.
 pub const MAX_CANVAS_REPEATS: i64 = 128;
+/// Longest text note (characters).
+const MAX_NOTE_CHARS: usize = 20_000;
+
+fn validate_note_text(text: &str) -> Result<()> {
+    if text.chars().count() > MAX_NOTE_CHARS {
+        return Err(Error::Invalid("the note is too long".into()));
+    }
+    Ok(())
+}
+
+fn validate_box(size: Option<f64>) -> Result<Option<f64>> {
+    match size {
+        Some(px) if !px.is_finite() || !(16.0..=4000.0).contains(&px) => {
+            Err(Error::Invalid(format!("note size {px} is out of range")))
+        }
+        other => Ok(other),
+    }
+}
+
 /// A rhythm pattern is a few hundred steps; anything near this is not one.
 const MAX_RHYTHM_BYTES: usize = 256 * 1024;
 
@@ -531,6 +550,8 @@ impl Library {
             kind: row.get("kind")?,
             rhythm: rhythm_json.and_then(|s| serde_json::from_str(&s).ok()),
             canvas_repeats: row.get("canvas_repeats")?,
+            canvas_w: row.get("canvas_w")?,
+            canvas_h: row.get("canvas_h")?,
             id,
         })
     }
@@ -957,14 +978,14 @@ impl Library {
                                        transcription_status, transcription_error, capture_backend, recovered,
                                        crop_start_ms, crop_end_ms, parent_id, track_id, offset_ms, count_in_ms,
                                        tempo_bpm, beat_ms, tempo_source, notebook_id, canvas_x_ms, canvas_y,
-                                       kind, rhythm_json, canvas_repeats)
+                                       kind, rhythm_json, canvas_repeats, canvas_w, canvas_h)
                  SELECT ?2, title, created_at, ?3, status, duration_ms, media_file,
                         media_mime, has_video, video_width, video_height, text_notes,
                         CASE transcription_status WHEN 'running' THEN 'pending' ELSE transcription_status END,
                         transcription_error, capture_backend, 0,
                         crop_start_ms, crop_end_ms, NULL, ?4, offset_ms, count_in_ms,
                         tempo_bpm, beat_ms, tempo_source, ?5, ?6, ?7,
-                        kind, rhythm_json, canvas_repeats
+                        kind, rhythm_json, canvas_repeats, canvas_w, canvas_h
                    FROM sketches WHERE id = ?1",
                 params![args.id, id, now, new_track, args.notebook_id, x, y],
             )?;
@@ -991,6 +1012,48 @@ impl Library {
             return Err(error);
         }
         Ok(self.get(&id)?.sketch)
+    }
+
+    /// A text note on a notebook's canvas: markdown, with an optional box size.
+    /// Like a rhythm it has no recording and nothing to transcribe.
+    pub fn create_text_note(&self, args: CreateTextNoteArgs) -> Result<Sketch> {
+        self.require_notebook(&args.notebook_id)?;
+        let x = validate_canvas_x(args.canvas_x_ms)?;
+        let y = validate_canvas_y(args.canvas_y)?;
+        validate_note_text(&args.text)?;
+        let (w, h) = (validate_box(args.canvas_w)?, validate_box(args.canvas_h)?);
+        let id = new_id();
+        let now = now_ms();
+        self.conn().execute(
+            "INSERT INTO sketches (id, title, created_at, updated_at, status, has_video, text_notes,
+                                   transcription_status, capture_backend, notebook_id, canvas_x_ms,
+                                   canvas_y, kind, canvas_w, canvas_h)
+             VALUES (?1, '', ?2, ?2, 'saved', 0, ?3, 'done', 'text', ?4, ?5, ?6, 'text', ?7, ?8)",
+            params![id, now, args.text, args.notebook_id, x, y, w, h],
+        )?;
+        Ok(self.get(&id)?.sketch)
+    }
+
+    /// Change a text note's text or box.
+    pub fn update_text_note(&self, args: UpdateTextNoteArgs) -> Result<Sketch> {
+        validate_id(&args.id)?;
+        if let Some(text) = &args.text {
+            validate_note_text(text)?;
+        }
+        let (w, h) = (validate_box(args.canvas_w)?, validate_box(args.canvas_h)?);
+        let changed = self.conn().execute(
+            "UPDATE sketches
+                SET text_notes = COALESCE(?2, text_notes),
+                    canvas_w = CASE WHEN ?5 THEN NULL ELSE COALESCE(?3, canvas_w) END,
+                    canvas_h = CASE WHEN ?5 THEN NULL ELSE COALESCE(?4, canvas_h) END,
+                    updated_at = ?6
+              WHERE id = ?1 AND kind = 'text'",
+            params![args.id, args.text, w, h, args.clear_size, now_ms()],
+        )?;
+        if changed == 0 {
+            return Err(Error::NotFound(format!("text note {}", args.id)));
+        }
+        Ok(self.get(&args.id)?.sketch)
     }
 
     /// A rhythm sketch: a step pattern on a notebook's canvas. It has no

@@ -15,7 +15,7 @@ import {
 import { Metronome } from '../capture/countIn';
 import { importAudioSketch, importMidiSketch, type Placement } from '../library/importTrack';
 import { getLibrary, type Sketch, type SketchLibrary } from '../library';
-import type { CreateRhythmArgs, Notebook, UpdateRhythmArgs } from '../library/types';
+import type { CreateRhythmArgs, CreateTextNoteArgs, Notebook, UpdateRhythmArgs, UpdateTextNoteArgs } from '../library/types';
 import { ProcessingQueue, type JobProgress } from '../pipeline/processingQueue';
 import { errorCode, errorMessage, isIOSLike } from '../platform/tauri';
 import {
@@ -500,6 +500,50 @@ export class AppState {
     } catch (error) {
       this.toast(`Could not copy the sketch: ${errorMessage(error)}`, 'error');
       return null;
+    }
+  }
+
+  async createTextNote(args: CreateTextNoteArgs): Promise<Sketch | null> {
+    try {
+      const note = await this.library.createTextNote(args);
+      this.upsert(note);
+      return note;
+    } catch (error) {
+      this.toast(`Could not save the note: ${errorMessage(error)}`, 'error');
+      return null;
+    }
+  }
+
+  /** Change a note's text or box. Shown at once; the library confirms. */
+  async updateTextNote(args: UpdateTextNoteArgs): Promise<Sketch | null> {
+    const index = this.sketches.findIndex((s) => s.id === args.id);
+    if (index >= 0) {
+      const s = this.sketches[index];
+      this.sketches[index] = {
+        ...s,
+        textNotes: args.text ?? s.textNotes,
+        canvasW: args.clearSize ? null : (args.canvasW ?? s.canvasW),
+        canvasH: args.clearSize ? null : (args.canvasH ?? s.canvasH),
+      };
+    }
+    try {
+      const note = await this.library.updateTextNote(args);
+      this.upsert(note);
+      return note;
+    } catch (error) {
+      this.toast(`Could not save the note: ${errorMessage(error)}`, 'error');
+      void this.refresh();
+      return null;
+    }
+  }
+
+  /** Remove a note without asking (it was emptied). */
+  async removeTextNote(id: string) {
+    try {
+      await this.library.remove(id);
+      this.sketches = this.sketches.filter((s) => s.id !== id);
+    } catch (error) {
+      this.toast(`Could not remove the note: ${errorMessage(error)}`, 'error');
     }
   }
 
