@@ -34,6 +34,8 @@ export interface RhythmPattern {
   lengthBars: number;
   /** One row per pad, one value per step: 0 = silent, otherwise the hit's level (up to 1). */
   pads: number[][];
+  /** Every second 16th is played this fraction of a step late (0 = straight; ⅓ ≈ triplet feel). */
+  swing?: number;
 }
 
 /** A pad struck while recording: which one, and when (seconds, any origin). */
@@ -61,6 +63,7 @@ export const MAX_BPM = 240;
 export const MAX_BARS = 16;
 /** Longest a rhythm may play on the canvas, in bars. */
 export const MAX_LENGTH_BARS = 512;
+export const MAX_SWING = 0.5;
 /** Tempo used when there is nothing to detect it from. */
 export const DEFAULT_BPM = 100;
 /** A tempo fit at least this good (see `TempoEstimate.confidence`) is used. */
@@ -107,6 +110,7 @@ export function emptyPattern(bpm = DEFAULT_BPM, bars = 1): RhythmPattern {
     bars,
     lengthBars: bars,
     pads: PADS.map(() => new Array<number>(steps).fill(0)),
+    swing: 0,
   };
 }
 
@@ -133,7 +137,38 @@ export function normalizePattern(raw: unknown): RhythmPattern | null {
     bars: clamp(bars, 1, MAX_BARS),
     lengthBars: clamp(Number.isFinite(lengthBars) && lengthBars >= 1 ? lengthBars : bars, 1, MAX_LENGTH_BARS),
     pads,
+    swing: clamp(Number(r.swing) || 0, 0, MAX_SWING),
   };
+}
+
+/** One more bar, a copy of the last (as a starting point to vary). */
+export function withBarAdded(p: RhythmPattern): RhythmPattern {
+  if (p.bars >= MAX_BARS) return p;
+  const per = stepsPerBar(p);
+  const last = (p.bars - 1) * per;
+  return {
+    ...p,
+    bars: p.bars + 1,
+    lengthBars: Math.max(p.lengthBars, p.bars + 1),
+    pads: p.pads.map((row) => [...row, ...row.slice(last, last + per)]),
+  };
+}
+
+/** The pattern twice over (twice as many bars, the same hits), as far as the bar limit allows. */
+export function doubled(p: RhythmPattern): RhythmPattern {
+  if (p.bars * 2 > MAX_BARS) return p;
+  return { ...p, bars: p.bars * 2, lengthBars: Math.max(p.lengthBars, p.bars * 2), pads: p.pads.map((row) => [...row, ...row]) };
+}
+
+/** Steps [from, to) of one pad silenced. */
+export function withCleared(p: RhythmPattern, pad: number, from: number, to: number): RhythmPattern {
+  return { ...p, pads: p.pads.map((row, i) => (i === pad ? row.map((v, s) => (s >= from && s < to ? 0 : v)) : row)) };
+}
+
+/** When step `index` (counting on from the pattern's start) sounds, swing included (seconds). */
+export function stepTime(p: Pick<RhythmPattern, 'bpm' | 'stepsPerBeat' | 'swing'>, index: number): number {
+  const step = stepSeconds(p);
+  return index * step + (index % 2 === 1 ? (p.swing ?? 0) * step : 0);
 }
 
 /** The pattern with `bars` bars: steps added (silent) or cut at the end. It plays for at least as long. */
@@ -163,13 +198,12 @@ export interface RhythmHit {
 export function rhythmHits(p: RhythmPattern, lengthBars = p.lengthBars): RhythmHit[] {
   const total = lengthBars * stepsPerBar(p);
   const cycle = patternSteps(p);
-  const step = stepSeconds(p);
   const hits: RhythmHit[] = [];
   for (let k = 0; k < total; k++) {
     const s = k % cycle;
     for (let pad = 0; pad < p.pads.length; pad++) {
       const level = p.pads[pad][s] ?? 0;
-      if (level > 0) hits.push({ pad, time: k * step, level });
+      if (level > 0) hits.push({ pad, time: stepTime(p, k), level });
     }
   }
   return hits;

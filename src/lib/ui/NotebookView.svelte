@@ -755,7 +755,8 @@
   // ------------------------------------------------------------ making
 
   let importAt = $state<{ at: number; canvasY: number } | null>(null);
-  let rhythmEditor = $state<{ mode: 'new'; at: number; canvasY: number } | { mode: 'edit'; id: string } | null>(null);
+  /** Recording a new rhythm at a point (editing one happens in its own view). */
+  let rhythmEditor = $state<{ mode: 'new'; at: number; canvasY: number } | null>(null);
 
   /** The rhythm under a point of the timeline (nearest vertically), to count in at its tempo. */
   function rhythmAt(time: number, y: number): { span: Span; pattern: RhythmPattern } | null {
@@ -841,23 +842,15 @@
   async function saveRhythm(pattern: RhythmPattern, title: string) {
     const editor = rhythmEditor;
     if (!editor || !notebook) return;
-    const durationMs = Math.round(playSeconds(pattern) * 1000);
-    if (editor.mode === 'new') {
-      const saved = await app.createRhythm({
-        notebookId: notebook.id,
-        canvasXMs: Math.round(editor.at * 1000),
-        canvasY: editor.canvasY,
-        title,
-        rhythm: pattern,
-        durationMs,
-      });
-      if (saved) rhythmEditor = null;
-    } else {
-      const s = sketches.find((x) => x.id === editor.id);
-      const saved = await app.updateRhythm({ id: editor.id, rhythm: pattern, durationMs });
-      if (saved && s && title !== s.title.trim()) await app.rename(editor.id, title);
-      if (saved) rhythmEditor = null;
-    }
+    const saved = await app.createRhythm({
+      notebookId: notebook.id,
+      canvasXMs: Math.round(editor.at * 1000),
+      canvasY: editor.canvasY,
+      title,
+      rhythm: pattern,
+      durationMs: Math.round(playSeconds(pattern) * 1000),
+    });
+    if (saved) rhythmEditor = null;
   }
 
   /** A sketch stretched by its right edge: a rhythm to `count` bars, a recording to `count` repeats. */
@@ -943,13 +936,8 @@
       editingNote = id;
       return;
     }
-    if (s.kind === 'rhythm') {
-      if (solo) endSolo(false);
-      engine.pause();
-      rhythmEditor = { mode: 'edit', id };
-    } else {
-      app.openSketch(id);
-    }
+    // A recording opens in the sketch view, a rhythm in the rhythm view.
+    app.openSketch(id);
   }
 
   // -------------------------------------------------- rename and delete
@@ -1073,8 +1061,7 @@
   });
 
   const tileMenuSketch = $derived(tileMenu ? (items.find((s) => s.id === tileMenu!.id) ?? null) : null);
-  const editing = $derived(rhythmEditor?.mode === 'edit' ? (sketches.find((s) => s.id === (rhythmEditor as { id: string }).id) ?? null) : null);
-  const createSpot = $derived(createMenu ?? (importAt ? { at: importAt.at, canvasY: importAt.canvasY } : rhythmEditor?.mode === 'new' ? rhythmEditor : null));
+  const createSpot = $derived(createMenu ?? (importAt ? { at: importAt.at, canvasY: importAt.canvasY } : rhythmEditor));
 </script>
 
 <svelte:window onkeydown={onKey} onpointerdowncapture={onWindowDown} />
@@ -1342,8 +1329,7 @@
     context={() => engine.context}
     destination={() => engine.input}
     unlock={() => engine.unlock()}
-    initial={editing ? patternOf(editing) : null}
-    initialTitle={editing?.title ?? ''}
+    initial={null}
     onsave={saveRhythm}
     onclose={() => (rhythmEditor = null)}
   />

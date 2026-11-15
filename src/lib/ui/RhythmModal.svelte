@@ -11,6 +11,7 @@
    */
   import { onDestroy } from 'svelte';
   import { DrumKit } from '../music/drums';
+  import { RhythmPlayer } from '../music/rhythmPlayer';
   import {
     MAX_BARS,
     MAX_BPM,
@@ -18,7 +19,6 @@
     PADS,
     patternFromTaps,
     patternSteps,
-    stepSeconds,
     stepsPerBar,
     withBars,
     withStep,
@@ -138,12 +138,9 @@
 
   let previewing = $state(false);
   let currentStep = $state(-1);
-  let timer: number | undefined;
   let frame = 0;
-  let nextTime = 0;
-  let nextStep = 0;
-  /** Steps scheduled and when they sound, for lighting the one playing. */
-  let scheduled: { step: number; time: number }[] = [];
+  // svelte-ignore state_referenced_locally
+  const player = new RhythmPlayer(context(), kit, () => pattern);
 
   function togglePreview() {
     if (previewing) stopPreview();
@@ -153,46 +150,20 @@
   function startPreview() {
     if (!pattern) return;
     unlock();
-    const ctx = context();
     previewing = true;
-    nextTime = ctx.currentTime + 0.08;
-    nextStep = 0;
-    scheduled = [];
-    schedule();
-    timer = window.setInterval(schedule, 25);
+    player.start();
     const paint = () => {
-      const t = ctx.currentTime;
-      while (scheduled.length > 1 && scheduled[1].time <= t) scheduled.shift();
-      currentStep = scheduled[0] && scheduled[0].time <= t ? scheduled[0].step : -1;
+      currentStep = player.currentStep();
       frame = requestAnimationFrame(paint);
     };
     frame = requestAnimationFrame(paint);
   }
 
-  /** Schedule the steps due in the next 120 ms (reads the pattern as it is now, so edits play at once). */
-  function schedule() {
-    const p = pattern;
-    if (!p) return;
-    const ctx = context();
-    const steps = patternSteps(p);
-    while (nextTime < ctx.currentTime + 0.12) {
-      const step = nextStep % steps;
-      for (let pad = 0; pad < p.pads.length; pad++) {
-        const level = p.pads[pad][step] ?? 0;
-        if (level > 0) kit.hit(pad, nextTime, level);
-      }
-      scheduled.push({ step, time: nextTime });
-      nextStep = step + 1;
-      nextTime += stepSeconds(p);
-    }
-  }
-
   function stopPreview() {
     previewing = false;
-    window.clearInterval(timer);
+    player.stop();
     cancelAnimationFrame(frame);
     currentStep = -1;
-    scheduled = [];
   }
 
   async function save() {

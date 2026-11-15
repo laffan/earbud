@@ -254,8 +254,25 @@ function instrument() {
   const backbeat2 = await tile('Backbeat');
   await page.mouse.dblclick(backbeat2.r.x + 30, backbeat2.r.y + 15);
   await sleep(300);
-  expect((await page.getAttribute('[role=dialog]', 'aria-label').catch(() => null)) === 'Edit rhythm', 'double-tapping a rhythm should open its editor');
-  await page.click('[role=dialog] button:has-text("Cancel")');
+  // The rhythm view: tap a step on, drag another's velocity down; the canvas tile follows.
+  expect(!!(await page.$('.rhythm-view')), 'double-tapping a rhythm should open the rhythm view');
+  const stepLevels = () =>
+    page.$$eval('.steps .step', (els) => els.map((e) => (e.classList.contains('on') ? Math.round(parseFloat(e.querySelector('.fill').style.height)) : 0)));
+  const stepButtons = await page.$$('.steps .step');
+  await stepButtons[2].click();
+  const first = await stepButtons[0].boundingBox();
+  await page.mouse.move(first.x + first.width / 2, first.y + first.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(first.x + first.width / 2, first.y + first.height / 2 + 64, { steps: 6 });
+  await page.mouse.up();
+  const levels = await stepLevels();
+  expect(levels[0] === 60 && levels[2] === 80, `a tap and a velocity drag (${JSON.stringify(levels.slice(0, 4))})`);
+  await page.click('button[aria-label="Undo"]');
+  expect((await stepLevels())[0] === 100, 'undo should restore the velocity');
+  await sleep(700);
+  await page.click('button[aria-label="Back to the notebook"]');
+  await page.waitForSelector('[data-tile]');
+  await sleep(400);
   const piece1 = await tile('Sixteen');
   await page.mouse.dblclick(piece1.r.x + 40, piece1.r.y + 40);
   await page.waitForSelector('.sketch-view', { timeout: 5000 });

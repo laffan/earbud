@@ -168,6 +168,12 @@ Pure TypeScript, no UI or platform dependencies, unit tested.
   pattern is whole 4/4 bars; a last bar holding only its downbeat is dropped (the loop coming round). A
   `RhythmPattern` is `{ bpm, stepsPerBeat, beatsPerBar, bars, lengthBars, pads[pad][step] }`: `lengthBars` is how
   long it plays on the canvas, the pattern repeating (and the last repeat cut) to fill it (`rhythmHits`).
+- `rhythmPlayer.ts`: plays a pattern in a loop on any audio context with a 25 ms look-ahead scheduler that reads the
+  pattern on every tick (edits, tempo and swing are heard at the next step); it keeps when each step was scheduled,
+  for the step sounding now and for `nearestStep()`, where a pad struck while recording belongs (output latency
+  taken off). Used by the rhythm panel and the rhythm view; unit tested with a fake clock.
+- Swing (`swing` in the pattern, 0–0.5): every second 16th is that fraction of a step late (`stepTime`), in playback,
+  on the canvas, in the rendered audio and in the MIDI export.
 - `drums.ts`: the pads' sounds (kick: a sine falling 150 → 45 Hz with a click; snare: high-passed noise over a
   short triangle; hat: high-passed noise), each rendered once per sample rate into a 0.6 s one-shot with an
   `OfflineAudioContext`. `DrumKit` strikes the one-shots live (no synthesis on the hit), and `mixRhythm` renders a
@@ -215,6 +221,9 @@ Tables:
   `create_sketch` takes a notebook and a position for a new sketch, `finalize_sketch` the exact `canvas_x_ms`
   once the downbeat is known, and `place_sketch` moves one. `delete_notebook` deletes its sketches with their
   files. Sketches from before v5 have no notebook and are on no canvas.
+- `canvas_w`, `canvas_h` (schema v7): the box of a text note (kind `text`, its markdown in `text_notes`), in canvas
+  pixels; NULL fits the text. `create_text_note` / `update_text_note` (text, size, or back to fitting); notes have no
+  recording, nothing to transcribe, and are copied by `duplicate_sketch` like any canvas item.
 - `canvas_repeats` (schema v6, on the sketch row): how many times a recording's playing part plays in a row on the
   canvas (`set_sketch_repeats`, 1–128). Rhythms repeat by bars in their pattern instead.
 - `duplicate_sketch(id, notebook, position)`: a copy of a saved sketch on a canvas. The files in its folder are
@@ -291,6 +300,23 @@ which makes the whole UI testable in Chromium.
   the sketch's id in `app.clipboard`; *Paste* and *Duplicate* call `duplicate_sketch`. Playing a sketch alone sets the engine's
   range to it and the others' gain to 0; repeat sets the range to [0, loop end] with the loop's next pass starting at
   the loop start, so playing from before the range runs into it. Scroll, zoom and repeat are kept per notebook.
+- Canvas audio is renewable: after a recording onto the canvas (the canvas stays mounted, hidden, while the
+  recorder has the audio session), after the page was hidden, when the context is closed or `interrupted`, and when
+  a play got no sound within 2 s, the next tap that leads to sound (`wakeAudio`) disposes the engine and makes a new
+  one, inside the tap so WebKit lets it start; decoded buffers belong to no context and are handed over. Each play
+  logs the context state and how many tracks are ready (`[canvas]` in the diagnostics).
+- Text notes (`CanvasNote.svelte`): drawn in the world layer above the tiles, at their time (`canvas_x_ms`) and
+  height, with a box in pixels (so zoom moves them but does not stretch them). A double tap on empty canvas (a second
+  tap within 340 ms and 30 px; the first tap's seek is undone) opens an unsaved note being written, saved when it
+  is left with text; editing happens in place in a textarea that keeps its pointer events from the canvas. The
+  corner (`data-resize`) resizes the box. `markdown.ts` renders a safe subset (everything escaped, then a fixed set
+  of tags; links only to http(s) and mailto) and `isEmojiOnly` picks the notes shown at 50 px and drawn on the
+  minimap as their emoji.
+- `RhythmView.svelte`: a rhythm opened full size (the app routes a sketch of kind `rhythm` here instead of the sketch
+  view). Its own audio context and `DrumKit` through a limiter, a `RhythmPlayer`; edits go through an undo stack
+  and are saved 0.5 s after the last one (`update_rhythm`). The step grid shows one pad and one bar; a press on a
+  step becomes a velocity drag once it moves 6 px vertically (160 px from silent to full, one undo step per drag),
+  otherwise a tap toggles it.
 - `CanvasTile.svelte`: a sketch on the canvas, its title over its waveform (peaks of the decoded buffer, 100 per
   second; repeats after the first lighter) or its hits; only the part in view is drawn, so zooming far in costs no
   more than the screen.

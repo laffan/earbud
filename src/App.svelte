@@ -5,6 +5,7 @@
   import NotebookView from './lib/ui/NotebookView.svelte';
   import PermissionSheet from './lib/ui/PermissionSheet.svelte';
   import Recorder from './lib/ui/Recorder.svelte';
+  import RhythmView from './lib/ui/RhythmView.svelte';
   import SketchView from './lib/ui/SketchView.svelte';
   import Toasts from './lib/ui/Toasts.svelte';
 
@@ -16,8 +17,13 @@
 <!-- Hidden (not unmounted) while recording so the native preview shows through. -->
 <div class="app-main" class:covered={app.recording !== null}>
   {#if app.view.name === 'sketch'}
-    {#key app.view.id}
-      <SketchView id={app.view.id} />
+    {@const id = app.view.id}
+    {#key id}
+      {#if app.sketches.find((s) => s.id === id)?.kind === 'rhythm'}
+        <RhythmView {id} />
+      {:else}
+        <SketchView {id} />
+      {/if}
     {/key}
   {:else}
     <NotebookView />

@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { mixRhythm, RHYTHM_TAIL } from './drums';
 import {
+  doubled,
   emptyPattern,
   normalizePattern,
   patternFromTaps,
   playSeconds,
   rhythmHits,
+  withBarAdded,
   withBars,
+  withCleared,
   withStep,
   type Tap,
 } from './rhythm';
@@ -121,6 +124,26 @@ describe('patterns on the canvas', () => {
     expect(shorter.lengthBars).toBe(6);
   });
 
+  it('swings every second 16th late', () => {
+    const p = { ...withStep(withStep(emptyPattern(120, 1), 2, 0, 1), 2, 1, 1), swing: 0.5 };
+    // A 16th is 0.125 s at 120 BPM: the second is half a step late.
+    expect(rhythmHits(p).map((h) => h.time)).toEqual([0, 0.1875]);
+  });
+
+  it('adds a bar as a copy of the last, doubles, and clears', () => {
+    const p = withStep(withStep(emptyPattern(100, 1), 0, 0, 1), 1, 4, 0.6);
+    const two = withBarAdded(p);
+    expect([two.bars, two.lengthBars]).toEqual([2, 2]);
+    expect(on(two.pads[0])).toEqual([0, 16]);
+    expect(two.pads[1][20]).toBe(0.6);
+    const four = doubled(two);
+    expect(four.bars).toBe(4);
+    expect(on(four.pads[0])).toEqual([0, 16, 32, 48]);
+    const cleared = withCleared(four, 0, 16, 32);
+    expect(on(cleared.pads[0])).toEqual([0, 32, 48]);
+    expect(on(cleared.pads[1])).toEqual(on(four.pads[1]));
+  });
+
   it('reads stored patterns defensively', () => {
     expect(normalizePattern(null)).toBeNull();
     expect(normalizePattern({ bpm: 'fast' })).toBeNull();
@@ -130,5 +153,7 @@ describe('patterns on the canvas', () => {
     expect(p.pads[0].slice(0, 4)).toEqual([1, 1, 0, 0]);
     expect(p.pads[2].length).toBe(16);
     expect(p.lengthBars).toBe(1);
+    expect(p.swing).toBe(0);
+    expect(normalizePattern({ bpm: 90, bars: 1, pads: [], swing: 2 })!.swing).toBe(0.5);
   });
 });
