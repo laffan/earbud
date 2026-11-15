@@ -122,3 +122,52 @@ describe('mixing takes', () => {
     expect(loud[0]).toBeCloseTo(0.98, 5);
   });
 });
+
+describe('exporting a rhythm', () => {
+  it('writes its sound and its hits as MIDI drums at its tempo, named after it', async () => {
+    const { Midi } = await import('@tonejs/midi');
+    const { emptyPattern } = await import('../music/rhythm');
+    const library = new MemoryLibrary();
+    const notebook = await library.createNotebook('N');
+    const beat = emptyPattern(120, 1);
+    beat.pads[0][0] = 1;
+    beat.pads[1][4] = 1;
+    beat.pads[2][2] = 0.5;
+    const rhythm = await library.createRhythm({
+      notebookId: notebook.id,
+      canvasXMs: 0,
+      canvasY: 0,
+      title: 'Groove',
+      rhythm: { ...beat, lengthBars: 2 },
+      durationMs: 4000,
+    });
+    let rendered = 0;
+    const renderRhythm = async () => {
+      rendered++;
+      return encodeWav16([new Float32Array(100)], 44100);
+    };
+    // A recording cannot be exported from a rhythm; it is simply not offered.
+    const result = await prepareExports([rhythm.id], ['recording', 'audio', 'midi'], { library, capture: null, renderRhythm });
+    expect(result.skipped).toEqual([]);
+    expect(rendered).toBe(1);
+    expect(result.files.map((f) => [f.kind, f.name])).toEqual([
+      ['audio', 'Groove.wav'],
+      ['midi', 'Groove.mid'],
+    ]);
+    const midiFile = result.files.find((f) => f.kind === 'midi')!;
+    const midi = new Midi(new Uint8Array(await (resolveObjectURL(midiFile.path) as unknown as Blob).arrayBuffer()));
+    expect(Math.round(midi.header.tempos[0].bpm)).toBe(120);
+    const drums = midi.tracks[0];
+    expect(drums.channel).toBe(9);
+    // Two bars of the one-bar pattern: kick on 1, hat on the 2nd eighth, snare on 2.
+    expect(drums.notes.map((n) => [n.midi, +n.time.toFixed(3)])).toEqual([
+      [36, 0],
+      [42, 0.25],
+      [38, 0.5],
+      [36, 2],
+      [42, 2.25],
+      [38, 2.5],
+    ]);
+    expect(drums.notes[1].velocity).toBeCloseTo(0.5, 1);
+  });
+});

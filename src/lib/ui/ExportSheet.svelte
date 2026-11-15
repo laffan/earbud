@@ -1,5 +1,8 @@
 <script lang="ts">
-  /** Pick what to share (video, take audio, notes audio, MIDI), then share. */
+  /**
+   * Pick what to export (video, take audio, notes audio, MIDI; for a rhythm,
+   * its audio and MIDI drums), then share, save or download it.
+   */
   import { deliverExports, prepareExports, recordingExtension } from '../export/exporter';
   import type { ExportKind } from '../library/types';
   import { errorMessage } from '../platform/tauri';
@@ -12,6 +15,9 @@
 
   const STORAGE_KEY = 'earbud.export.kinds.v1';
   const sketches = $derived(app.sketches.filter((s) => ids.includes(s.id)));
+  /** Rhythms have no recording or transcription: their sound and their hits. */
+  const rhythms = $derived(sketches.length > 0 && sketches.every((s) => s.kind === 'rhythm'));
+  const name = (s: (typeof sketches)[number]) => (s.kind === 'rhythm' ? s.title.trim() || 'Rhythm' : displayTitle(s));
   const allVideo = $derived(sketches.length > 0 && sketches.every((s) => s.hasVideo));
   const anyTranscribed = $derived(sketches.some((s) => s.transcriptionStatus === 'done'));
   const someUntranscribed = $derived(sketches.some((s) => s.transcriptionStatus !== 'done'));
@@ -36,7 +42,12 @@
   let busy = $state(false);
   let progress = $state<{ message: string; fraction: number } | null>(null);
 
-  const options = $derived<{ kind: ExportKind; label: string; detail: string; disabled: boolean }[]>([
+  const rhythmOptions: { kind: ExportKind; label: string; detail: string; disabled: boolean }[] = [
+    { kind: 'audio', label: 'Audio', detail: 'The rhythm as it plays on the canvas, repeats included (.wav)', disabled: false },
+    { kind: 'midi', label: 'MIDI', detail: 'Its hits as General MIDI drums (kick, snare, closed hi-hat) at its tempo (.mid)', disabled: false },
+  ];
+
+  const sketchOptions = $derived<{ kind: ExportKind; label: string; detail: string; disabled: boolean }[]>([
     {
       kind: 'recording',
       label: allVideo ? 'Video' : 'Recording',
@@ -67,7 +78,8 @@
     },
   ]);
 
-  const effective = $derived(selected.filter((k) => !options.find((o) => o.kind === k)?.disabled));
+  const options = $derived(rhythms ? rhythmOptions : sketchOptions);
+  const effective = $derived(selected.filter((k) => options.some((o) => o.kind === k && !o.disabled)));
 
   function toggle(kind: ExportKind) {
     selected = selected.includes(kind) ? selected.filter((k) => k !== kind) : [...selected, kind];
@@ -98,7 +110,7 @@
   }
 </script>
 
-<Sheet title={sketches.length === 1 ? `Share “${displayTitle(sketches[0])}”` : `Share ${sketches.length} sketches`} {onclose}>
+<Sheet title={sketches.length === 1 ? `Export “${name(sketches[0])}”` : `Export ${sketches.length} sketches`} {onclose}>
   <div class="options" role="group" aria-label="Files to include">
     {#each options as option (option.kind)}
       <label class="option" class:disabled={option.disabled}>
@@ -115,7 +127,9 @@
       </label>
     {/each}
   </div>
-  {#if anyTranscribed && someUntranscribed}
+  {#if rhythms}
+    <!-- Nothing to transcribe. -->
+  {:else if anyTranscribed && someUntranscribed}
     <p class="note">Notes audio and MIDI are left out for sketches that are not transcribed yet.</p>
   {:else if !anyTranscribed}
     <p class="note">Notes audio and MIDI become available once the sketch is transcribed.</p>

@@ -32,28 +32,32 @@ export interface Span {
   /** The part of the recording that plays, in its own seconds: after the count-in, inside the crop. */
   from: number;
   to: number;
-  /** Where that part lies on the timeline. */
+  /** Where it plays on the timeline (the part, repeated). */
   start: number;
   end: number;
+  /** Length of one pass of the part (seconds), and how many play in a row (a rhythm: 1, it repeats by bars). */
+  cycle: number;
+  repeats: number;
 }
 
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
 
 /**
  * A sketch's span. A recording plays from its downbeat (the end of the
- * count-in) or its crop start, to its crop end or its end; a rhythm for its
- * pattern's length on the canvas. `length` is the recording's real length
- * once it is decoded.
+ * count-in) or its crop start, to its crop end or its end, `canvasRepeats`
+ * times in a row; a rhythm for its pattern's length on the canvas. `length`
+ * is the recording's real length once it is decoded.
  */
 export function sketchSpan(sketch: Sketch, length?: number): Span {
   const origin = sketch.canvasXMs / 1000;
   if (sketch.kind === 'rhythm') {
     const pattern = normalizePattern(sketch.rhythm);
     const seconds = pattern ? playSeconds(pattern) : Math.max(0.5, (sketch.durationMs ?? 1000) / 1000);
-    return { origin, from: 0, to: seconds, start: origin, end: origin + seconds };
+    return { origin, from: 0, to: seconds, start: origin, end: origin + seconds, cycle: seconds, repeats: 1 };
   }
+  const repeats = Math.max(1, Math.round(sketch.canvasRepeats ?? 1));
   const total = length ?? (sketch.durationMs ?? 0) / 1000;
-  if (!(total > 0.05)) return { origin, from: 0, to: 1, start: origin, end: origin + 1 };
+  if (!(total > 0.05)) return { origin, from: 0, to: 1, start: origin, end: origin + repeats, cycle: 1, repeats };
   const head = sketch.cropStartMs !== null ? sketch.cropStartMs / 1000 : (sketch.countInMs ?? 0) / 1000;
   let from = clamp(head, 0, total);
   let to = clamp(sketch.cropEndMs !== null ? sketch.cropEndMs / 1000 : total, 0, total);
@@ -61,7 +65,7 @@ export function sketchSpan(sketch: Sketch, length?: number): Span {
     from = 0;
     to = total;
   }
-  return { origin, from, to, start: origin + from, end: origin + to };
+  return { origin, from, to, start: origin + from, end: origin + from + (to - from) * repeats, cycle: to - from, repeats };
 }
 
 /** Keep a view within bounds: zoom limits, and not far past time 0 or above the top. */

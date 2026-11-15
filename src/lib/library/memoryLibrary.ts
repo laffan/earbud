@@ -11,6 +11,7 @@ import type {
   CreateRhythmArgs,
   CreateSketchArgs,
   CreatedSketch,
+  DuplicateSketchArgs,
   ExportBundle,
   ExportKind,
   FileKind,
@@ -31,6 +32,7 @@ import type {
   UpdateSketchArgs,
   UpdateTrackArgs,
 } from './types';
+import { MAX_CANVAS_REPEATS } from './types';
 
 interface Entry {
   sketch: Sketch;
@@ -152,6 +154,7 @@ export class MemoryLibrary implements SketchLibrary {
         canvasY: validY(args.canvasY ?? 0),
         kind: 'audio',
         rhythm: null,
+        canvasRepeats: 1,
       },
       transcription: null,
       chunks: [],
@@ -435,6 +438,57 @@ export class MemoryLibrary implements SketchLibrary {
     return this.snapshot(entry);
   }
 
+  async setRepeats(id: string, repeats: number): Promise<Sketch> {
+    const entry = this.entry(id);
+    if (entry.sketch.parentId !== null) throw new Error(`sketch not found: ${id}`);
+    if (!Number.isInteger(repeats) || repeats < 1 || repeats > MAX_CANVAS_REPEATS) throw new Error(`${repeats} repeats is out of range`);
+    entry.sketch.canvasRepeats = repeats;
+    entry.sketch.updatedAt = Date.now();
+    return this.snapshot(entry);
+  }
+
+  async duplicate(args: DuplicateSketchArgs): Promise<Sketch> {
+    const source = this.entry(args.id);
+    this.notebook(args.notebookId);
+    if (source.sketch.parentId !== null) throw new Error('only a sketch can be copied, not a take of one');
+    if (source.sketch.status !== 'saved') throw new Error('that sketch is still being recorded');
+    const id = newId();
+    const now = Date.now();
+    // The same blobs under URLs of its own, so revoking one sketch's URLs leaves the other's.
+    const files = new Map<string, { blob: Blob; url: string }>();
+    for (const [kind, file] of source.files) files.set(kind, { blob: file.blob, url: URL.createObjectURL(file.blob) });
+    const url = (path: string | null) => {
+      if (!path) return null;
+      for (const [kind, file] of source.files) if (file.url === path) return files.get(kind)!.url;
+      return path;
+    };
+    const trackId = source.sketch.trackId ? newId() : null;
+    const status = source.sketch.transcriptionStatus === 'running' ? 'pending' : source.sketch.transcriptionStatus;
+    this.entries.set(id, {
+      sketch: {
+        ...clone(source.sketch),
+        id,
+        updatedAt: now,
+        mediaPath: url(source.sketch.mediaPath),
+        analysisPath: url(source.sketch.analysisPath),
+        transcriptionStatus: status,
+        recovered: false,
+        parentId: null,
+        trackId,
+        notebookId: args.notebookId,
+        canvasXMs: Math.round(args.canvasXMs),
+        canvasY: validY(args.canvasY),
+      },
+      transcription: source.transcription ? clone(source.transcription) : null,
+      chunks: [],
+      files,
+    });
+    if (trackId) {
+      this.tracks.set(trackId, { id: trackId, sketchId: id, position: 0, name: 'Track 1', takeId: id, muted: false, solo: false, collapsed: false, createdAt: now });
+    }
+    return this.snapshot(this.entry(id));
+  }
+
   async createRhythm(args: CreateRhythmArgs): Promise<Sketch> {
     this.notebook(args.notebookId);
     const id = newId();
@@ -474,6 +528,7 @@ export class MemoryLibrary implements SketchLibrary {
         canvasY: validY(args.canvasY),
         kind: 'rhythm',
         rhythm: clone(args.rhythm),
+        canvasRepeats: 1,
       },
       transcription: null,
       chunks: [],

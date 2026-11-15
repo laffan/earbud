@@ -9,7 +9,9 @@ import { decodeMediaToMono, decodeMediaToWav, loadAnalysisSamples, mixParts } fr
 import { encodeWav16 } from '../audio/wav';
 import { shareFiles, type CaptureEngine, type PlatformCapabilities } from '../capture';
 import { takeAudioPathFor, type ExportKind, type SketchDetail, type SketchLibrary } from '../library/types';
-import { notesToMidi, tracksToMidi } from '../music/midi';
+import { rhythmToWav } from '../music/drums';
+import { notesToMidi, rhythmToMidi, tracksToMidi } from '../music/midi';
+import { normalizePattern, type RhythmPattern } from '../music/rhythm';
 import type { PianoNote } from '../transcription/types';
 import { renderNotesToWav } from '../music/synth';
 import { errorMessage, fileUrl } from '../platform/tauri';
@@ -33,7 +35,12 @@ export interface ExportResult {
 export interface ExportDeps {
   library: SketchLibrary;
   capture: CaptureEngine | null;
+  /** A rhythm to WAV (tests replace it: rendering needs Web Audio). */
+  renderRhythm?: (pattern: RhythmPattern) => Promise<Uint8Array>;
 }
+
+/** What a rhythm sketch can be exported as: its sound and its hits as MIDI drums. */
+export const RHYTHM_EXPORT_KINDS: ExportKind[] = ['audio', 'midi'];
 
 export function recordingExtension(mime: string | null): string {
   if (!mime || mime.includes('quicktime')) return 'mov';
@@ -154,10 +161,34 @@ export async function prepareExports(
   const wanted = EXPORT_KINDS.filter((k) => kinds.includes(k));
   for (const [index, id] of sketchIds.entries()) {
     const detail = await deps.library.get(id);
-    const title = displayTitle(detail);
-    const base = exportBaseName(detail);
+    const rhythm = detail.kind === 'rhythm';
+    const title = rhythm ? detail.title.trim() || 'Rhythm' : displayTitle(detail);
+    const base = rhythm ? title : exportBaseName(detail);
     const progress = (step: string, part: number) =>
       onProgress?.(sketchIds.length > 1 ? `${step} (${index + 1} of ${sketchIds.length})` : step, (index + part) / sketchIds.length);
+
+    if (rhythm) {
+      // A rhythm: its sound as it plays on the canvas, and its hits as MIDI drums.
+      const rhythmKinds = wanted.filter((k) => RHYTHM_EXPORT_KINDS.includes(k));
+      try {
+        const pattern = normalizePattern(detail.rhythm);
+        if (!pattern) throw new Error('its pattern cannot be read');
+        if (rhythmKinds.includes('midi')) {
+          progress('Writing MIDI…', 0.2);
+          await deps.library.writeFile(id, 'midi', rhythmToMidi(pattern, { title }));
+        }
+        if (rhythmKinds.includes('audio')) {
+          progress('Rendering the rhythm…', 0.5);
+          await deps.library.writeFile(id, 'take-audio', await (deps.renderRhythm ?? rhythmToWav)(pattern));
+        }
+      } catch (error) {
+        result.skipped.push(`${title}: ${errorMessage(error)}`);
+      }
+      progress('Preparing files…', 0.9);
+      const bundle = await deps.library.prepareExport(id, base, rhythmKinds);
+      result.files.push(...bundle.files.map((file) => ({ ...file, name: `${base}.${file.kind === 'midi' ? 'mid' : 'wav'}` })));
+      continue;
+    }
     const parts = await multiTrackParts(detail, deps.library);
     const notes = parts ? parts.flatMap((p) => p.notes) : currentNotes(detail);
 

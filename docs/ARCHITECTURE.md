@@ -172,7 +172,8 @@ Pure TypeScript, no UI or platform dependencies, unit tested.
   short triangle; hat: high-passed noise), each rendered once per sample rate into a 0.6 s one-shot with an
   `OfflineAudioContext`. `DrumKit` strikes the one-shots live (no synthesis on the hit), and `mixRhythm` renders a
   rhythm by adding them at its hits in plain JS (unit tested), so what is heard while tapping is what the canvas
-  plays.
+  plays. `rhythmToWav` is the same mix as a WAV for export (scaled down only if it would clip); `rhythmToMidi`
+  (`midi.ts`) writes the hits as General MIDI drums (36, 38, 42) on channel 10 at the rhythm's tempo.
 - `tempo.ts`: tempo and beat from notes. Note starts within 50 ms are one onset, weighted by loudness and count.
   Candidate beat periods (50–200 BPM) come from the autocorrelation of a 10 ms onset-strength signal, supported by
   the repeat at twice the period and weighted towards moderate tempos (log-normal around 100 BPM, 0.9 octaves wide)
@@ -214,6 +215,14 @@ Tables:
   `create_sketch` takes a notebook and a position for a new sketch, `finalize_sketch` the exact `canvas_x_ms`
   once the downbeat is known, and `place_sketch` moves one. `delete_notebook` deletes its sketches with their
   files. Sketches from before v5 have no notebook and are on no canvas.
+- `canvas_repeats` (schema v6, on the sketch row): how many times a recording's playing part plays in a row on the
+  canvas (`set_sketch_repeats`, 1–128). Rhythms repeat by bars in their pattern instead.
+- `duplicate_sketch(id, notebook, position)`: a copy of a saved sketch on a canvas. The files in its folder are
+  hard-linked (copied where links fail), which is safe because a recording is never written again and derived files
+  are only ever replaced by rename; `exports/` and half-written files are left out. The row is copied with a new
+  id (keeping the recording date), with its transcription (edits included) and, for a recording, a new track; a
+  transcription that was running is copied as pending. Only the sketch's own recording is copied, not takes of other
+  tracks. `prepare_export` reports a missing recording (a rhythm has none) instead of failing.
 - Tempo (schema v4, on the sketch row): `tempo_bpm`, `beat_ms` (where one beat falls on the timeline) and
   `tempo_source`: `count-in` (set when a new sketch is recorded with a count-in: its tempo, a beat on the
   downbeat), `detected` (by `tempo.ts` from the first recording's notes after each transcription of it, replacing
@@ -275,11 +284,16 @@ which makes the whole UI testable in Chromium.
   without a second tap, plays the tile alone (two taps open it); a second finger turns the gesture into a pinch;
   `wheel` scrolls and, with ctrl/⌘, zooms. All sound goes through one `AudioEngine`: each sketch is a track
   (`offset` = `canvas_x_ms`, trimmed to its span with the engine's `start`/`end`), decoded with `takeBuffers.ts` or,
-  for a rhythm, rendered by `drums.ts` (again when its pattern changes). Playing a sketch alone sets the engine's
+  for a rhythm, rendered by `drums.ts` (again when its pattern changes). A recording with repeats is one track per
+  repeat on the same buffer, each a part's length later (`#k` ids), so the repeats are sample-locked like any
+  tracks. Holding a sketch opens its menu at once and picks it up; moving closes the menu and drags. The right-edge
+  grip stretches a rhythm by bars or a recording by whole repeats, relative to where the drag began. *Copy* keeps
+  the sketch's id in `app.clipboard`; *Paste* and *Duplicate* call `duplicate_sketch`. Playing a sketch alone sets the engine's
   range to it and the others' gain to 0; repeat sets the range to [0, loop end] with the loop's next pass starting at
   the loop start, so playing from before the range runs into it. Scroll, zoom and repeat are kept per notebook.
 - `CanvasTile.svelte`: a sketch on the canvas, its title over its waveform (peaks of the decoded buffer, 100 per
-  second) or its hits; only the part in view is drawn, so zooming far in costs no more than the screen.
+  second; repeats after the first lighter) or its hits; only the part in view is drawn, so zooming far in costs no
+  more than the screen.
 - `Minimap.svelte`: the whole notebook, the view, the playhead and, with repeat on, the loop's handles.
 - `RhythmModal.svelte`: the draggable rhythm panel: pads (pointer-down strikes, so taps are timed by the event's
   timestamp), then the step sequencer, previewed with a 25 ms look-ahead scheduler that reads the pattern on every
@@ -405,6 +419,9 @@ the page starts.
 
 `prepareExports(ids, kinds)` handles one or many sketches. `kinds` is any of `recording` | `audio` | `notes-audio` | `midi`:
 
+- A rhythm sketch offers `audio` and `midi` only: `rhythmToWav` writes its mix as the take audio
+  (`take-audio.wav`), `rhythmToMidi` its hits as `transcription.mid`, both as it plays on the canvas (named
+  `Title.wav`, `Title.mid`).
 - `midi` and `notes-audio` are rendered from the current notes (edits included) and written into the sketch folder
   (`transcription.mid`, `notes-audio.wav`).
 - A sketch with several tracks (or whose only track plays a later take): MIDI gets one MIDI track per track, notes

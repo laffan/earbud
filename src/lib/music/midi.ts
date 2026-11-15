@@ -2,6 +2,7 @@
 import { Midi } from '@tonejs/midi';
 import type { PianoNote } from '../transcription/types';
 import { sortNotes } from './notes';
+import { rhythmHits, stepSeconds, type RhythmPattern } from './rhythm';
 
 export interface MidiExportOptions {
   title?: string;
@@ -52,6 +53,28 @@ export function tracksToMidi(parts: { name: string; notes: PianoNote[] }[], opti
       });
     }
   });
+  return midi.toArray();
+}
+
+/** General MIDI drum notes for the rhythm pads: kick, snare, closed hi-hat. */
+export const PAD_DRUM_NOTES = [36, 38, 42];
+
+/**
+ * A rhythm as it plays on the canvas (its pattern repeated over its length),
+ * as drums on the General MIDI percussion channel, at the rhythm's tempo, so
+ * it lands on the grid in a sequencer.
+ */
+export function rhythmToMidi(pattern: RhythmPattern, options: MidiExportOptions = {}): Uint8Array {
+  const midi = new Midi();
+  midi.header.setTempo(pattern.bpm);
+  if (options.title) midi.header.name = options.title;
+  const track = midi.addTrack();
+  track.name = 'Drums';
+  track.channel = 9;
+  const duration = Math.min(0.1, stepSeconds(pattern) * 0.9);
+  for (const hit of rhythmHits(pattern)) {
+    track.addNote({ midi: PAD_DRUM_NOTES[hit.pad] ?? 42, time: hit.time, duration, velocity: Math.min(1, Math.max(1 / 127, hit.level)) });
+  }
   return midi.toArray();
 }
 

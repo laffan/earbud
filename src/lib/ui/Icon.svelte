@@ -4,7 +4,7 @@
     | 'back' | 'more' | 'play' | 'pause' | 'settings' | 'share' | 'trash' | 'undo' | 'redo'
     | 'plus' | 'edit' | 'zoom-in' | 'zoom-out' | 'refresh' | 'close' | 'up' | 'down'
     | 'left' | 'right' | 'check' | 'mic' | 'camera' | 'shorter' | 'longer' | 'import' | 'loop' | 'minus'
-    | 'fit' | 'pads' | 'open';
+    | 'fit' | 'pads' | 'open' | 'copy' | 'duplicate' | 'paste';
 
   let { name, size = 20, label }: { name: Name; size?: number; label?: string } = $props();
 </script>
@@ -51,6 +51,9 @@
   {:else if name === 'fit'}<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />
   {:else if name === 'pads'}<rect x="3.5" y="9" width="5" height="5" rx="1.2" /><rect x="9.5" y="9" width="5" height="5" rx="1.2" /><rect x="15.5" y="9" width="5" height="5" rx="1.2" /><path d="M5 17.5h14" />
   {:else if name === 'open'}<path d="M14 4h6v6M20 4l-9 9" /><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" />
+  {:else if name === 'copy'}<rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
+  {:else if name === 'duplicate'}<rect x="3" y="7" width="8" height="10" rx="1.5" /><rect x="13" y="7" width="8" height="10" rx="1.5" stroke-dasharray="2.5 2" />
+  {:else if name === 'paste'}<rect x="5" y="5" width="14" height="16" rx="2" /><path d="M9 5V3.5h6V5M9 11h6M9 15h4" />
   {:else if name === 'import'}<path d="M12 15V3M7 10l5 5 5-5" /><path d="M5 15v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" />
   {/if}
 </svg>

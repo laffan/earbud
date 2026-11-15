@@ -131,6 +131,8 @@ fn new_id() -> String {
 
 /// Canvas positions are kept within a generous but finite area.
 const MAX_CANVAS_Y: f64 = 1_000_000.0;
+/// Most times a recording may play in a row on the canvas.
+pub const MAX_CANVAS_REPEATS: i64 = 128;
 /// A rhythm pattern is a few hundred steps; anything near this is not one.
 const MAX_RHYTHM_BYTES: usize = 256 * 1024;
 
@@ -528,6 +530,7 @@ impl Library {
             canvas_y: row.get("canvas_y")?,
             kind: row.get("kind")?,
             rhythm: rhythm_json.and_then(|s| serde_json::from_str(&s).ok()),
+            canvas_repeats: row.get("canvas_repeats")?,
             id,
         })
     }
@@ -881,6 +884,113 @@ impl Library {
             return Err(Error::NotFound(args.id));
         }
         Ok(self.get(&args.id)?.sketch)
+    }
+
+    /// How many times a sketch's recording plays in a row on the canvas.
+    pub fn set_sketch_repeats(&self, id: &str, repeats: i64) -> Result<Sketch> {
+        validate_id(id)?;
+        if !(1..=MAX_CANVAS_REPEATS).contains(&repeats) {
+            return Err(Error::Invalid(format!("{repeats} repeats is out of range")));
+        }
+        let changed = self.conn().execute(
+            "UPDATE sketches SET canvas_repeats = ?2, updated_at = ?3 WHERE id = ?1 AND parent_id IS NULL",
+            params![id, repeats, now_ms()],
+        )?;
+        if changed == 0 {
+            return Err(Error::NotFound(id.to_string()));
+        }
+        Ok(self.get(id)?.sketch)
+    }
+
+    /// Copy a sketch onto a notebook's canvas: its recording and derived files
+    /// (hard links where the file system allows: recordings never change, and
+    /// derived files are only ever replaced, never written in place), its
+    /// transcription with your edits, notes, crop, tempo and repeats, or its
+    /// rhythm. Only the sketch's own recording is copied, not takes of other
+    /// tracks. The copy keeps the date it was recorded.
+    pub fn duplicate_sketch(&self, args: DuplicateSketchArgs) -> Result<Sketch> {
+        validate_id(&args.id)?;
+        self.require_notebook(&args.notebook_id)?;
+        let x = validate_canvas_x(args.canvas_x_ms)?;
+        let y = validate_canvas_y(args.canvas_y)?;
+        let source: Option<(Option<String>, String, Option<String>)> = self
+            .conn()
+            .query_row("SELECT parent_id, status, track_id FROM sketches WHERE id = ?1", [&args.id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .optional()?;
+        let Some((parent, status, track)) = source else {
+            return Err(Error::NotFound(args.id));
+        };
+        if parent.is_some() {
+            return Err(Error::Invalid("only a sketch can be copied, not a take of one".into()));
+        }
+        if SketchStatus::parse(&status) != SketchStatus::Saved {
+            return Err(Error::Invalid("that sketch is still being recorded".into()));
+        }
+        let id = new_id();
+        let from = self.sketch_dir(&args.id);
+        let dir = self.sketch_dir(&id);
+        fs::create_dir_all(&dir)?;
+        let copied = (|| -> Result<()> {
+            if from.is_dir() {
+                for entry in fs::read_dir(&from)? {
+                    let entry = entry?;
+                    let path = entry.path();
+                    // Exports are made again on demand; half-written files are not copied.
+                    if !path.is_file() || path.extension().is_some_and(|e| e == "partial") {
+                        continue;
+                    }
+                    let dest = dir.join(entry.file_name());
+                    if fs::hard_link(&path, &dest).is_err() {
+                        fs::copy(&path, &dest)?;
+                    }
+                }
+            }
+            let now = now_ms();
+            let new_track = track.as_ref().map(|_| new_id());
+            let mut conn = self.conn();
+            let tx = conn.transaction()?;
+            tx.execute(
+                "INSERT INTO sketches (id, title, created_at, updated_at, status, duration_ms, media_file,
+                                       media_mime, has_video, video_width, video_height, text_notes,
+                                       transcription_status, transcription_error, capture_backend, recovered,
+                                       crop_start_ms, crop_end_ms, parent_id, track_id, offset_ms, count_in_ms,
+                                       tempo_bpm, beat_ms, tempo_source, notebook_id, canvas_x_ms, canvas_y,
+                                       kind, rhythm_json, canvas_repeats)
+                 SELECT ?2, title, created_at, ?3, status, duration_ms, media_file,
+                        media_mime, has_video, video_width, video_height, text_notes,
+                        CASE transcription_status WHEN 'running' THEN 'pending' ELSE transcription_status END,
+                        transcription_error, capture_backend, 0,
+                        crop_start_ms, crop_end_ms, NULL, ?4, offset_ms, count_in_ms,
+                        tempo_bpm, beat_ms, tempo_source, ?5, ?6, ?7,
+                        kind, rhythm_json, canvas_repeats
+                   FROM sketches WHERE id = ?1",
+                params![args.id, id, now, new_track, args.notebook_id, x, y],
+            )?;
+            tx.execute(
+                "INSERT INTO transcriptions (sketch_id, engine, engine_version, params_json, original_notes_json,
+                                             edited_notes_json, summary_json, created_at, edited_at)
+                 SELECT ?2, engine, engine_version, params_json, original_notes_json,
+                        edited_notes_json, summary_json, created_at, edited_at
+                   FROM transcriptions WHERE sketch_id = ?1",
+                params![args.id, id],
+            )?;
+            if let Some(track) = new_track {
+                tx.execute(
+                    "INSERT INTO tracks (id, sketch_id, position, name, take_id, created_at)
+                     VALUES (?1, ?2, 0, 'Track 1', ?2, ?3)",
+                    params![track, id, now],
+                )?;
+            }
+            tx.commit()?;
+            Ok(())
+        })();
+        if let Err(error) = copied {
+            let _ = fs::remove_dir_all(&dir);
+            return Err(error);
+        }
+        Ok(self.get(&id)?.sketch)
     }
 
     /// A rhythm sketch: a step pattern on a notebook's canvas. It has no
@@ -1288,7 +1398,8 @@ impl Library {
             }
             seen.push(kind);
             let source = match kind {
-                ExportKind::Recording => Some(self.media_path(id)?),
+                // A rhythm has no recording: reported missing, like any other absent file.
+                ExportKind::Recording => self.media_path(id).ok(),
                 ExportKind::Audio => {
                     // The newer of the two: the native exporter writes .m4a,
                     // a decode or a mix of several tracks writes .wav.

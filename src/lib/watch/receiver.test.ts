@@ -51,6 +51,7 @@ function sketch(id: string, createdAt: number): Sketch {
     canvasY: 0,
     kind: 'audio',
     rhythm: null,
+    canvasRepeats: 1,
   };
 }
 

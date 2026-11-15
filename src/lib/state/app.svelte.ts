@@ -227,6 +227,8 @@ export class AppState {
   /** The notebook whose canvas is shown. */
   notebookId = $state<string | null>(null);
   readonly notebook = $derived(this.notebooks.find((n) => n.id === this.notebookId) ?? null);
+  /** A sketch copied for pasting (by id; pasting copies it again). */
+  clipboard = $state<{ id: string } | null>(null);
   /** The sketches on the open notebook's canvas. */
   readonly canvasSketches = $derived(
     this.sketches.filter((s) => s.parentId === null && s.status === 'saved' && s.notebookId !== null && s.notebookId === this.notebookId),
@@ -456,6 +458,48 @@ export class AppState {
     } catch (error) {
       this.toast(`Could not move the sketch: ${errorMessage(error)}`, 'error');
       void this.refresh();
+    }
+  }
+
+  /** How many times a recording plays in a row on its canvas. Shown at once; the library confirms. */
+  async setRepeats(id: string, repeats: number) {
+    const index = this.sketches.findIndex((s) => s.id === id);
+    if (index >= 0) this.sketches[index] = { ...this.sketches[index], canvasRepeats: repeats };
+    try {
+      this.upsert(await this.library.setRepeats(id, repeats));
+    } catch (error) {
+      this.toast(`Could not change the repeats: ${errorMessage(error)}`, 'error');
+      void this.refresh();
+    }
+  }
+
+  /** Copy a sketch for pasting onto a canvas (this notebook's or another's). */
+  copySketch(id: string) {
+    const sketch = this.sketches.find((s) => s.id === id);
+    if (!sketch) return;
+    this.clipboard = { id };
+    this.toast('Copied. Press and hold the canvas to paste it.');
+  }
+
+  /** The copied sketch, while it still exists. */
+  get copied(): Sketch | null {
+    const clip = this.clipboard;
+    return clip ? (this.sketches.find((s) => s.id === clip.id) ?? null) : null;
+  }
+
+  /**
+   * A copy of a sketch on a canvas: its recording and notes (or its rhythm)
+   * and settings. One still to be transcribed is queued.
+   */
+  async duplicateSketch(id: string, place: Placement): Promise<Sketch | null> {
+    try {
+      const copy = await this.library.duplicate({ id, ...place, canvasXMs: Math.round(place.canvasXMs) });
+      this.upsert(copy);
+      if (copy.kind === 'audio' && copy.transcriptionStatus === 'pending' && this.settings.autoTranscribe) this.queue.enqueue(copy.id);
+      return copy;
+    } catch (error) {
+      this.toast(`Could not copy the sketch: ${errorMessage(error)}`, 'error');
+      return null;
     }
   }
 

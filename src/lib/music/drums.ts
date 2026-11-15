@@ -5,6 +5,7 @@
  * rendered by mixing the samples at its hits, so what was heard while
  * tapping is what the canvas plays.
  */
+import { encodeWav16 } from '../audio/wav';
 import { playSeconds, rhythmHits, type RhythmPattern } from './rhythm';
 
 /** Length of each one-shot (seconds). */
@@ -147,6 +148,15 @@ export function mixRhythm(pattern: RhythmPattern, pads: Float32Array[], sampleRa
   }
   // Several pads at once can pass full scale; the engine's limiter catches the rest.
   return out;
+}
+
+/** A rhythm as it plays on the canvas, as a 16-bit WAV (scaled down only if it would clip). */
+export async function rhythmToWav(pattern: RhythmPattern, sampleRate = 44100): Promise<Uint8Array> {
+  const mixed = mixRhythm(pattern, await drumSamples(sampleRate), sampleRate);
+  let peak = 0;
+  for (const v of mixed) peak = Math.max(peak, Math.abs(v));
+  if (peak > 0.98) for (let i = 0; i < mixed.length; i++) mixed[i] *= 0.98 / peak;
+  return encodeWav16([mixed], sampleRate);
 }
 
 /** A rhythm rendered into a buffer for `ctx` (what the canvas plays). */

@@ -27,7 +27,8 @@ Built with Tauri 2, Svelte 5 + TypeScript, Rust + SQLite, Swift + AVFoundation (
 | Area | State |
 | --- | --- |
 | Notebook canvas (this branch): notebooks, free placement on a timeline, long-press to create, playhead plays what it crosses, minimap, repeat range | Done, checked in Chromium (`npm run smoke:notebook`); not yet run on an iPhone |
-| Rhythm sketches (this branch): three pads, tempo detected from the taps, 16th-note step sequencer, repeat by dragging | Done, unit tested; checked in Chromium |
+| Rhythm sketches (this branch): three pads, tempo detected from the taps, 16th-note step sequencer, repeat by dragging, export as audio and MIDI drums | Done, unit tested; checked in Chromium |
+| Sketch menu on the canvas (this branch): copy and paste (also into another notebook), duplicate, export, delete; recordings repeat by dragging their right edge | Done, unit tested (Rust and TS); checked in Chromium |
 | Home screen, one-tap record, chronological library | Replaced on this branch by the notebook canvas |
 | iOS synchronized audio/video capture (AVFoundation) | Builds and runs on iPhone; start-up reliability fix pending confirmation on a device (see [docs/IOS.md](docs/IOS.md)) |
 | Desktop / browser capture (MediaRecorder) | Done, tested in Chromium |
@@ -104,8 +105,8 @@ vertically. Everything below works with a finger, a mouse or a trackpad.
 | Tap empty canvas | Moves the playhead there. |
 | Tap a sketch | Plays it on its own (the canvas playhead waits, dimmed). Tap again to stop. |
 | Double-tap a sketch | Opens it: a recording in the sketch view, a rhythm in its editor. |
-| Hold a sketch, then drag | Picks it up and moves it (time and height). Hold and let go without moving: Open, Rename, Share, Delete. |
-| Drag a rhythm's right edge | Repeats its pattern over more (or fewer) bars. |
+| Hold a sketch | Its menu: **Copy**, **Duplicate**, **Export**, **Delete**. Keep holding and drag instead to move the sketch (time and height); the menu closes. |
+| Drag a sketch's right edge | Repeats it: a recording plays its playing part again, whole times in a row (×2, ×3…); a rhythm repeats its pattern over more (or fewer) bars. |
 | Drag; pinch, or ctrl/⌘ + scroll | Scrolls the canvas; zooms the timeline. |
 
 - **Notebooks.** The title at the top opens the list of notebooks, with *New notebook*, *Rename* and *Delete*
@@ -124,6 +125,16 @@ vertically. Everything below works with a finger, a mouse or a trackpad.
   whole 4/4 bars as you played (a lone downbeat at the end is taken as the loop coming round and dropped). The step
   sequencer then shows it: tap steps on or off, change the tempo or the number of bars, play it in a loop, or
   record again. *Save* puts it on the canvas.
+- **The sketch menu.** *Copy* keeps the sketch for pasting: press and hold the canvas, in this notebook or another,
+  and the menu there has *Paste*, which puts a copy where you held. *Duplicate* puts a copy right after the sketch
+  (after its repeats), at the same height. A copy has the recording, the notes with your edits, the crop, tempo,
+  text notes and repeats (or the rhythm), and stands on its own: deleting either leaves the other (the recording is
+  hard-linked on disk, not stored twice). *Export* opens the export sheet: for a recording as before (video,
+  recorded audio, notes audio, MIDI), for a rhythm its **audio** as it plays on the canvas (repeats included) and
+  **MIDI** (General MIDI drums on channel 10: kick 36, snare 38, closed hi-hat 42, at the rhythm's tempo).
+- **Repeats.** A recording's repeats play back to back on the same audio clock, each one more track in the playback
+  engine; on the tile, the repeats after the first are drawn lighter, with a mark where each starts. To loop a
+  phrase, crop it in the sketch view, then drag its right edge on the canvas.
 - **Playing.** The control bar at the bottom has play, the playhead's time, **repeat** and *show the whole
   notebook*. The playhead plays every sketch it crosses, together, on one audio clock; the view follows it.
   A recording plays from its downbeat to its end, or only its crop if one is set in the sketch view.
@@ -305,7 +316,7 @@ npm run smoke:edit       # drag-select, move, transpose, delete, join and undo n
 ```
 
 ```bash
-npm run smoke:notebook   # the canvas: sketches on one clock, tap/hold/drag/double-tap, a tapped rhythm, repeat, notebooks
+npm run smoke:notebook   # the canvas: sketches on one clock, tap/hold/drag/double-tap, the sketch menu, repeats, export, copy/paste, notebooks
 ```
 
 On this branch `smoke:browser` records from the canvas and opens the sketch with a double-tap, and `smoke:playback`
@@ -364,7 +375,11 @@ used before the Web Audio player), so both fail at that step.
   not yet with fingers on an iPhone, where long presses, pinches and the pads' timing need checking. The canvas
   decodes every recording in the open notebook into memory to play them (about 11 MB per minute of mono audio),
   which limits how much a notebook can hold on a phone. Only the visible part of each sketch is drawn.
-- **Rhythm sketches** cannot be shared or exported yet. Tempo detection from taps needs about eight taps on a
+- **Repeats** of a recording join with the engine's 8 ms fades where the playing part is trimmed (after a count-in
+  or at a crop), which can be heard as a small dip on sustained sound. The repeat count is whole passes only.
+- **Overlapping sketches**: the one drawn on top (the later in the list) takes taps and holds; move it away to reach
+  the one underneath.
+- **Rhythm sketches**: tempo detection from taps needs about eight taps on a
   steady beat; with fewer, the median gap between taps is taken as the beat (folded into 70–160 BPM) and can be off
   by double or half, which the editor's tempo fixes. Only 4/4 and 16th notes.
 

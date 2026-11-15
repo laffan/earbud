@@ -5,6 +5,7 @@ import type {
   CreateRhythmArgs,
   CreateSketchArgs,
   CreatedSketch,
+  DuplicateSketchArgs,
   ExportBundle,
   ExportKind,
   FileKind,
@@ -108,6 +109,12 @@ export class TauriLibrary implements SketchLibrary {
   }
   placeSketch(args: PlaceSketchArgs) {
     return invoke<Sketch>('place_sketch', { args });
+  }
+  setRepeats(id: string, repeats: number) {
+    return invoke<Sketch>('set_sketch_repeats', { id, repeats });
+  }
+  duplicate(args: DuplicateSketchArgs) {
+    return invoke<Sketch>('duplicate_sketch', { args });
   }
   createRhythm(args: CreateRhythmArgs) {
     return invoke<Sketch>('create_rhythm', { args });

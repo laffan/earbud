@@ -58,6 +58,19 @@ export interface Sketch {
   kind: SketchKind;
   /** The pattern of a rhythm sketch. */
   rhythm: RhythmPattern | null;
+  /** How many times a recording plays in a row on the canvas (1 = once; rhythms repeat by bars instead). */
+  canvasRepeats: number;
+}
+
+/** Most times a recording may play in a row on the canvas. */
+export const MAX_CANVAS_REPEATS = 128;
+
+export interface DuplicateSketchArgs {
+  /** The sketch to copy. */
+  id: string;
+  notebookId: string;
+  canvasXMs: number;
+  canvasY: number;
 }
 
 export type SketchKind = 'audio' | 'rhythm';
@@ -262,6 +275,10 @@ export interface SketchLibrary {
   removeNotebook(id: string): Promise<void>;
   /** Move a sketch on its canvas (or onto another notebook). */
   placeSketch(args: PlaceSketchArgs): Promise<Sketch>;
+  /** How many times a recording plays in a row on the canvas. */
+  setRepeats(id: string, repeats: number): Promise<Sketch>;
+  /** A copy of a sketch (recording, notes and settings, or rhythm) on a notebook's canvas. */
+  duplicate(args: DuplicateSketchArgs): Promise<Sketch>;
   createRhythm(args: CreateRhythmArgs): Promise<Sketch>;
   updateRhythm(args: UpdateRhythmArgs): Promise<Sketch>;
 }

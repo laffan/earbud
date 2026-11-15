@@ -116,6 +116,16 @@ pub async fn place_sketch(library: State<'_, Library>, args: PlaceSketchArgs) ->
 }
 
 #[tauri::command]
+pub async fn set_sketch_repeats(library: State<'_, Library>, id: String, repeats: i64) -> Result<Sketch> {
+    library.set_sketch_repeats(&id, repeats)
+}
+
+#[tauri::command]
+pub async fn duplicate_sketch(library: State<'_, Library>, args: DuplicateSketchArgs) -> Result<Sketch> {
+    library.duplicate_sketch(args)
+}
+
+#[tauri::command]
 pub async fn create_rhythm(library: State<'_, Library>, args: CreateRhythmArgs) -> Result<Sketch> {
     library.create_rhythm(args)
 }

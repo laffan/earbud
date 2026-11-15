@@ -3,8 +3,10 @@
    * A sketch on the notebook's canvas: its title over its waveform (a
    * recording) or its hits (a rhythm), as wide as it plays. Only the part
    * in view is drawn, so zooming far in costs no more than the screen.
+   * A recording played several times in a row shows each repeat after the
+   * first lighter, with a mark where it starts again.
    * Passive: the canvas handles every gesture (it finds the tile by
-   * `data-tile`, and a rhythm's length grip by `data-resize`).
+   * `data-tile`, and the repeat grip on its right edge by `data-resize`).
    */
   import type { Sketch } from '../library/types';
   import { barSeconds, patternSteps, rhythmHits, stepSeconds, type RhythmPattern } from '../music/rhythm';
@@ -92,7 +94,8 @@
   function drawWave(g: CanvasRenderingContext2D, from: number, to: number) {
     const mid = WAVE_H / 2;
     const p = peaks;
-    g.fillStyle = color('--note', '#2e4a66');
+    const ink = color('--note', '#2e4a66');
+    g.fillStyle = ink;
     if (!p) {
       // Still loading: a quiet line.
       g.globalAlpha = 0.3;
@@ -100,16 +103,27 @@
       g.globalAlpha = 1;
       return;
     }
+    const cycle = Math.max(1e-3, span.cycle);
     for (let x = from; x < to; x++) {
-      // Recording seconds under this column.
-      const t0 = span.from + x / pps;
-      const t1 = span.from + (x + 1) / pps;
+      // Which repeat this column is in, and the recording seconds under it.
+      const t = x / pps;
+      const k = Math.min(span.repeats - 1, Math.floor(t / cycle));
+      const t0 = span.from + (t - k * cycle);
+      const t1 = t0 + 1 / pps;
       const b0 = Math.max(0, Math.floor(t0 * peakRate));
       const b1 = Math.min(p.length, Math.max(b0 + 1, Math.ceil(t1 * peakRate)));
       let peak = 0;
       for (let b = b0; b < b1; b++) if (p[b] > peak) peak = p[b];
       const h = Math.max(1, peak * (WAVE_H - 4));
+      g.globalAlpha = k === 0 ? 1 : 0.5;
       g.fillRect(x - from, mid - h / 2, 1, h);
+    }
+    g.globalAlpha = 1;
+    // Where each repeat starts again.
+    g.fillStyle = color('--ink-3', '#8c8478');
+    for (let k = 1; k < span.repeats; k++) {
+      const x = Math.round(k * cycle * pps) - from;
+      if (x >= 0 && x <= to - from) g.fillRect(x, 0, 1, WAVE_H);
     }
   }
 
@@ -166,10 +180,8 @@
   {#if soloing && progress !== null && progress >= span.start}
     <div class="progress" style:left="{(progress - span.start) * pps}px"></div>
   {/if}
-  {#if pattern}
-    <div class="grip" data-resize={sketch.id} aria-hidden="true"><span></span></div>
-  {/if}
-  {#if badge}<div class="badge tabular">{badge}</div>{/if}
+  <div class="grip" class:narrow={width < 72} data-resize={sketch.id} aria-hidden="true"><span></span></div>
+  {#if badge}<div class="badge tabular" style:right="{Math.max(22, width - clipTo + 8)}px">{badge}</div>{/if}
 </div>
 
 <style>
@@ -253,6 +265,10 @@
     place-items: center;
     cursor: ew-resize;
     background: linear-gradient(to right, transparent, color-mix(in srgb, var(--chord) 14%, transparent));
+  }
+  /* A short sketch keeps most of itself for tapping and holding. */
+  .grip.narrow {
+    width: 10px;
   }
   .grip span {
     width: 3px;

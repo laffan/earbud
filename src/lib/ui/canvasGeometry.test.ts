@@ -38,6 +38,7 @@ function sketch(patch: Partial<Sketch>): Sketch {
     canvasY: 0,
     kind: 'audio',
     rhythm: null,
+    canvasRepeats: 1,
     ...patch,
   };
 }
@@ -46,13 +47,19 @@ describe('sketchSpan', () => {
   it('starts a recording at its downbeat, which sits where it was placed', () => {
     // Recorded with a 2 s count-in: time 0 lies 2 s before the press at 5 s.
     const span = sketchSpan(sketch({ canvasXMs: 3000, countInMs: 2000, durationMs: 9000 }));
-    expect(span).toEqual({ origin: 3, from: 2, to: 9, start: 5, end: 12 });
+    expect(span).toEqual({ origin: 3, from: 2, to: 9, start: 5, end: 12, cycle: 7, repeats: 1 });
   });
 
   it('plays only the crop, and uses the decoded length once known', () => {
     const span = sketchSpan(sketch({ canvasXMs: 1000, countInMs: 2000, cropStartMs: 3000, cropEndMs: 6000 }), 8.5);
     expect([span.start, span.end]).toEqual([4, 7]);
     expect(sketchSpan(sketch({ canvasXMs: 0 }), 8.5).end).toBe(8.5);
+  });
+
+  it('plays a recording several times in a row', () => {
+    const span = sketchSpan(sketch({ canvasXMs: 1000, countInMs: 1000, cropEndMs: 4000, canvasRepeats: 3 }), 8);
+    // Its part is 1–4 s of the recording (3 s), three times from 2 s.
+    expect([span.start, span.end, span.cycle, span.repeats]).toEqual([2, 11, 3, 3]);
   });
 
   it('gives a rhythm its length on the canvas', () => {

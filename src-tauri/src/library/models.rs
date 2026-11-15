@@ -165,6 +165,8 @@ pub struct Sketch {
     pub kind: String,
     /// The step pattern of a rhythm sketch (opaque to the library).
     pub rhythm: Option<serde_json::Value>,
+    /// How many times a recording plays in a row on the canvas (1 = once).
+    pub canvas_repeats: i64,
 }
 
 /// A notebook: a canvas of sketches placed on one timeline.
@@ -187,6 +189,17 @@ pub struct PlaceSketchArgs {
     /// Move it to another notebook (None keeps the one it is on).
     #[serde(default)]
     pub notebook_id: Option<String>,
+    pub canvas_x_ms: i64,
+    pub canvas_y: f64,
+}
+
+/// A copy of a sketch, placed on a notebook's canvas.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateSketchArgs {
+    /// The sketch to copy.
+    pub id: String,
+    pub notebook_id: String,
     pub canvas_x_ms: i64,
     pub canvas_y: f64,
 }

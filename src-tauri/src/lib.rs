@@ -87,6 +87,8 @@ pub fn run() {
             commands::set_notebook_loop,
             commands::delete_notebook,
             commands::place_sketch,
+            commands::set_sketch_repeats,
+            commands::duplicate_sketch,
             commands::create_rhythm,
             commands::update_rhythm,
             commands::update_track,

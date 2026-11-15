@@ -11,8 +11,12 @@
  * - Record rhythm: keys 1 2 3 tapped as a two-bar rock beat at 100 BPM become
  *   that pattern at that tempo; it is saved as a sketch where the canvas was
  *   held.
- * - Hold a sketch and drag: it moves; hold and let go: its menu.
- * - Drag a rhythm's right edge: it repeats over more bars.
+ * - Hold a sketch: its menu (Copy, Duplicate, Export, Delete) while held;
+ *   moving closes it and drags the sketch. Duplicate puts a copy after it.
+ * - Drag a rhythm's right edge: it repeats over more bars; a recording's:
+ *   it plays several times in a row, each pass on the same clock.
+ * - Export a rhythm (audio and MIDI); copy it and paste it into another
+ *   notebook.
  * - Double-tap a rhythm: its editor; a recording: the sketch view.
  * - Repeat, with the minimap's loop handles.
  * - A new notebook, the notebook menu, and back.
@@ -148,22 +152,66 @@ function instrument() {
   const beat = await tile('Tapped beat');
   expect(beat && Math.abs(beat.r.x - spot.x) < 2, `the rhythm should start where the canvas was held (${beat?.r.x} vs ${spot.x})`);
 
-  // Hold a sketch and drag it.
+  // Export a rhythm: its audio and MIDI.
+  const tappedBeat = await tile('Tapped beat');
+  await hold(tappedBeat.r.x + 8, tappedBeat.r.y + 30);
+  await page.click('.popover [role=menuitem]:has-text("Export")');
+  await page.waitForSelector('[role=dialog][aria-label^="Export"]');
+  const exportOptions = await page.$$eval('.option .label', (els) => els.map((e) => e.textContent.trim()));
+  expect(exportOptions.join('|') === 'Audio|MIDI', `rhythm export options: ${exportOptions.join('|')}`);
+  for (const box of await page.$$('.option input')) if (!(await box.isChecked())) await box.check();
+  const downloads = [];
+  page.on('download', (d) => downloads.push(d.suggestedFilename()));
+  await page.click('.actions .primary');
+  await sleep(1500);
+  expect(downloads.sort().join('|') === 'Tapped beat.mid|Tapped beat.wav', `rhythm downloads: ${downloads.join('|')}`);
+
+  // Copy it, and paste it into another notebook where the canvas is held.
+  await hold(tappedBeat.r.x + 8, tappedBeat.r.y + 30);
+  await page.click('.popover [role=menuitem]:has-text("Copy")');
+  await page.click('.picker .title');
+  await page.click('[role=menuitem]:has-text("New notebook")');
+  await sleep(300);
+  await hold(160, canvas.y + 200);
+  await page.click('.popover [role=menuitem]:has-text("Paste")');
+  await sleep(500);
+  const pasted = await tiles();
+  expect(
+    pasted.length === 1 && pasted[0].label.startsWith('Tapped beat') && Math.abs(pasted[0].r.x - 160) < 1.5,
+    `paste should put the copy where the canvas was held (${JSON.stringify(pasted.map((t) => [t.label, t.r.x]))})`,
+  );
+  await page.click('.picker .title');
+  await page.click('[role=menuitemradio]:has-text("Demo notebook")');
+  await sleep(400);
+
+  // Hold a sketch: its menu shows while held; moving closes it and drags the sketch.
+  const menuItems = () => page.$$eval('.popover [role=menuitem]', (els) => els.map((e) => e.textContent.trim()));
   const bass = await tile('Bass');
   await page.mouse.move(bass.r.x + 30, bass.r.y + 30);
   await page.mouse.down();
   await sleep(600);
+  const whileHeld = await menuItems();
+  expect(whileHeld.join('|') === 'Copy|Duplicate|Export|Delete', `sketch menu while held: ${whileHeld.join('|')}`);
   await page.mouse.move(bass.r.x + 80, bass.r.y + 110, { steps: 8 });
+  expect((await menuItems()).length === 0, 'dragging should close the menu');
   await page.mouse.up();
   await sleep(300);
   const moved = await tile('Bass');
   expect(Math.round(moved.r.x - bass.r.x) === 50 && Math.round(moved.r.y - bass.r.y) === 80, `dragging should move the sketch (${moved.r.x - bass.r.x}, ${moved.r.y - bass.r.y})`);
 
-  // Hold it and let go: its menu.
+  // Hold it and let go: the menu stays. Duplicate: a copy right after it, at the same height.
   await hold(moved.r.x + 30, moved.r.y + 30);
-  const menu = await page.$$eval('.popover [role=menuitem]', (els) => els.map((e) => e.textContent.trim()));
-  expect(menu.join('|') === 'Open|Rename|Share|Delete', `sketch menu: ${menu.join('|')}`);
-  await page.keyboard.press('Escape');
+  expect((await menuItems()).join('|') === 'Copy|Duplicate|Export|Delete', 'the menu should stay after letting go');
+  await page.click('.popover [role=menuitem]:has-text("Duplicate")');
+  await sleep(500);
+  const basses = (await tiles()).filter((t) => t.label === 'Bass and tenor').sort((a, b) => a.r.x - b.r.x);
+  expect(basses.length === 2, `duplicate should add a copy (${basses.length})`);
+  if (basses.length === 2) {
+    expect(
+      Math.abs(basses[1].r.x - (basses[0].r.x + basses[0].r.width)) < 1.5 && basses[1].r.y === basses[0].r.y,
+      'the copy should follow the original at its height',
+    );
+  }
 
   // Stretch the demo rhythm by its right edge.
   const backbeat = await tile('Backbeat');
@@ -176,6 +224,31 @@ function instrument() {
   await sleep(500);
   const meta = await page.$eval(`[data-tile="${backbeat.id}"] .meta`, (e) => e.textContent);
   expect(meta.includes('20 bars'), `stretching should repeat the rhythm (${meta})`);
+
+  // Stretch a recording by its right edge: it plays twice in a row, the second time one part later on the clock.
+  const piece2 = await tile('Sixteen');
+  const pieceGrip = await page.$eval(`[data-resize="${piece2.id}"]`, (e) => e.getBoundingClientRect().toJSON());
+  await page.mouse.move(pieceGrip.x + pieceGrip.width / 2, pieceGrip.y + 20);
+  await page.mouse.down();
+  await page.mouse.move(pieceGrip.x + pieceGrip.width / 2 + piece2.r.width, pieceGrip.y + 20, { steps: 8 });
+  const repeatBadge = await page.textContent('.badge').catch(() => null);
+  await page.mouse.up();
+  await sleep(400);
+  expect(repeatBadge === '×2', `stretching a recording should show its repeats (${repeatBadge})`);
+  const piece3 = await tile('Sixteen');
+  expect(Math.abs(piece3.r.width - 2 * piece2.r.width) < 2, `the recording should be twice as wide (${piece2.r.width} → ${piece3.r.width})`);
+  const zero = await page.$eval('.tick', (e) => e.getBoundingClientRect().left);
+  await page.mouse.click(zero + 1, canvas.bottom - 30);
+  const fromHere = (await sources()).length;
+  await page.click('.controls .play');
+  await sleep(800);
+  await page.click('.controls .play');
+  const passes = (await sources()).slice(fromHere).filter((x) => x.length > 41.5 && x.length < 42.5);
+  expect(passes.length === 2, `the recording should be scheduled twice (${passes.length})`);
+  if (passes.length === 2) {
+    const gap = passes[1].when - passes[0].when;
+    expect(Math.abs(gap - passes[0].length) < 0.002, `its second pass should start one part later (${gap.toFixed(4)} vs ${passes[0].length.toFixed(4)})`);
+  }
 
   // Double-tap: a rhythm opens its editor; a recording opens the sketch.
   const backbeat2 = await tile('Backbeat');
@@ -208,12 +281,12 @@ function instrument() {
   await page.click('.picker .title');
   await page.click('[role=menuitem]:has-text("New notebook")');
   await sleep(300);
-  expect((await page.textContent('.picker .name')) === 'Notebook 2', 'a new notebook should open');
+  expect((await page.textContent('.picker .name')) === 'Notebook 3', 'a new notebook should open');
   expect((await tiles()).length === 0, 'a new notebook should be empty');
   await page.click('.picker .title');
   await page.click('[role=menuitemradio]:has-text("Demo notebook")');
   await sleep(400);
-  expect((await tiles()).length === 5, `back in the demo notebook (${(await tiles()).length} sketches)`);
+  expect((await tiles()).length === 6, `back in the demo notebook (${(await tiles()).length} sketches)`);
 
   const toasts = await page.$$eval('.toast', (els) => els.map((e) => e.textContent)).catch(() => []);
   if (toasts.some((t) => /could not/i.test(t))) problems.push(`toasts: ${toasts.join(' | ')}`);

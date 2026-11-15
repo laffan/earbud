@@ -707,3 +707,105 @@ fn deleting_a_notebook_deletes_its_sketches_only() {
     assert_eq!(lib.list_notebooks().unwrap().len(), 1);
     assert!(lib.delete_notebook(&gone.id).is_err());
 }
+
+#[test]
+fn a_recording_repeats_on_the_canvas() {
+    let (_dir, lib) = lib();
+    let notebook = lib.create_notebook("N").unwrap();
+    let created = create_on(&lib, &notebook.id, 0, 0.0);
+    fs::write(&created.media_path, b"sound").unwrap();
+    lib.finalize_sketch(FinalizeSketchArgs { id: created.id.clone(), duration_ms: Some(4_000), ..Default::default() })
+        .unwrap();
+    assert_eq!(lib.get(&created.id).unwrap().sketch.canvas_repeats, 1);
+    assert_eq!(lib.set_sketch_repeats(&created.id, 6).unwrap().canvas_repeats, 6);
+    assert!(lib.set_sketch_repeats(&created.id, 0).is_err());
+    assert!(lib.set_sketch_repeats(&created.id, MAX_CANVAS_REPEATS + 1).is_err());
+}
+
+#[test]
+fn duplicating_a_recording_copies_its_files_notes_and_settings() {
+    let (_dir, lib) = lib();
+    let first = lib.create_notebook("A").unwrap();
+    let second = lib.create_notebook("B").unwrap();
+    let created = create_on(&lib, &first.id, 1_000, 50.0);
+    fs::write(&created.media_path, b"the take").unwrap();
+    lib.finalize_sketch(FinalizeSketchArgs {
+        id: created.id.clone(),
+        duration_ms: Some(6_000),
+        count_in_ms: Some(1_500),
+        ..Default::default()
+    })
+    .unwrap();
+    lib.write_file(&created.id, FileKind::Analysis, b"analysis").unwrap();
+    lib.save_transcription(SaveTranscriptionArgs {
+        id: created.id.clone(),
+        engine: "test".into(),
+        engine_version: "1".into(),
+        params: serde_json::json!({}),
+        notes: vec![note(60, 0.5, 1.0)],
+        summary: None,
+    })
+    .unwrap();
+    lib.save_edits(SaveEditsArgs { id: created.id.clone(), notes: vec![note(62, 0.5, 1.0)], summary: None }).unwrap();
+    lib.update(UpdateSketchArgs { id: created.id.clone(), title: Some("Riff".into()), text_notes: Some("left hand".into()), duration_ms: None })
+        .unwrap();
+    lib.set_crop(&created.id, Some(2_000), Some(5_000)).unwrap();
+    lib.set_sketch_repeats(&created.id, 3).unwrap();
+    // A half-written export and an exports folder are not copied.
+    lib.prepare_export(&created.id, "Riff", &[ExportKind::Recording]).unwrap();
+
+    let copy = lib
+        .duplicate_sketch(DuplicateSketchArgs { id: created.id.clone(), notebook_id: second.id.clone(), canvas_x_ms: 9_000, canvas_y: 300.0 })
+        .unwrap();
+    assert_ne!(copy.id, created.id);
+    assert_eq!(copy.notebook_id.as_deref(), Some(second.id.as_str()));
+    assert_eq!((copy.canvas_x_ms, copy.canvas_y), (9_000, 300.0));
+    assert_eq!(copy.title, "Riff");
+    assert_eq!(copy.text_notes, "left hand");
+    assert_eq!((copy.crop_start_ms, copy.crop_end_ms, copy.count_in_ms), (Some(2_000), Some(5_000), Some(1_500)));
+    assert_eq!(copy.canvas_repeats, 3);
+    assert!(copy.has_edits);
+    assert_eq!(fs::read(copy.media_path.as_ref().unwrap()).unwrap(), b"the take");
+    assert!(copy.analysis_path.is_some());
+    assert!(!lib.sketch_dir(&copy.id).join("exports").exists());
+    let detail = lib.get(&copy.id).unwrap();
+    assert_eq!(detail.transcription.unwrap().edited_notes.unwrap()[0].pitch, 62);
+    assert_eq!(detail.tracks.len(), 1);
+    assert_eq!(detail.tracks[0].take_id, copy.id);
+
+    // Each stands on its own: deleting the original leaves the copy whole.
+    lib.delete_sketch(&created.id).unwrap();
+    assert_eq!(fs::read(lib.get(&copy.id).unwrap().sketch.media_path.unwrap()).unwrap(), b"the take");
+}
+
+#[test]
+fn duplicating_a_rhythm_and_what_cannot_be_duplicated() {
+    let (_dir, lib) = lib();
+    let notebook = lib.create_notebook("N").unwrap();
+    let rhythm = lib
+        .create_rhythm(CreateRhythmArgs {
+            notebook_id: notebook.id.clone(),
+            canvas_x_ms: 0,
+            canvas_y: 0.0,
+            title: Some("Groove".into()),
+            rhythm: pattern(),
+            duration_ms: 2_500,
+        })
+        .unwrap();
+    let copy = lib
+        .duplicate_sketch(DuplicateSketchArgs { id: rhythm.id.clone(), notebook_id: notebook.id.clone(), canvas_x_ms: 2_500, canvas_y: 0.0 })
+        .unwrap();
+    assert_eq!(copy.kind, "rhythm");
+    assert_eq!(copy.rhythm, rhythm.rhythm);
+    assert_eq!(copy.title, "Groove");
+    assert!(copy.track_id.is_none());
+    // A rhythm has no recording to export: it is reported missing, not an error.
+    let bundle = lib.prepare_export(&copy.id, "Groove", &[ExportKind::Recording]).unwrap();
+    assert_eq!(bundle.missing, vec![ExportKind::Recording]);
+
+    // Still recording, or unknown: refused.
+    let recording = create_on(&lib, &notebook.id, 0, 0.0);
+    let args = |id: &str| DuplicateSketchArgs { id: id.into(), notebook_id: notebook.id.clone(), canvas_x_ms: 0, canvas_y: 0.0 };
+    assert!(lib.duplicate_sketch(args(&recording.id)).is_err());
+    assert!(lib.duplicate_sketch(args(&"0".repeat(32))).is_err());
+}

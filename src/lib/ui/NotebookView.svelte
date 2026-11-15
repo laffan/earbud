@@ -50,6 +50,7 @@
   import { renderRhythm, RHYTHM_TAIL } from '../music/drums';
   import { barSeconds, MAX_LENGTH_BARS, normalizePattern, playSeconds, type RhythmPattern } from '../music/rhythm';
   import { nearestBeat } from '../music/tempo';
+  import { MAX_CANVAS_REPEATS } from '../library/types';
   import { AudioEngine, type EngineTrack } from '../playback/audioEngine';
   import { loadTakeBuffer } from '../playback/takeBuffers';
   import { errorMessage } from '../platform/tauri';
@@ -186,20 +187,24 @@
   );
 
   const engineTracks = $derived<EngineTrack[]>(
-    sketches.map((s) => {
+    sketches.flatMap((s) => {
       const span = spans[s.id];
       const buffer = buffers[s.id] ?? null;
       const rhythm = s.kind === 'rhythm';
-      return {
-        id: s.id,
+      const track = {
         buffer,
         loading: !buffer && decoding[s.id]?.state !== 'failed',
-        offset: span.origin,
         // A recording plays from its downbeat (or crop) to its end (or crop); a rhythm rings out.
         start: rhythm ? undefined : span.from,
         end: rhythm ? undefined : span.to,
         audible: !solo || solo.id === s.id,
       };
+      // Each repeat of a recording is one more track on the same buffer, a part's length later: all on one clock.
+      return Array.from({ length: span.repeats }, (_, k) => ({
+        ...track,
+        id: k === 0 ? s.id : `${s.id}#${k}`,
+        offset: span.origin + k * span.cycle,
+      }));
     }),
   );
   $effect(() => {
@@ -386,8 +391,8 @@
 
   /** A sketch being moved: where its playing part starts (seconds) and its top (px). */
   let dragging = $state<{ id: string; start: number; y: number } | null>(null);
-  /** A rhythm being stretched: how many bars it will play. */
-  let resizing = $state<{ id: string; bars: number } | null>(null);
+  /** A sketch being stretched by its right edge: how many bars (a rhythm) or repeats (a recording) it will play. */
+  let resizing = $state<{ id: string; count: number } | null>(null);
 
   function targetOf(el: EventTarget | null): Target {
     const node = el as HTMLElement | null;
@@ -460,12 +465,14 @@
       openCreateMenu(p.x0, p.y0, at.time, at.canvasY);
       press = null;
       navigator.vibrate?.(12);
-    } else if (p.target.kind === 'tile') {
+    } else {
+      // A sketch (or its grip): picked up, with its menu. Moving closes the menu and drags.
       const id = p.target.id;
       const s = sketches.find((x) => x.id === id);
       if (!s) return;
       p.mode = 'drag';
       dragging = { id: s.id, start: spans[s.id].start, y: s.canvasY };
+      openTileMenu(id, p.x0, p.y0);
       navigator.vibrate?.(12);
     }
   }
@@ -488,6 +495,7 @@
     if (!p.moved && Math.hypot(dx, dy) > SLOP) {
       p.moved = true;
       window.clearTimeout(holdTimer);
+      if (p.mode === 'drag') tileMenu = null;
       if (p.mode === 'none') p.mode = p.target.kind === 'resize' ? 'resize' : 'pan';
     }
     if (!p.moved) return;
@@ -505,12 +513,20 @@
     } else if (p.mode === 'resize' && p.target.kind === 'resize') {
       const id = p.target.id;
       const s = sketches.find((x) => x.id === id);
-      const pattern = s ? patternOf(s) : null;
-      if (!s || !pattern) return;
+      if (!s) return;
+      const span = spans[id];
       // Relative to where the drag began, so grabbing the grip a little inside the edge changes nothing.
-      const end = spans[id].end + dx / view.pps;
-      const bars = Math.round((end - spans[id].start) / barSeconds(pattern));
-      resizing = { id, bars: Math.min(MAX_LENGTH_BARS, Math.max(1, bars)) };
+      const end = span.end + dx / view.pps;
+      const pattern = patternOf(s);
+      if (pattern) {
+        // A rhythm: whole bars (its pattern repeats, the last repeat cut short).
+        const bars = Math.round((end - span.start) / barSeconds(pattern));
+        resizing = { id, count: Math.min(MAX_LENGTH_BARS, Math.max(1, bars)) };
+      } else {
+        // A recording: whole repeats of its playing part.
+        const repeats = Math.round((end - span.start) / Math.max(0.05, span.cycle));
+        resizing = { id, count: Math.min(MAX_CANVAS_REPEATS, Math.max(1, repeats)) };
+      }
     }
   }
 
@@ -540,7 +556,7 @@
     if (p.mode === 'resize') {
       const r = resizing;
       resizing = null;
-      if (r) void stretchRhythm(r.id, r.bars);
+      if (r) void stretch(r.id, r.count);
       return;
     }
     if (p.moved || p.held || p.dismiss) return;
@@ -736,12 +752,49 @@
     }
   }
 
-  async function stretchRhythm(id: string, bars: number) {
+  /** A sketch stretched by its right edge: a rhythm to `count` bars, a recording to `count` repeats. */
+  async function stretch(id: string, count: number) {
     const s = sketches.find((x) => x.id === id);
-    const pattern = s ? patternOf(s) : null;
-    if (!pattern || pattern.lengthBars === bars) return;
-    const next = { ...pattern, lengthBars: bars };
-    await app.updateRhythm({ id, rhythm: next, durationMs: Math.round(playSeconds(next) * 1000) });
+    if (!s) return;
+    const pattern = patternOf(s);
+    if (pattern) {
+      if (pattern.lengthBars === count) return;
+      const next = { ...pattern, lengthBars: count };
+      await app.updateRhythm({ id, rhythm: next, durationMs: Math.round(playSeconds(next) * 1000) });
+    } else if (s.canvasRepeats !== count) {
+      await app.setRepeats(id, count);
+    }
+  }
+
+  // ------------------------------------------- copy, duplicate, export
+
+  function copy(id: string) {
+    tileMenu = null;
+    app.copySketch(id);
+  }
+
+  /** A copy right after the original, at the same height. */
+  async function duplicate(id: string) {
+    tileMenu = null;
+    const s = sketches.find((x) => x.id === id);
+    if (!s || !notebook) return;
+    const span = spans[id];
+    // Its playing part starts where the original's ends (repeats included).
+    await app.duplicateSketch(id, { notebookId: notebook.id, canvasXMs: (span.end - span.from) * 1000, canvasY: s.canvasY });
+  }
+
+  /** The copied sketch, its playing part starting where the canvas was held. */
+  async function paste(at: number, canvasY: number) {
+    createMenu = null;
+    const source = app.copied;
+    if (!source || !notebook) return;
+    const from = sketchSpan(source).from;
+    await app.duplicateSketch(source.id, { notebookId: notebook.id, canvasXMs: (at - from) * 1000, canvasY });
+  }
+
+  function exportSketch(id: string) {
+    tileMenu = null;
+    app.shareSketches([id]);
   }
 
   function openSketch(id: string) {
@@ -942,8 +995,14 @@
       {#each sketches as s (s.id)}
         {@const span = spans[s.id]}
         {@const pattern = patternOf(s)}
-        {@const stretched = resizing?.id === s.id && pattern ? { ...pattern, lengthBars: resizing.bars } : pattern}
-        {@const shown = stretched && stretched !== pattern ? sketchSpan({ ...s, rhythm: stretched }) : span}
+        {@const stretching = resizing?.id === s.id ? resizing.count : null}
+        {@const stretched = stretching !== null && pattern ? { ...pattern, lengthBars: stretching } : pattern}
+        {@const shown =
+          stretching === null
+            ? span
+            : pattern
+              ? sketchSpan({ ...s, rhythm: stretched })
+              : sketchSpan({ ...s, canvasRepeats: stretching }, s.kind === 'audio' ? buffers[s.id]?.duration : undefined)}
         {@const moving = dragging?.id === s.id ? dragging : null}
         <CanvasTile
           sketch={s}
@@ -960,7 +1019,7 @@
           soloing={solo?.id === s.id}
           progress={solo?.id === s.id ? currentTime : null}
           lifted={!!moving}
-          badge={resizing?.id === s.id ? `${resizing.bars} bar${resizing.bars === 1 ? '' : 's'}` : null}
+          badge={stretching === null ? null : pattern ? `${stretching} bar${stretching === 1 ? '' : 's'}` : `×${stretching}`}
           note={noteOf(s)}
           {theme}
         />
@@ -1045,38 +1104,31 @@
 
 {#if createMenu}
   {@const m = createMenu}
-  {@const at = placeMenu(m.x, m.y, 232, 168)}
+  {@const copied = app.copied}
+  {@const at = placeMenu(m.x, m.y, 232, copied ? 222 : 168)}
   <div class="popover" role="menu" style:left="{at.left}px" style:top="{at.top}px" aria-label="New sketch at {formatClock(m.at)}">
     <div class="menu-label tabular">New sketch at {formatClockTenths(m.at)}</div>
     <button role="menuitem" onclick={() => recordAudio(m.at, m.canvasY)}><span class="rec-dot" aria-hidden="true"></span> Record audio</button>
     <button role="menuitem" onclick={() => startImport(m.at, m.canvasY)}><Icon name="import" size={18} /> Import audio</button>
     <button role="menuitem" onclick={() => startRhythm(m.at, m.canvasY)}><Icon name="pads" size={18} /> Record rhythm</button>
+    {#if copied}
+      <div class="menu-sep"></div>
+      <button role="menuitem" onclick={() => paste(m.at, m.canvasY)}>
+        <Icon name="paste" size={18} /> <span class="nb-name">Paste “{titleOf(copied)}”</span>
+      </button>
+    {/if}
   </div>
 {/if}
 
 {#if tileMenu && tileMenuSketch}
   {@const m = tileMenu}
   {@const s = tileMenuSketch}
-  {@const at = placeMenu(m.x, m.y, 220, s.kind === 'audio' ? 212 : 172)}
+  {@const at = placeMenu(m.x, m.y, 220, 212)}
   <div class="popover" role="menu" style:left="{at.left}px" style:top="{at.top}px" aria-label={titleOf(s)}>
     <div class="menu-label">{titleOf(s)}</div>
-    <button role="menuitem" onclick={() => openSketch(s.id)}><Icon name="open" size={18} /> Open</button>
-    <button
-      role="menuitem"
-      onclick={() => {
-        tileMenu = null;
-        renaming = { kind: 'sketch', id: s.id, value: s.title };
-      }}><Icon name="edit" size={18} /> Rename</button
-    >
-    {#if s.kind === 'audio'}
-      <button
-        role="menuitem"
-        onclick={() => {
-          tileMenu = null;
-          app.shareSketches([s.id]);
-        }}><Icon name="share" size={18} /> Share</button
-      >
-    {/if}
+    <button role="menuitem" onclick={() => copy(s.id)}><Icon name="copy" size={18} /> Copy</button>
+    <button role="menuitem" onclick={() => duplicate(s.id)}><Icon name="duplicate" size={18} /> Duplicate</button>
+    <button role="menuitem" onclick={() => exportSketch(s.id)}><Icon name="share" size={18} /> Export</button>
     <button
       role="menuitem"
       class="danger"

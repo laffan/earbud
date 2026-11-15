@@ -107,6 +107,12 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE sketches ADD COLUMN rhythm_json TEXT;
     CREATE INDEX sketches_notebook ON sketches(notebook_id);
     "#,
+    // v6: how many times a recording plays in a row on the canvas (its
+    // playing part repeated, dragged out by its right edge). Rhythms repeat
+    // by bars in their pattern instead.
+    r#"
+    ALTER TABLE sketches ADD COLUMN canvas_repeats INTEGER NOT NULL DEFAULT 1;
+    "#,
 ];
 
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
