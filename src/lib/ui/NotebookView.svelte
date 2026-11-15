@@ -95,18 +95,75 @@
   /** The loop range while its handles are dragged. */
   let loopDraft = $state<{ start: number; end: number } | null>(null);
 
-  const engine = new AudioEngine({
-    onState: (state) => {
-      const was = playing;
-      currentTime = state.position;
-      buffering = state.buffering;
-      playing = state.playing;
-      // A sketch played on its own has finished: the playhead goes back.
-      if (was && !state.playing && solo) untrack(() => endSolo());
-    },
-    onFrame: (position) => followPlayhead(position),
-    log: (message) => app.logCapture(`[canvas] ${message}`),
-  });
+  function makeEngine(): AudioEngine {
+    const made: AudioEngine = new AudioEngine({
+      onState: (state) => {
+        if (made !== engine) return;
+        const was = playing;
+        currentTime = state.position;
+        buffering = state.buffering;
+        playing = state.playing;
+        // A sketch played on its own has finished: the playhead goes back.
+        if (was && !state.playing && solo) untrack(() => endSolo());
+      },
+      onFrame: (position) => followPlayhead(position),
+      log: (message) => app.logCapture(`[canvas] ${message}`),
+    });
+    return made;
+  }
+  let engine = makeEngine();
+
+  /**
+   * The canvas outlives the recording screen (it is hidden, not closed). On
+   * iOS the native recorder takes the audio session, and WebKit can leave an
+   * audio context created before it suspended, "interrupted" or silent. So
+   * after a recording, after the app comes back from the background, and
+   * after a play that never got the audio running, the next tap starts a
+   * fresh context (inside the tap, so WebKit lets it start). Decoded buffers
+   * belong to no context and are reused.
+   */
+  let audioStale = false;
+
+  function renewAudio(reason: string) {
+    const old = engine;
+    const at = solo ? solo.resume : currentTime;
+    if (solo) solo = null;
+    old.pause();
+    engine = makeEngine();
+    old.dispose();
+    audioStale = false;
+    app.logCapture(`[canvas] new audio context (${reason}; the last one was ${old.contextState})`);
+    engine.setTracks(engineTracks);
+    engine.setDuration(engineDuration);
+    applyRange();
+    engine.seek(at);
+  }
+
+  /** In a tap that leads to sound: a fresh context if the last one may be stuck, then wake it. */
+  function wakeAudio() {
+    const state = engine.contextState;
+    if (audioStale || state === 'closed' || state === 'interrupted') renewAudio(audioStale ? 'after a recording or a pause in the background' : `context ${state}`);
+    engine.unlock();
+  }
+
+  let watchdog: number | undefined;
+  /** Log what playing found, and if no sound has started after a while, say so and use a fresh context next time. */
+  function watchStart(what: string) {
+    const ready = engineTracks.filter((t) => t.buffer).length;
+    const failed = sketches.filter((s) => decoding[s.id]?.state === 'failed').length;
+    app.logCapture(
+      `[canvas] ${what} from ${currentTime.toFixed(2)} s: context ${engine.contextState}, ${ready} of ${engineTracks.length} tracks ready` +
+        (failed ? `, ${failed} could not be decoded` : ''),
+    );
+    window.clearTimeout(watchdog);
+    watchdog = window.setTimeout(() => {
+      if (!playing || !buffering) return;
+      app.logCapture(`[canvas] still no sound after 2 s (context ${engine.contextState}); a fresh context on the next tap`);
+      audioStale = true;
+      engine.pause();
+      app.toast('The sound did not start. Tap play again.', 'error');
+    }, 2000);
+  }
 
   function patternOf(s: Sketch): RhythmPattern | null {
     return s.kind === 'rhythm' ? normalizePattern(s.rhythm) : null;
@@ -252,13 +309,15 @@
 
   function togglePlay() {
     if (sketches.length === 0) return;
-    engine.unlock();
+    wakeAudio();
     if (solo) {
       endSolo();
       engine.play();
+      watchStart('play');
       return;
     }
     engine.toggle();
+    if (playing) watchStart('play');
   }
 
   /** A tap on a sketch: play it on its own, or stop it if it is playing. */
@@ -277,6 +336,7 @@
     applyRange();
     engine.seek(span.start);
     engine.play();
+    watchStart('play alone');
   }
 
   /** Stop playing a sketch on its own; the playhead goes back to where it was. */
@@ -565,7 +625,7 @@
       seekTo(localPoint(e.clientX, e.clientY).time);
     } else {
       // Inside the tap, so the sound can start (WebKit), even though it plays a moment later.
-      engine.unlock();
+      wakeAudio();
       tapTile(p.target.id);
     }
   }
@@ -671,7 +731,7 @@
       app.toast('Recording is not available on this device.', 'error');
       return;
     }
-    engine.unlock();
+    wakeAudio();
     if (solo) endSolo(false);
     engine.pause();
     // Over a rhythm: count in at its tempo and start on its nearest beat.
@@ -702,6 +762,8 @@
           recordingAt = null;
           applyRange();
           engine.seek(from);
+          // The recorder had the audio session: start the canvas's sound afresh on the next tap.
+          audioStale = true;
         },
       },
     });
@@ -714,7 +776,7 @@
 
   function startRhythm(at: number, canvasY: number) {
     createMenu = null;
-    engine.unlock();
+    wakeAudio();
     if (solo) endSolo(false);
     engine.pause();
     rhythmEditor = { mode: 'new', at, canvasY };
@@ -906,13 +968,23 @@
 
   const media = window.matchMedia?.('(prefers-color-scheme: dark)');
   const onTheme = () => theme++;
+  /** Back from the background (iOS suspends audio there): a fresh context on the next tap. */
+  const onVisibility = () => {
+    if (document.visibilityState === 'hidden') {
+      engine.pause();
+      audioStale = true;
+    }
+  };
   onMount(() => {
     media?.addEventListener?.('change', onTheme);
+    document.addEventListener('visibilitychange', onVisibility);
   });
 
   onDestroy(() => {
     disposed = true;
     media?.removeEventListener?.('change', onTheme);
+    document.removeEventListener('visibilitychange', onVisibility);
+    window.clearTimeout(watchdog);
     window.clearTimeout(holdTimer);
     if (lastTap) window.clearTimeout(lastTap.timer);
     if (notebook && viewFor === notebook.id) savedViews.set(notebook.id, { view, repeat });

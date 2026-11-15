@@ -172,6 +172,11 @@ export class AudioEngine {
     };
   }
 
+  /** The audio context's state ('none' before it is created; WebKit can also report 'interrupted'). */
+  get contextState(): string {
+    return this.ctx ? (this.ctx.state as string) : 'none';
+  }
+
   /** The mapping in force while playing. */
   get clock(): ClockMapping | null {
     return this.mapping;
