@@ -1,13 +1,17 @@
 # Earbud — a musical sketchbook
 
-Earbud is a small, offline-first app for capturing piano ideas. Tap **Record**,
-play, tap **Stop**. Earbud keeps the original audio and video, transcribes the
-notes and chords in the background, and files the sketch in a chronological
-notebook. You can then replay the take, see its key and chords and how to play
-them on piano or guitar, correct the notes on a piano roll, layer more tracks
-over it, add text notes, and export the recording and a MIDI file.
+Earbud is a small, offline-first app for capturing piano ideas. Earbud keeps the original audio and video,
+transcribes the notes and chords in the background, and lets you replay a take, see its key and chords and how
+to play them on piano or guitar, correct the notes on a piano roll, add text notes, and export the recording
+and a MIDI file.
 
 It is meant to feel like a notebook, not a digital audio workstation.
+
+> **This branch (`claude/funny-hawking-vvop92`) is an experimental interface.** The list of sketches, the main
+> record button and tracks are gone. A **notebook** is an endless canvas whose horizontal axis is one timeline:
+> press and hold anywhere to record audio, import audio or tap out a rhythm at that point; the playhead plays
+> every sketch it crosses, together. See [The notebook canvas](#the-notebook-canvas-this-branch). Libraries from
+> `main` are not carried over: sketches made before this branch are kept in the database but are on no canvas.
 
 - **Capture first**: one tap, no setup screens. Permission prompts appear only the first time.
 - **Offline**: recording, storage, transcription (Basic Pitch, bundled) and playback need no network.
@@ -22,7 +26,9 @@ Built with Tauri 2, Svelte 5 + TypeScript, Rust + SQLite, Swift + AVFoundation (
 
 | Area | State |
 | --- | --- |
-| Home screen, one-tap record, chronological library | Done |
+| Notebook canvas (this branch): notebooks, free placement on a timeline, long-press to create, playhead plays what it crosses, minimap, repeat range | Done, checked in Chromium (`npm run smoke:notebook`); not yet run on an iPhone |
+| Rhythm sketches (this branch): three pads, tempo detected from the taps, 16th-note step sequencer, repeat by dragging | Done, unit tested; checked in Chromium |
+| Home screen, one-tap record, chronological library | Replaced on this branch by the notebook canvas |
 | iOS synchronized audio/video capture (AVFoundation) | Builds and runs on iPhone; start-up reliability fix pending confirmation on a device (see [docs/IOS.md](docs/IOS.md)) |
 | Desktop / browser capture (MediaRecorder) | Done, tested in Chromium |
 | Local storage (SQLite + files), crash recovery | Done, unit tested |
@@ -31,7 +37,7 @@ Built with Tauri 2, Svelte 5 + TypeScript, Rust + SQLite, Swift + AVFoundation (
 | Chords section: key, chords used with piano and guitar diagrams, circle of fifths | Done (experimental), unit tested; checked in Chromium |
 | Playback through one Web Audio graph (all tracks sample-locked, limiter, gapless loop, slowed playback by WSOLA) | Done, unit tested and checked in Chromium; not yet run on an iPhone or Mac |
 | Piano roll, synchronized playback, note editing | Done, tested end to end in Chromium and in the Linux desktop app |
-| Tracks (layered recordings in one sketch), takes, mute/solo, count-in | Done, tested in Chromium (fake camera/microphone) and the Linux desktop app; not yet run on an iPhone |
+| Tracks (layered recordings in one sketch), takes, mute/solo, count-in | On this branch: kept in storage and in the capture flow, not shown (layering happens on the canvas); count-in kept |
 | Tempo: detection from the first recording, editor with a click, beat-aligned takes | Done, detection unit tested on synthesized playing (not on real recordings yet) |
 | Titles, text notes, export/share | Done |
 | Apple Watch companion: record on the Watch, send to a paired device | Written; receiver tested over TCP, Watch and iOS Swift not yet compiled (see [watch-app/README.md](watch-app/README.md)) |
@@ -61,8 +67,8 @@ npm run dev
 
 Open http://localhost:1420. Outside Tauri the app uses an in-memory sketch library and the
 browser's camera and microphone. Sketches disappear on reload. Open http://localhost:1420/?demo to start with a
-40-second demo sketch (rendered with the built-in synth) for working on the UI without recording;
-http://localhost:1420/?demo=tracks4 opens it with four tracks.
+demo notebook (three piano sketches rendered with the built-in synth, and a rhythm under them) for working on the
+UI without recording.
 
 ### Desktop app (macOS, Windows, Linux)
 
@@ -87,7 +93,56 @@ npm run tauri ios init
 APPLE_DEVELOPMENT_TEAM=<your team id> npm run tauri ios dev -- --host
 ```
 
+## The notebook canvas (this branch)
+
+A notebook is a canvas: left to right is time (the ruler along the top shows it), and sketches sit anywhere
+vertically. Everything below works with a finger, a mouse or a trackpad.
+
+| Gesture | What it does |
+| --- | --- |
+| Press and hold empty canvas (right-click with a mouse) | A menu at that point: **Record audio**, **Import audio**, **Record rhythm**. The new sketch starts there. |
+| Tap empty canvas | Moves the playhead there. |
+| Tap a sketch | Plays it on its own (the canvas playhead waits, dimmed). Tap again to stop. |
+| Double-tap a sketch | Opens it: a recording in the sketch view, a rhythm in its editor. |
+| Hold a sketch, then drag | Picks it up and moves it (time and height). Hold and let go without moving: Open, Rename, Share, Delete. |
+| Drag a rhythm's right edge | Repeats its pattern over more (or fewer) bars. |
+| Drag; pinch, or ctrl/⌘ + scroll | Scrolls the canvas; zooms the timeline. |
+
+- **Notebooks.** The title at the top opens the list of notebooks, with *New notebook*, *Rename* and *Delete*
+  (which deletes its sketches). The first launch creates *Notebook 1*. Each notebook remembers its scroll, zoom and
+  repeat setting.
+- **Record audio** opens the recording screen used before (camera or audio only, as set in Settings). After the
+  count-in the canvas plays from the point you held, so you can play over what is already there; the new sketch
+  is placed so its downbeat lands where you heard the canvas at that moment (playback latency is taken off, as for
+  tracks before). Held over a rhythm, the count-in runs at the rhythm's tempo and the start moves to its nearest
+  beat. The sketch appears where you held: its title over its waveform. Its count-in is not shown or played.
+- **Import audio** opens the import sheet used before: an audio file (transcribed like a recording) or a MIDI file
+  (its notes, played by the built-in piano). It is placed where you held.
+- **Record rhythm** opens a panel you can drag by its top. Tap the three pads (*Kick*, *Snare*, *Hat*; keys 1 2 3
+  or J K L); recording starts with the first tap. *Done* turns the taps into a pattern: the tempo is detected,
+  the beat nearest the first tap becomes bar 1, every tap moves to the nearest 16th note, and the pattern is as many
+  whole 4/4 bars as you played (a lone downbeat at the end is taken as the loop coming round and dropped). The step
+  sequencer then shows it: tap steps on or off, change the tempo or the number of bars, play it in a loop, or
+  record again. *Save* puts it on the canvas.
+- **Playing.** The control bar at the bottom has play, the playhead's time, **repeat** and *show the whole
+  notebook*. The playhead plays every sketch it crosses, together, on one audio clock; the view follows it.
+  A recording plays from its downbeat to its end, or only its crop if one is set in the sketch view.
+- **Minimap.** Above the control bar: the whole notebook, the part in view (outlined), the playhead. Drag on it
+  to move the view. With repeat on, two red handles mark what repeats (by default from the first sketch to the end
+  of the last); drag them to set a range, saved with the notebook. *Loop everything* clears it. Playing from before
+  the range runs into it.
+- **A sketch** (double-tap) is the sketch view from before without tracks: piano roll, chord strip and waveform,
+  the Chords section, the video, notes, tempo, crop, loop, *Take / Notes / Both*, note editing, transcribing again
+  and sharing. *Back* returns to the canvas.
+- **Apple Watch** recordings are placed at the end of the open notebook.
+
+On this branch Settings, transcription, chords, editing, tempo, export and the Watch link work as described
+below; where the steps below mention the list of sketches, tracks or *Record track*, the canvas replaces them.
+
 ## Using Earbud
+
+The steps below describe `main`. On this branch, see [The notebook canvas](#the-notebook-canvas-this-branch)
+for how sketches are made, placed and played; reviewing one (steps 3–6, 8, 9) is the same.
 
 1. **Record**: prop the phone above the keys (back camera, or *Ultra wide* in Settings to fit the whole
    keyboard) and tap the red button. After a count-in of three ticks (with 3-2-1 on screen) the take begins.
@@ -212,7 +267,7 @@ src/                         Svelte + TypeScript UI and engines
   lib/vision/                Future visual analysis / fusion interfaces
   lib/state/                 App state and the capture flow
   lib/watch/                 Receiving recordings from the Apple Watch app
-  lib/ui/                    Components (home, recorder, sketch view, piano roll…)
+  lib/ui/                    Components (notebook canvas, minimap, rhythm pads, recorder, sketch view, piano roll…)
 src-tauri/                   Rust app: Sketch Library (SQLite + files), Watch receiver, IPC commands
 plugins/tauri-plugin-capture Native capture plugin (Swift/AVFoundation on iOS)
 plugins/tauri-plugin-watch-link  Apple Watch receivers on iOS (Bluetooth LE, WatchConnectivity)
@@ -249,10 +304,18 @@ npm run smoke:playback   # scrub, play, crop, loop; four tracks on one clock, Se
 npm run smoke:edit       # drag-select, move, transpose, delete, join and undo notes on the ?demo sketch
 ```
 
-http://localhost:1420/?demo=tracks opens the demo with a second track, for working on the multi-track view.
+```bash
+npm run smoke:notebook   # the canvas: sketches on one clock, tap/hold/drag/double-tap, a tapped rhythm, repeat, notebooks
+```
+
+On this branch `smoke:browser` records from the canvas and opens the sketch with a double-tap, and `smoke:playback`
+and `smoke:edit` open the demo notebook's first sketch; the four-track part of `smoke:playback` is gone with the
+tracks.
 
 `npm run smoke:tauri` drives the real desktop app (Rust, SQLite, IPC, asset protocol) through WebDriver on
-Linux; the header of `scripts/tauri-webdriver-smoke.mjs` explains the setup.
+Linux; the header of `scripts/tauri-webdriver-smoke.mjs` explains the setup. **Not updated on this branch:**
+`smoke:tauri` and `smoke:watch` still look for the old list's cards (and `smoke:tauri` for the media elements
+used before the Web Audio player), so both fail at that step.
 
 ## Known limitations
 
@@ -297,6 +360,13 @@ Linux; the header of `scripts/tauri-webdriver-smoke.mjs` explains the setup.
   timing spread) and on random notes (rejected), not yet on real recordings. Rubato or free playing gets no
   tempo (set one by hand), and a tempo can come out at double or half speed; the editor fixes both.
 - No notation or quantization yet. MIDI is exported in real time (120 BPM header).
+- **Notebook canvas (this branch)** has been used with a mouse and through scripted pointer events in Chromium,
+  not yet with fingers on an iPhone, where long presses, pinches and the pads' timing need checking. The canvas
+  decodes every recording in the open notebook into memory to play them (about 11 MB per minute of mono audio),
+  which limits how much a notebook can hold on a phone. Only the visible part of each sketch is drawn.
+- **Rhythm sketches** cannot be shared or exported yet. Tempo detection from taps needs about eight taps on a
+  steady beat; with fewer, the median gap between taps is taken as the beat (folded into 70–160 BPM) and can be off
+  by double or half, which the editor's tempo fixes. Only 4/4 and 16th notes.
 
 ## License
 

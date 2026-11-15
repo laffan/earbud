@@ -1,14 +1,14 @@
 /**
- * Importing a file as a new track of a sketch.
+ * Importing a file as a new sketch on a notebook's canvas.
  *
- * - Audio (or a video's sound): the file is copied in as the take's
- *   recording, untouched, and transcribed like any take.
- * - MIDI: the file's notes become the take's notes as they are (no
+ * - Audio (or a video's sound): the file is copied in as the sketch's
+ *   recording, untouched, and transcribed like any recording.
+ * - MIDI: the file's notes become the sketch's notes as they are (no
  *   transcription), and the built-in piano renders them to audio: at full
- *   quality as the take's "recording", and at 22.05 kHz as its analysis
+ *   quality as the sketch's "recording", and at 22.05 kHz as its analysis
  *   audio, which is what its waveform is drawn from.
  *
- * Both go through the same library calls as a recording (a reserved take,
+ * Both go through the same library calls as a recording (a reserved sketch,
  * then chunks, then finalize), so a failed import leaves nothing behind.
  */
 import { ANALYSIS_SAMPLE_RATE } from '../audio/analysisAudio';
@@ -17,7 +17,7 @@ import { notesEndTime } from '../music/notes';
 import { summarize } from '../music/summary';
 import { renderNotesToWav } from '../music/synth';
 import type { PianoNote } from '../transcription/types';
-import type { Sketch, SketchLibrary, Track } from './types';
+import type { Sketch, SketchLibrary } from './types';
 
 export const IMPORT_CAPTURE_BACKEND = 'import';
 export const MIDI_IMPORT_ENGINE = 'midi-import';
@@ -44,10 +44,9 @@ export interface ImportDeps {
   render?: (notes: PianoNote[], sampleRate: number) => Promise<Uint8Array>;
 }
 
-export interface ImportedTrack {
-  take: Sketch;
-  track: Track;
-  /** The take still needs transcribing (audio); MIDI arrives with its notes. */
+export interface ImportedSketch {
+  sketch: Sketch;
+  /** It still needs transcribing (audio); MIDI arrives with its notes. */
   transcribe: boolean;
 }
 
@@ -108,67 +107,57 @@ async function upload(library: SketchLibrary, id: string, bytes: Blob | Uint8Arr
   }
 }
 
-/** Reserve a take on a new track, fill it with `write`, and finalize it; undo everything on failure. */
-async function newTrack(
+/** Where an imported sketch goes: a notebook's canvas, its recording's time 0 at `canvasXMs`. */
+export interface Placement {
+  notebookId: string;
+  canvasXMs: number;
+  canvasY: number;
+}
+
+/** Reserve a sketch on a canvas, fill it with `fill`, and finalize it; undo everything on failure. */
+async function newSketch(
   library: SketchLibrary,
-  sketchId: string,
   name: string,
+  place: Placement,
   media: { extension: string; mime: string },
-  fill: (takeId: string) => Promise<Parameters<SketchLibrary['finalize']>[0]>,
-): Promise<{ take: Sketch; track: Track }> {
+  fill: (id: string) => Promise<Parameters<SketchLibrary['finalize']>[0]>,
+): Promise<Sketch> {
   const created = await library.create({
     mediaExtension: media.extension,
     mediaMime: media.mime,
     captureBackend: IMPORT_CAPTURE_BACKEND,
     title: name,
-    parentId: sketchId,
+    notebookId: place.notebookId,
+    canvasXMs: Math.round(place.canvasXMs),
+    canvasY: place.canvasY,
   });
   try {
-    const take = await library.finalize(await fill(created.id));
-    const track = await library.updateTrack({ id: created.trackId, name });
-    return { take, track };
+    return await library.finalize(await fill(created.id));
   } catch (error) {
     await library.discard(created.id).catch(() => {});
     throw error;
   }
 }
 
-/** Import an audio (or video) file as a new track whose recording starts at `offsetMs`. */
-export async function importAudioTrack(
-  deps: ImportDeps,
-  sketchId: string,
-  file: File,
-  offsetMs: number,
-): Promise<ImportedTrack> {
+/** Import an audio (or video) file as a new sketch on a canvas. */
+export async function importAudioSketch(deps: ImportDeps, file: File, place: Placement): Promise<ImportedSketch> {
   const probe = await (deps.probe ?? probeMedia)(file);
   const name = fileStem(file.name);
-  const { take, track } = await newTrack(
+  const sketch = await newSketch(
     deps.library,
-    sketchId,
     name,
+    place,
     { extension: extensionOf(file), mime: file.type || 'application/octet-stream' },
     async (id) => {
       await upload(deps.library, id, file);
-      return {
-        id,
-        durationMs: probe.durationMs,
-        hasVideo: probe.hasVideo,
-        videoWidth: probe.width,
-        videoHeight: probe.height,
-        offsetMs: Math.round(offsetMs),
-      };
+      return { id, durationMs: probe.durationMs, hasVideo: probe.hasVideo, videoWidth: probe.width, videoHeight: probe.height };
     },
   );
-  return { take, track, transcribe: true };
+  return { sketch, transcribe: true };
 }
 
-/** Import a MIDI file as a new track: its notes, played by the built-in piano, starting at `offsetMs`. */
-export async function importMidiTrack(
-  deps: ImportDeps,
-  sketchId: string,
-  file: File,
-  offsetMs: number,
-): Promise<ImportedTrack> {
+/** Import a MIDI file as a new sketch on a canvas: its notes, played by the built-in piano. */
+export async function importMidiSketch(deps: ImportDeps, file: File, place: Placement): Promise<ImportedSketch> {
   let notes: PianoNote[];
   try {
     notes = midiFileToNotes(new Uint8Array(await file.arrayBuffer()));
@@ -179,7 +168,7 @@ export async function importMidiTrack(
   const render = deps.render ?? ((n, sampleRate) => renderNotesToWav(n, { sampleRate }));
   const name = fileStem(file.name);
   const { library } = deps;
-  const { take, track } = await newTrack(library, sketchId, name, { extension: 'wav', mime: 'audio/wav' }, async (id) => {
+  const sketch = await newSketch(library, name, place, { extension: 'wav', mime: 'audio/wav' }, async (id) => {
     await upload(library, id, await render(notes, 44100));
     return {
       id,
@@ -187,26 +176,24 @@ export async function importMidiTrack(
       hasVideo: false,
       videoWidth: null,
       videoHeight: null,
-      offsetMs: Math.round(offsetMs),
     };
   });
-  const takeId = take.id;
   try {
     // The waveform is drawn from the analysis audio; the notes are the file's.
-    await library.writeFile(takeId, 'analysis', await render(notes, ANALYSIS_SAMPLE_RATE));
+    await library.writeFile(sketch.id, 'analysis', await render(notes, ANALYSIS_SAMPLE_RATE));
     const detail = await library.saveTranscription({
-      id: takeId,
+      id: sketch.id,
       engine: MIDI_IMPORT_ENGINE,
       engineVersion: '1',
       params: { file: file.name },
       notes,
       summary: summarize(notes),
     });
-    await library.writeFile(takeId, 'midi', new Uint8Array(await file.arrayBuffer()));
-    return { take: detail, track, transcribe: false };
+    await library.writeFile(sketch.id, 'midi', new Uint8Array(await file.arrayBuffer()));
+    return { sketch: detail, transcribe: false };
   } catch (error) {
-    // The take is saved by now: remove its track rather than leave half an import.
-    await library.removeTrack(track.id).catch(() => {});
+    // The sketch is saved by now: remove it rather than leave half an import.
+    await library.remove(sketch.id).catch(() => {});
     throw error;
   }
 }

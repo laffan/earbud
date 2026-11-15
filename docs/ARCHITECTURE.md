@@ -5,7 +5,7 @@ platform code and AI models can be replaced independently.
 
 ```
 ┌──────────────────────────── UI (Svelte) ────────────────────────────┐
-│ Home · Recorder · Sketch view (tracks, Chords) · Settings           │
+│ Notebook canvas · Recorder · Rhythm pads · Sketch view · Settings   │
 └──────┬───────────────────────┬──────────────────────┬───────────────┘
        │ app state / capture flow (src/lib/state)     │
 ┌──────▼──────────┐  ┌─────────▼─────────┐  ┌─────────▼────────────────┐
@@ -160,6 +160,19 @@ Pure TypeScript, no UI or platform dependencies, unit tested.
   open shapes (C, G, D, A, E, Am, Em, Dm, G7, E7, Am7, Cmaj7, C/E, C/G) and barre chords (F, Bm, B♭, F♯m) come out
   first (`voicings.test.ts`); up to three alternatives further up the neck are offered. About 1 ms per chord, cached.
 - `notes.ts`: naming, normalization (used by the editor), ranges.
+- `rhythm.ts` (rhythm sketches): `patternFromTaps` turns pad taps into a step pattern. The taps go through
+  `detectTempo` as notes (a fit with confidence ≥ 0.25 is used, lower than for a recording, since taps are meant
+  to keep time); with too few for it, the median gap between onsets, folded into 70–160 BPM, is the beat. The beat
+  nearest the first tap is bar 1; taps go to the nearest 16th, then tempo and downbeat are refitted by least
+  squares to those steps and the taps placed again (so a slightly-off tempo does not drift over the bars). The
+  pattern is whole 4/4 bars; a last bar holding only its downbeat is dropped (the loop coming round). A
+  `RhythmPattern` is `{ bpm, stepsPerBeat, beatsPerBar, bars, lengthBars, pads[pad][step] }`: `lengthBars` is how
+  long it plays on the canvas, the pattern repeating (and the last repeat cut) to fill it (`rhythmHits`).
+- `drums.ts`: the pads' sounds (kick: a sine falling 150 → 45 Hz with a click; snare: high-passed noise over a
+  short triangle; hat: high-passed noise), each rendered once per sample rate into a 0.6 s one-shot with an
+  `OfflineAudioContext`. `DrumKit` strikes the one-shots live (no synthesis on the hit), and `mixRhythm` renders a
+  rhythm by adding them at its hits in plain JS (unit tested), so what is heard while tapping is what the canvas
+  plays.
 - `tempo.ts`: tempo and beat from notes. Note starts within 50 ms are one onset, weighted by loudness and count.
   Candidate beat periods (50–200 BPM) come from the autocorrelation of a 10 ms onset-strength signal, supported by
   the repeat at twice the period and weighted towards moderate tempos (log-normal around 100 BPM, 0.9 octaves wide)
@@ -193,6 +206,14 @@ Tables:
   edits); `edited_notes_json` (user corrections, nullable); `summary_json`.
 - `tracks` (schema v3): a sketch's tracks in order (`position`), each with a name, mute, solo, collapsed, and
   `take_id`, the take it plays.
+- `notebooks` (schema v5): title, timestamps and the repeat range (`loop_start_ms`, `loop_end_ms`; NULL = from the
+  first sketch to the end of the last). On the sketch row: `notebook_id`, `canvas_x_ms` (where the recording's
+  time 0 lies on the notebook's timeline), `canvas_y` (canvas pixels, free placement), `kind` (`audio` or
+  `rhythm`) and `rhythm_json`. A rhythm sketch has no media file and nothing to transcribe (`transcription_status`
+  is `done`); `create_rhythm` / `update_rhythm` store its pattern and its length on the canvas (`duration_ms`).
+  `create_sketch` takes a notebook and a position for a new sketch, `finalize_sketch` the exact `canvas_x_ms`
+  once the downbeat is known, and `place_sketch` moves one. `delete_notebook` deletes its sketches with their
+  files. Sketches from before v5 have no notebook and are on no canvas.
 - Tempo (schema v4, on the sketch row): `tempo_bpm`, `beat_ms` (where one beat falls on the timeline) and
   `tempo_source`: `count-in` (set when a new sketch is recorded with a count-in: its tempo, a beat on the
   downbeat), `detected` (by `tempo.ts` from the first recording's notes after each transcription of it, replacing
@@ -239,7 +260,30 @@ which makes the whole UI testable in Chromium.
 
 - `state/app.svelte.ts`: a single reactive `app` object (Svelte 5 runes) with the capture flow
   (`startRecording` → permissions → `create_sketch` → engine start; `stopRecording` → `finalize_sketch` → queue),
-  navigation (hash routes, so back gestures work), settings (localStorage) and toasts.
+  navigation (hash routes, so back gestures work), settings (localStorage), toasts, and the notebooks (the open
+  one is remembered in localStorage; `canvasSketches` is what its canvas shows). `startRecording({ canvas })`
+  records a new sketch onto a canvas: like a take into a sketch, `onDownbeat` starts the canvas from the held point
+  and returns the position heard, and the sketch's `canvas_x_ms` is that position minus where the downbeat fell in
+  the recording. A rhythm under the held point gives the count-in its tempo. Received Watch recordings are placed
+  at the end of the open notebook.
+- `NotebookView.svelte` (this branch's home): the canvas. Horizontal is the notebook's timeline (`pps` pixels per
+  second), vertical free pixels; geometry is in `canvasGeometry.ts` (unit tested): a recording's span runs from its
+  downbeat (`count_in_ms`) or crop start to its crop end or its end, a rhythm's for `lengthBars`. Tiles sit in one
+  translated layer, so scrolling moves one transform. Gestures are pointer events on the canvas (one code path for
+  touch, pen and mouse): a press becomes a pan once it moves 8 px; held 480 ms without moving it opens the create
+  menu (empty canvas) or picks a tile up (drag to move; let go for its menu); a tap seeks (empty) or, after 280 ms
+  without a second tap, plays the tile alone (two taps open it); a second finger turns the gesture into a pinch;
+  `wheel` scrolls and, with ctrl/⌘, zooms. All sound goes through one `AudioEngine`: each sketch is a track
+  (`offset` = `canvas_x_ms`, trimmed to its span with the engine's `start`/`end`), decoded with `takeBuffers.ts` or,
+  for a rhythm, rendered by `drums.ts` (again when its pattern changes). Playing a sketch alone sets the engine's
+  range to it and the others' gain to 0; repeat sets the range to [0, loop end] with the loop's next pass starting at
+  the loop start, so playing from before the range runs into it. Scroll, zoom and repeat are kept per notebook.
+- `CanvasTile.svelte`: a sketch on the canvas, its title over its waveform (peaks of the decoded buffer, 100 per
+  second) or its hits; only the part in view is drawn, so zooming far in costs no more than the screen.
+- `Minimap.svelte`: the whole notebook, the view, the playhead and, with repeat on, the loop's handles.
+- `RhythmModal.svelte`: the draggable rhythm panel: pads (pointer-down strikes, so taps are timed by the event's
+  timestamp), then the step sequencer, previewed with a 25 ms look-ahead scheduler that reads the pattern on every
+  tick (edits play at once).
 - `pipeline/processingQueue.ts`: one job at a time, paused while recording, and cancellable. Each job runs analysis
   audio, then `engine.transcribe`, then `summarize` + `save_transcription`, then the MIDI file. Failures only set
   `transcription_status = failed`.
@@ -263,7 +307,8 @@ which makes the whole UI testable in Chromium.
   `touch-action: pan-y`), and a press held for 300 ms turns the drag into a selection rectangle (on an unselected
   note, picks the note up); a non-passive `touchmove` listener stops the page from scrolling during those drags.
   A mouse drag selects at once.
-- `TrackPanel.svelte`: one track. Title bar (collapse, name, take number, M / S / ● toggles, menu with the takes,
+- `TrackPanel.svelte` (on this branch only the menu with *Transcribe again* and *Revert note edits* is left of the
+  title bar): one track. Title bar (collapse, name, take number, M / S / ● toggles, menu with the takes,
   transcribe again, revert, *Line up* nudge, delete). Expanded: the piano roll (the pencil in its top-left corner,
   the editing toolbar above it), the chord strip, then the waveform, as one block. Collapsed: the waveform only.
   Editing state (notes, selection, undo/redo, debounced autosave) lives here, per take.
@@ -283,7 +328,8 @@ which makes the whole UI testable in Chromium.
   chords used filled by how long they sound (so the areas a recording covers stand out; the order they come in is
   not drawn), the chord at the playhead lit; any chord can be tapped to hear it. The tab and instrument are remembered in `localStorage`. Chord symbols are spelled
   for the key everywhere (the strips too).
-- `SketchView.svelte`: the tracks, *Record track* / *Import track*, the *Chords* section, the video, text notes and
+- `SketchView.svelte` (on this branch without *Record track* / *Import track*, arming, mute/solo or *Separate*;
+  the rest of this paragraph describes `main`): the tracks, *Record track* / *Import track*, the *Chords* section, the video, text notes and
   details, and the transport fixed to the bottom. All sound goes through one `AudioEngine` (section 6): each take
   is decoded into a buffer as it appears (`takeBuffers.ts`); the video, the first take with video, is muted and
   follows the engine (`VideoFollower`; `TakeSource` gives it an in-memory copy when WebKit cannot seek the file
@@ -319,14 +365,16 @@ scheduled against one `AudioContext` clock:
 
 - **Sample-locked tracks.** A pass starts all sources at the same audio time (50 ms ahead of the clock), each at
   its place on the timeline (a track that starts later is scheduled later; one that began before time 0 starts
-  inside its buffer). Nothing drifts, so nothing is corrected. Mute, solo and the listen mode only move a track's
+  inside its buffer). Nothing drifts, so nothing is corrected. A track can be trimmed (`start`/`end`, seconds of its
+  own time): only that part plays, ending with the usual 8 ms fade. Mute, solo and the listen mode only move a track's
   gain. A track whose buffer arrives while playing joins in step; one whose take or offset changes restarts alone.
 - **One output, limited.** Tracks and the synth (which plays into `engine.input` on the same context) are summed
   through a limiter (threshold −2 dBFS, ratio 20), so several loud takes cannot clip.
 - **Clock mapping.** A `ClockMapping` says which timeline position sounds at which audio time; the synth follows it
   exactly. The position reported to the UI is the one being heard: the audio clock minus `baseLatency` +
   `outputLatency` (up to 0.5 s).
-- **Crop and loop.** Playback is limited to the sketch's crop range (stored as `crop_start_ms` / `crop_end_ms`).
+- **Crop and loop.** Playback is limited to a range (the sketch's crop, stored as `crop_start_ms` / `crop_end_ms`).
+  `setLoop(true, from)` makes each next pass start at `from` instead of the range start.
   The end of a pass is scheduled 0.3 s before it: the sources stop exactly there (8 ms fade), and with loop on the
   next pass is scheduled to start at that same audio time, so loops are gapless. Without loop, playback stops and
   returns to the crop start (or stays at the end of the sketch).

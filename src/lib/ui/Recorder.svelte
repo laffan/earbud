@@ -68,6 +68,7 @@
 
   <div class="top">
     {#if recording.take}<div class="take-label">{recording.take.label}{recording.take.trackId ? ' · new take' : ''}</div>{/if}
+    {#if recording.canvas}<div class="take-label">New sketch at {formatClock(recording.canvas.at)}</div>{/if}
     <div class="status">
       {#if recording.phase === 'starting'}
         <span class="label">{recording.retry ? 'Restarting…' : 'Starting…'}</span>

@@ -129,6 +129,47 @@ fn new_id() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
 
+/// Canvas positions are kept within a generous but finite area.
+const MAX_CANVAS_Y: f64 = 1_000_000.0;
+/// A rhythm pattern is a few hundred steps; anything near this is not one.
+const MAX_RHYTHM_BYTES: usize = 256 * 1024;
+
+fn validate_canvas_y(y: f64) -> Result<f64> {
+    if y.is_finite() && (0.0..=MAX_CANVAS_Y).contains(&y) {
+        Ok(y)
+    } else {
+        Err(Error::Invalid(format!("canvas position {y} is out of range")))
+    }
+}
+
+fn validate_canvas_x(x_ms: i64) -> Result<i64> {
+    // A recording may start before the notebook's time 0 (its count-in); not by hours.
+    if (-3_600_000..=100 * 3_600_000).contains(&x_ms) {
+        Ok(x_ms)
+    } else {
+        Err(Error::Invalid(format!("canvas time {x_ms} ms is out of range")))
+    }
+}
+
+fn rhythm_to_json(rhythm: &serde_json::Value) -> Result<String> {
+    if !rhythm.is_object() {
+        return Err(Error::Invalid("a rhythm must be an object".into()));
+    }
+    let json = serde_json::to_string(rhythm)?;
+    if json.len() > MAX_RHYTHM_BYTES {
+        return Err(Error::Invalid("the rhythm is too large".into()));
+    }
+    Ok(json)
+}
+
+fn validate_rhythm_duration(duration_ms: i64) -> Result<i64> {
+    if (100..=3_600_000).contains(&duration_ms) {
+        Ok(duration_ms)
+    } else {
+        Err(Error::Invalid(format!("rhythm length {duration_ms} ms is out of range")))
+    }
+}
+
 fn validate_notes(notes: &[PianoNote]) -> Result<()> {
     for (i, note) in notes.iter().enumerate() {
         note.validate()
@@ -197,6 +238,12 @@ impl Library {
                 return Err(Error::Invalid("a track can only be given with a parent sketch".into()));
             }
         }
+        // Takes live inside their sketch; only a new sketch is placed on a canvas.
+        let notebook = if args.parent_id.is_none() { args.notebook_id.clone() } else { None };
+        if let Some(notebook) = &notebook {
+            self.require_notebook(notebook)?;
+        }
+        let canvas_y = validate_canvas_y(args.canvas_y.unwrap_or(0.0))?;
         let id = uuid::Uuid::new_v4().simple().to_string();
         let dir = self.sketch_dir(&id);
         fs::create_dir_all(&dir)?;
@@ -239,8 +286,9 @@ impl Library {
             }
             tx.execute(
                 "INSERT INTO sketches (id, title, created_at, updated_at, status, media_file,
-                                       media_mime, capture_backend, parent_id, track_id)
-                 VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                                       media_mime, capture_backend, parent_id, track_id,
+                                       notebook_id, canvas_x_ms, canvas_y)
+                 VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     id,
                     args.title.clone().unwrap_or_default().trim(),
@@ -251,6 +299,9 @@ impl Library {
                     args.capture_backend,
                     args.parent_id,
                     track_id,
+                    notebook,
+                    args.canvas_x_ms.unwrap_or(0),
+                    canvas_y,
                 ],
             )?;
             if let Some((position, name)) = new_track {
@@ -300,7 +351,8 @@ impl Library {
                 "UPDATE sketches
                     SET status = ?2, duration_ms = COALESCE(?3, duration_ms), has_video = ?4,
                         video_width = ?5, video_height = ?6, updated_at = ?7,
-                        offset_ms = COALESCE(?8, offset_ms), count_in_ms = COALESCE(?9, count_in_ms)
+                        offset_ms = COALESCE(?8, offset_ms), count_in_ms = COALESCE(?9, count_in_ms),
+                        canvas_x_ms = COALESCE(?10, canvas_x_ms)
                   WHERE id = ?1",
                 params![
                     args.id,
@@ -312,6 +364,7 @@ impl Library {
                     now_ms(),
                     args.offset_ms,
                     args.count_in_ms,
+                    args.canvas_x_ms,
                 ],
             )?;
             if changed == 0 {
@@ -439,6 +492,7 @@ impl Library {
         let edited: i64 = row.get("has_edits")?;
         let status: String = row.get("status")?;
         let tstatus: String = row.get("transcription_status")?;
+        let rhythm_json: Option<String> = row.get("rhythm_json")?;
         Ok(Sketch {
             title: row.get("title")?,
             created_at: row.get("created_at")?,
@@ -469,6 +523,11 @@ impl Library {
             tempo_bpm: row.get("tempo_bpm")?,
             beat_ms: row.get("beat_ms")?,
             tempo_source: row.get("tempo_source")?,
+            notebook_id: row.get("notebook_id")?,
+            canvas_x_ms: row.get("canvas_x_ms")?,
+            canvas_y: row.get("canvas_y")?,
+            kind: row.get("kind")?,
+            rhythm: rhythm_json.and_then(|s| serde_json::from_str(&s).ok()),
             id,
         })
     }
@@ -693,6 +752,187 @@ impl Library {
             }
         }
         Ok(())
+    }
+
+    // -------------------------------------------------------------- notebooks
+
+    fn require_notebook(&self, id: &str) -> Result<()> {
+        validate_id(id)?;
+        let exists: Option<String> = self
+            .conn()
+            .query_row("SELECT id FROM notebooks WHERE id = ?1", [id], |r| r.get(0))
+            .optional()?;
+        exists.map(|_| ()).ok_or_else(|| Error::NotFound(format!("notebook {id}")))
+    }
+
+    fn row_to_notebook(row: &Row<'_>) -> rusqlite::Result<Notebook> {
+        Ok(Notebook {
+            id: row.get("id")?,
+            title: row.get("title")?,
+            created_at: row.get("created_at")?,
+            updated_at: row.get("updated_at")?,
+            loop_start_ms: row.get("loop_start_ms")?,
+            loop_end_ms: row.get("loop_end_ms")?,
+        })
+    }
+
+    /// Every notebook, oldest first.
+    pub fn list_notebooks(&self) -> Result<Vec<Notebook>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT * FROM notebooks ORDER BY created_at, id")?;
+        let rows = stmt.query_map([], Self::row_to_notebook)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn get_notebook(&self, id: &str) -> Result<Notebook> {
+        validate_id(id)?;
+        self.conn()
+            .query_row("SELECT * FROM notebooks WHERE id = ?1", [id], Self::row_to_notebook)
+            .optional()?
+            .ok_or_else(|| Error::NotFound(format!("notebook {id}")))
+    }
+
+    pub fn create_notebook(&self, title: &str) -> Result<Notebook> {
+        let id = new_id();
+        let title: String = title.trim().chars().take(120).collect();
+        {
+            let conn = self.conn();
+            // Strictly after the last one, so notebooks made within a millisecond keep their order.
+            let last: Option<i64> = conn.query_row("SELECT MAX(created_at) FROM notebooks", [], |r| r.get(0))?;
+            let now = now_ms().max(last.map_or(0, |l| l + 1));
+            conn.execute(
+                "INSERT INTO notebooks (id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
+                params![id, title, now],
+            )?;
+        }
+        self.get_notebook(&id)
+    }
+
+    pub fn rename_notebook(&self, id: &str, title: &str) -> Result<Notebook> {
+        validate_id(id)?;
+        let title: String = title.trim().chars().take(120).collect();
+        let changed = self.conn().execute(
+            "UPDATE notebooks SET title = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, title, now_ms()],
+        )?;
+        if changed == 0 {
+            return Err(Error::NotFound(format!("notebook {id}")));
+        }
+        self.get_notebook(id)
+    }
+
+    /// Set (or clear, with `None`s) where repeat loops on the notebook's timeline.
+    pub fn set_notebook_loop(&self, id: &str, start_ms: Option<i64>, end_ms: Option<i64>) -> Result<Notebook> {
+        validate_id(id)?;
+        let (start_ms, end_ms) = match (start_ms, end_ms) {
+            (Some(start), Some(end)) => {
+                if start < 0 || end - start < 250 {
+                    return Err(Error::Invalid("the loop range is too short".into()));
+                }
+                (Some(start), Some(end))
+            }
+            _ => (None, None),
+        };
+        let changed = self.conn().execute(
+            "UPDATE notebooks SET loop_start_ms = ?2, loop_end_ms = ?3, updated_at = ?4 WHERE id = ?1",
+            params![id, start_ms, end_ms, now_ms()],
+        )?;
+        if changed == 0 {
+            return Err(Error::NotFound(format!("notebook {id}")));
+        }
+        self.get_notebook(id)
+    }
+
+    /// Delete a notebook and every sketch on its canvas, with their files.
+    pub fn delete_notebook(&self, id: &str) -> Result<()> {
+        self.require_notebook(id)?;
+        let sketches: Vec<String> = {
+            let conn = self.conn();
+            let mut stmt =
+                conn.prepare("SELECT id FROM sketches WHERE notebook_id = ?1 AND parent_id IS NULL")?;
+            let ids = stmt
+                .query_map([id], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()?;
+            ids
+        };
+        for sketch in sketches {
+            self.delete_sketch(&sketch)?;
+        }
+        self.conn().execute("DELETE FROM notebooks WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Move a sketch on its notebook's canvas (or onto another notebook's).
+    pub fn place_sketch(&self, args: PlaceSketchArgs) -> Result<Sketch> {
+        validate_id(&args.id)?;
+        if let Some(notebook) = &args.notebook_id {
+            self.require_notebook(notebook)?;
+        }
+        let x = validate_canvas_x(args.canvas_x_ms)?;
+        let y = validate_canvas_y(args.canvas_y)?;
+        let changed = self.conn().execute(
+            "UPDATE sketches
+                SET notebook_id = COALESCE(?2, notebook_id), canvas_x_ms = ?3, canvas_y = ?4,
+                    updated_at = ?5
+              WHERE id = ?1 AND parent_id IS NULL",
+            params![args.id, args.notebook_id, x, y, now_ms()],
+        )?;
+        if changed == 0 {
+            return Err(Error::NotFound(args.id));
+        }
+        Ok(self.get(&args.id)?.sketch)
+    }
+
+    /// A rhythm sketch: a step pattern on a notebook's canvas. It has no
+    /// recording and nothing to transcribe; it is rendered when played.
+    pub fn create_rhythm(&self, args: CreateRhythmArgs) -> Result<Sketch> {
+        self.require_notebook(&args.notebook_id)?;
+        let x = validate_canvas_x(args.canvas_x_ms)?;
+        let y = validate_canvas_y(args.canvas_y)?;
+        let json = rhythm_to_json(&args.rhythm)?;
+        let duration = validate_rhythm_duration(args.duration_ms)?;
+        let id = new_id();
+        // A folder like every sketch's, for files made from it (e.g. a rendering to share).
+        let dir = self.sketch_dir(&id);
+        fs::create_dir_all(&dir)?;
+        let now = now_ms();
+        let inserted = self.conn().execute(
+            "INSERT INTO sketches (id, title, created_at, updated_at, status, duration_ms, has_video,
+                                   transcription_status, capture_backend, notebook_id, canvas_x_ms,
+                                   canvas_y, kind, rhythm_json)
+             VALUES (?1, ?2, ?3, ?3, 'saved', ?4, 0, 'done', 'rhythm-pads', ?5, ?6, ?7, 'rhythm', ?8)",
+            params![
+                id,
+                args.title.unwrap_or_default().trim(),
+                now,
+                duration,
+                args.notebook_id,
+                x,
+                y,
+                json,
+            ],
+        );
+        if let Err(error) = inserted {
+            let _ = fs::remove_dir_all(&dir);
+            return Err(error.into());
+        }
+        Ok(self.get(&id)?.sketch)
+    }
+
+    /// Replace a rhythm sketch's pattern (and its length on the canvas).
+    pub fn update_rhythm(&self, args: UpdateRhythmArgs) -> Result<Sketch> {
+        validate_id(&args.id)?;
+        let json = rhythm_to_json(&args.rhythm)?;
+        let duration = validate_rhythm_duration(args.duration_ms)?;
+        let changed = self.conn().execute(
+            "UPDATE sketches SET rhythm_json = ?2, duration_ms = ?3, updated_at = ?4
+              WHERE id = ?1 AND kind = 'rhythm'",
+            params![args.id, json, duration, now_ms()],
+        )?;
+        if changed == 0 {
+            return Err(Error::NotFound(format!("rhythm sketch {}", args.id)));
+        }
+        Ok(self.get(&args.id)?.sketch)
     }
 
     // ----------------------------------------------------------------- tracks

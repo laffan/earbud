@@ -1,23 +1,25 @@
 <script lang="ts">
   /**
-   * An open sketch: its tracks (each a piano roll, its chords and its
-   * waveform; collapsed, the waveform), Record / Import track, the Chords
-   * section (the key, the chords used and how to play them, the circle of
-   * fifths), the video, text notes and details. The top bar
-   * (title, timecode, tempo) and the transport (play, what plays, loop)
-   * stay on screen. All tracks play together on one timeline through one
-   * Web Audio graph (`AudioEngine`), honouring mute and solo; each can play
-   * its recording, its notes or both ("Separate"). The video only shows the
+   * An open sketch: its recording as a piano roll, its chords and its
+   * waveform, the Chords section (the key, the chords used and how to play
+   * them, the circle of fifths), the video, text notes and details. The top
+   * bar (title, timecode, tempo) and the transport (play, what plays, loop)
+   * stay on screen. Sound goes through one Web Audio graph (`AudioEngine`);
+   * the recording, its notes or both can play. The video only shows the
    * picture (muted), following the sound.
+   *
+   * The storage layer still knows tracks (a sketch is the first take of its
+   * first track); this branch shows a sketch as one recording, and layering
+   * happens on the notebook's canvas instead.
    */
   import { onDestroy, onMount, untrack } from 'svelte';
   import { ClickTrack } from '../capture/countIn';
-  import type { Sketch, SketchDetail, TempoSource, Track, UpdateTrackArgs } from '../library/types';
+  import type { Sketch, SketchDetail, TempoSource, Track } from '../library/types';
   import { detectChords, type ChordSegment } from '../music/chords';
   import { detectKey, spellChord } from '../music/key';
   import { notesEndTime } from '../music/notes';
   import { NoteSynth } from '../music/synth';
-  import { confidentTempo, nearestBeat, nextBeat } from '../music/tempo';
+  import { confidentTempo, nearestBeat } from '../music/tempo';
   import { AudioEngine, type EngineTrack } from '../playback/audioEngine';
   import { loadTakeBuffer, stretchBuffer } from '../playback/takeBuffers';
   import { TakeSource } from '../playback/takeSource.svelte';
@@ -27,7 +29,6 @@
   import type { PianoNote } from '../transcription/types';
   import ChordsPanel from './ChordsPanel.svelte';
   import Icon from './Icon.svelte';
-  import ImportSheet from './ImportSheet.svelte';
   import { RollViewport } from './rollViewport.svelte';
   import Sheet from './Sheet.svelte';
   import TempoSheet from './TempoSheet.svelte';
@@ -73,28 +74,20 @@
   let currentTime = $state(0);
   let playing = $state(false);
   let rate = $state(1);
-  /** What plays: every track's recording, notes or both, or each track its own ("separate"). */
-  let listen = $state<ListenMode | 'separate'>('recording');
-  /** Each track's choice when `listen` is "separate". */
-  let trackListen = $state<Record<string, ListenMode>>({});
+  /** What plays: the recording, its notes or both. */
+  let listen = $state<ListenMode>('recording');
   let buffering = $state(false);
   /** Playback crop range in seconds (null = whole sketch). */
   let cropStart = $state<number | null>(null);
   let cropEnd = $state<number | null>(null);
   let loopPlayback = $state(false);
-  /** The track armed to record a new take (the R toggle). */
-  let armedTrack = $state<string | null>(null);
-  /** Recording into this sketch: the track getting a new take, null for a new track, undefined when not. */
-  let recordingInto = $state<string | null | undefined>(undefined);
   const view = new RollViewport();
   let disposed = false;
 
-  /** What a track plays. */
-  const modeOf = (track: Track): ListenMode => (listen === 'separate' ? (trackListen[track.id] ?? 'recording') : listen);
   /** Its recording is heard. */
-  const takeHeard = (track: Track) => audible(track) && track.id !== recordingInto && modeOf(track) !== 'notes';
+  const takeHeard = (track: Track) => audible(track) && listen !== 'notes';
   /** Its notes are played by the synth. */
-  const notesHeard = (track: Track) => audible(track) && track.id !== recordingInto && modeOf(track) !== 'recording';
+  const notesHeard = (track: Track) => audible(track) && listen !== 'recording';
 
   // ------------------------------------------------------------ tempo
   let tempo = $state<{ bpm: number | null; beat: number | null; source: TempoSource | null }>({
@@ -281,12 +274,10 @@
     synth.setNotes(mixedNotes);
   });
   $effect(() => {
-    // While recording into the sketch the other tracks play to the end: no crop, no loop.
-    const overdub = recordingInto !== undefined;
-    engine.setRange(overdub ? 0 : (cropStart ?? 0), overdub ? null : cropEnd);
+    engine.setRange(cropStart ?? 0, cropEnd);
   });
   $effect(() => {
-    engine.setLoop(loopPlayback && recordingInto === undefined);
+    engine.setLoop(loopPlayback);
   });
   $effect(() => {
     // Notes switched on or off while playing.
@@ -295,10 +286,6 @@
       if (!on) synth.stop();
       else if (engine.clock) synth.cue(engine.clock);
     });
-  });
-  $effect(() => {
-    // "Separate" needs several tracks; with one, keep what it played.
-    if (listen === 'separate' && tracks.length < 2) listen = (tracks[0] && trackListen[tracks[0].id]) || 'recording';
   });
 
   // --------------------------------------------------------------- ui
@@ -412,18 +399,8 @@
     engine.setRate(rate);
   }
 
-  function setListen(mode: typeof listen) {
-    if (mode === 'separate' && listen !== 'separate') {
-      // Each track starts from what everything played.
-      const from = listen;
-      trackListen = Object.fromEntries(tracks.map((t) => [t.id, from]));
-    }
+  function setListen(mode: ListenMode) {
     listen = mode;
-    if (mode !== 'recording') synth.unlock();
-  }
-
-  function setTrackListen(track: Track, mode: ListenMode) {
-    trackListen = { ...trackListen, [track.id]: mode };
     if (mode !== 'recording') synth.unlock();
   }
 
@@ -530,125 +507,6 @@
     }
   }
 
-  // ----------------------------------------------------------- tracks
-
-  const trackLabel = (track: Track) => track.name || `Track ${track.position + 1}`;
-  const nextTrackLabel = $derived(`Track ${tracks.reduce((p, t) => Math.max(p, t.position), -1) + 2}`);
-  const canRecordTake = $derived(app.canRecord && !app.recording && !!detail && detail.status === 'saved');
-  const armed = $derived(tracks.find((t) => t.id === armedTrack) ?? null);
-
-  function replaceTrack(updated: Track) {
-    if (!detail) return;
-    detail = { ...detail, tracks: detail.tracks.map((t) => (t.id === updated.id ? updated : t)) };
-  }
-
-  async function updateTrack(track: Track, patch: Omit<UpdateTrackArgs, 'id'>) {
-    // Toggles answer at once; the library confirms.
-    const { offsetMs: _offset, takeId: _take, ...simple } = patch;
-    replaceTrack({ ...track, ...simple });
-    try {
-      const updated = await app.library.updateTrack({ id: track.id, ...patch });
-      replaceTrack(updated);
-      if (patch.offsetMs !== undefined || patch.takeId !== undefined) {
-        // The take rows changed (offset, or which one plays).
-        for (const take of updated.takes) app.upsert(take);
-      }
-    } catch (error) {
-      app.toast(`Could not change the track: ${errorMessage(error)}`, 'error');
-      await refresh();
-    }
-  }
-
-  function toggleArm(track: Track) {
-    armedTrack = armedTrack === track.id ? null : track.id;
-  }
-
-  /** Where the sketch's playing starts: after the first track's count-in, if it had one (seconds). */
-  function firstDownbeat(): number {
-    const first = tracks[0] ? takeOf(tracks[0]) : null;
-    return first?.countInMs != null ? Math.max(0, (first.offsetMs + first.countInMs) / 1000) : 0;
-  }
-
-  let showImport = $state(false);
-  const canImport = $derived(!app.recording && !!detail && detail.status === 'saved');
-
-  async function importTrack(kind: 'midi' | 'audio', file: File, offsetMs: number): Promise<boolean> {
-    engine.pause();
-    return app.importTrack(id, kind, file, offsetMs);
-  }
-
-  /**
-   * Where the other tracks start while a take is recorded: the playhead,
-   * but not before the first track's downbeat (its count-in is silence),
-   * from the top when the playhead is at the end, and on a beat when the
-   * sketch has a tempo (so the count-in leads into it).
-   */
-  function takeStart(): number {
-    const downbeat = firstDownbeat();
-    let from = Math.max(currentTime, downbeat);
-    if (from >= duration - 0.25) from = Math.min(downbeat, Math.max(0, duration - 0.25));
-    if (tempo.bpm !== null && tempo.beat !== null) {
-      const onBeat = nextBeat(from - 0.02, tempo.bpm, tempo.beat);
-      if (onBeat < duration) from = onBeat;
-    }
-    return Math.max(0, from);
-  }
-
-  /** Record a new take for `trackId`, or a new track (null), with the other tracks playing. */
-  async function recordTake(trackId: string | null) {
-    if (!canRecordTake) return;
-    const track = trackId ? tracks.find((t) => t.id === trackId) : undefined;
-    const label = track ? trackLabel(track) : nextTrackLabel;
-    engine.unlock();
-    engine.pause();
-    const from = takeStart();
-    recordingInto = trackId;
-    // The take is recorded in real time: the others play at full speed meanwhile.
-    if (rate !== 1) engine.setRate(1);
-    void app.startRecording({
-      take: {
-        sketchId: id,
-        trackId,
-        label,
-        tempo: tempo.bpm !== null ? { bpm: tempo.bpm, beat: tempo.beat ?? from } : undefined,
-        onDownbeat: () => {
-          engine.seek(from);
-          engine.play();
-          // What is heard at this instant: the start sounds after the engine's lead and the output
-          // latency, so the downbeat meets a point just before `from`.
-          const heard = engine.heardPosition();
-          if (!engine.clock) app.logCapture('[playback] the other tracks could not start at the downbeat; the take may need lining up');
-          return heard;
-        },
-        onEnd: () => {
-          engine.pause();
-          engine.setRate(rate);
-          recordingInto = undefined;
-          armedTrack = null;
-        },
-      },
-    });
-    // Edits waiting to be saved go now (the panels stay mounted while recording).
-    for (const panel of Object.values(panels)) void panel?.saveNow();
-  }
-
-  async function deleteTrack(track: Track) {
-    if (armedTrack === track.id) armedTrack = null;
-    try {
-      await app.deleteTrack(id, track.id);
-    } catch (error) {
-      app.toast(`Could not delete the track: ${errorMessage(error)}`, 'error');
-    }
-  }
-
-  async function deleteTake(takeId: string) {
-    try {
-      await app.deleteTake(id, takeId);
-    } catch (error) {
-      app.toast(`Could not delete the take: ${errorMessage(error)}`, 'error');
-    }
-  }
-
   // ------------------------------------------------------------ actions
 
   async function saveTitle() {
@@ -709,7 +567,7 @@
 <div class="sketch-view">
   <header class="bar">
     <div class="bar-row">
-    <button class="icon-button" onclick={() => app.goHome()} aria-label="Back to sketches">
+    <button class="icon-button" onclick={() => app.goHome()} aria-label="Back to the notebook">
       <Icon name="back" />
     </button>
     {#if detail}
@@ -761,14 +619,13 @@
     <p class="notice">This sketch could not be opened: {loadError}</p>
   {:else if detail}
     <div class="content">
-      <!-- 1. Tracks: each a piano roll with its waveform -->
-      <section class="tracks" aria-label="Tracks">
+      <!-- 1. The recording: piano roll, chords, waveform -->
+      <section class="tracks" aria-label="Piano roll">
         {#each tracks as track (track.id + ':' + track.takeId)}
           {@const take = takeOf(track)}
           {#if take}
             <TrackPanel
               bind:this={panels[track.id]}
-              {track}
               {take}
               sketchTitle={title}
               {duration}
@@ -777,33 +634,14 @@
               {cropStart}
               {cropEnd}
               {view}
-              multi={tracks.length > 1}
-              audible={audible(track)}
-              armed={armedTrack === track.id}
-              canRecord={canRecordTake}
-              deletable={!track.takes.some((t) => t.parentId === null)}
               {synth}
               onseek={seek}
               oncropchange={onCropChange}
-              onupdate={(patch) => updateTrack(track, patch)}
-              onarm={() => toggleArm(track)}
-              ondelete={() => deleteTrack(track)}
-              ondeletetake={deleteTake}
               onnotes={(notes) => (takeNotes = { ...takeNotes, [take.id]: notes })}
-              listenMode={listen === 'separate' ? modeOf(track) : null}
-              onlisten={(mode) => setTrackListen(track, mode)}
               {spell}
             />
           {/if}
         {/each}
-        <div class="add-track">
-          <button onclick={() => recordTake(null)} disabled={!canRecordTake}>
-            <span class="rec-dot" aria-hidden="true"></span> Record track
-          </button>
-          <button onclick={() => (showImport = true)} disabled={!canImport}>
-            <Icon name="import" size={18} /> Import track
-          </button>
-        </div>
       </section>
 
       <!-- 2. The harmony of what is heard -->
@@ -837,13 +675,10 @@
             <div class="audio-badge"><Icon name="mic" size={16} /> Audio-only {tracks.length > 1 ? 'tracks' : 'take'}</div>
           {/if}
         </div>
-        {#if shown && tracks.length > 1 && !videoSource?.notice}
-          <p class="notice small">Video of {trackLabel(shown.track)}.</p>
-        {/if}
         {#if videoSource?.notice}<p class="notice small">{videoSource.notice}</p>{/if}
-        {#each playable.filter((e) => decoding[e.take.id]?.state === 'failed') as entry (entry.take.id)}
-          <p class="notice small">{trackLabel(entry.track)} cannot be played on this device yet. Its recording is saved.</p>
-        {/each}
+        {#if playable.some((e) => decoding[e.take.id]?.state === 'failed')}
+          <p class="notice small">This recording cannot be played on this device yet. It is saved.</p>
+        {/if}
       </section>
 
       <!-- 4. Notes and details -->
@@ -881,17 +716,6 @@
           <button class="play" onclick={togglePlay} aria-label={playing ? 'Pause' : 'Play'}>
             <Icon name={playing ? 'pause' : 'play'} size={22} />
           </button>
-          {#if armed}
-            <button
-              class="record"
-              onclick={() => recordTake(armed.id)}
-              disabled={!canRecordTake}
-              aria-label="Record a new take for {trackLabel(armed)}"
-              title="Record a new take for {trackLabel(armed)}"
-            >
-              <span class="dot"></span>
-            </button>
-          {/if}
           <span class="spacer"></span>
           <div class="segmented listen" role="group" aria-label="Listen to">
             <button aria-pressed={listen === 'recording'} onclick={() => setListen('recording')}>Take</button>
@@ -901,11 +725,6 @@
             <button aria-pressed={listen === 'both'} onclick={() => setListen('both')} disabled={noteCount === 0}
               >Both</button
             >
-            {#if tracks.length > 1}
-              <button aria-pressed={listen === 'separate'} onclick={() => setListen('separate')} title="Choose for each track"
-                >Separate</button
-              >
-            {/if}
           </div>
           <span class="spacer"></span>
           <button
@@ -923,15 +742,6 @@
     </div>
   {/if}
 </div>
-
-{#if showImport}
-  <ImportSheet
-    start={firstDownbeat()}
-    playhead={currentTime}
-    onimport={importTrack}
-    onclose={() => (showImport = false)}
-  />
-{/if}
 
 {#if showTempo}
   <TempoSheet
@@ -1098,34 +908,11 @@
     gap: 14px;
   }
   /* Record and Import share the row under the tracks. */
-  .add-track {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
-  }
-  .add-track button {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    min-height: 46px;
-    border-radius: var(--radius-sm);
-    border: 1.5px dashed var(--rule-strong);
-    color: var(--ink-2);
-    font-weight: 600;
-  }
-  .add-track button:hover:not(:disabled) {
-    background: var(--paper-sunk);
-  }
-  .add-track button:disabled {
-    opacity: 0.5;
-  }
-  .add-track .rec-dot {
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    background: var(--accent);
-  }
+
+
+
+
+
 
   /* The transport, fixed to the bottom. */
   .transport-bar {
@@ -1162,25 +949,9 @@
     background: var(--ink);
     color: var(--paper);
   }
-  .record {
-    flex: none;
-    width: 40px;
-    height: 40px;
-    border-radius: 50%;
-    display: grid;
-    place-items: center;
-    border: 2px solid var(--ink);
-    background: var(--paper-raised);
-  }
-  .record .dot {
-    width: 22px;
-    height: 22px;
-    border-radius: 50%;
-    background: var(--accent);
-  }
-  .record:disabled {
-    opacity: 0.5;
-  }
+
+
+
   .time {
     font-size: 1.05rem;
     font-weight: 600;

@@ -2,12 +2,15 @@
 import { invoke } from '../platform/tauri';
 import type { SketchSummary } from '../music/summary';
 import type {
+  CreateRhythmArgs,
   CreateSketchArgs,
   CreatedSketch,
   ExportBundle,
   ExportKind,
   FileKind,
   FinalizeSketchArgs,
+  Notebook,
+  PlaceSketchArgs,
   RecoveryReport,
   SaveEditsArgs,
   SaveTranscriptionArgs,
@@ -17,6 +20,7 @@ import type {
   TempoSource,
   Track,
   TranscriptionStatus,
+  UpdateRhythmArgs,
   UpdateSketchArgs,
   UpdateTrackArgs,
 } from './types';
@@ -86,5 +90,29 @@ export class TauriLibrary implements SketchLibrary {
   }
   copyOut(src: string, dest: string) {
     return invoke<void>('copy_out', { src, dest });
+  }
+  listNotebooks() {
+    return invoke<Notebook[]>('list_notebooks');
+  }
+  createNotebook(title: string) {
+    return invoke<Notebook>('create_notebook', { title });
+  }
+  renameNotebook(id: string, title: string) {
+    return invoke<Notebook>('rename_notebook', { id, title });
+  }
+  setNotebookLoop(id: string, startMs: number | null, endMs: number | null) {
+    return invoke<Notebook>('set_notebook_loop', { id, startMs, endMs });
+  }
+  removeNotebook(id: string) {
+    return invoke<void>('delete_notebook', { id });
+  }
+  placeSketch(args: PlaceSketchArgs) {
+    return invoke<Sketch>('place_sketch', { args });
+  }
+  createRhythm(args: CreateRhythmArgs) {
+    return invoke<Sketch>('create_rhythm', { args });
+  }
+  updateRhythm(args: UpdateRhythmArgs) {
+    return invoke<Sketch>('update_rhythm', { args });
   }
 }

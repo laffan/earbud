@@ -20,6 +20,7 @@
     "smoke:tauri": "node scripts/tauri-webdriver-smoke.mjs",
     "smoke:playback": "node scripts/playback-check.cjs",
     "smoke:edit": "node scripts/edit-check.cjs",
+    "smoke:notebook": "node scripts/notebook-check.cjs",
     "smoke:watch": "node scripts/watch-link-smoke.mjs",
     "fake-watch": "node scripts/fake-watch.mjs"
   },

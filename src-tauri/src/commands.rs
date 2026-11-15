@@ -81,6 +81,51 @@ pub async fn set_tempo(
 }
 
 #[tauri::command]
+pub async fn list_notebooks(library: State<'_, Library>) -> Result<Vec<Notebook>> {
+    library.list_notebooks()
+}
+
+#[tauri::command]
+pub async fn create_notebook(library: State<'_, Library>, title: String) -> Result<Notebook> {
+    library.create_notebook(&title)
+}
+
+#[tauri::command]
+pub async fn rename_notebook(library: State<'_, Library>, id: String, title: String) -> Result<Notebook> {
+    library.rename_notebook(&id, &title)
+}
+
+#[tauri::command]
+pub async fn set_notebook_loop(
+    library: State<'_, Library>,
+    id: String,
+    start_ms: Option<i64>,
+    end_ms: Option<i64>,
+) -> Result<Notebook> {
+    library.set_notebook_loop(&id, start_ms, end_ms)
+}
+
+#[tauri::command]
+pub async fn delete_notebook(library: State<'_, Library>, id: String) -> Result<()> {
+    library.delete_notebook(&id)
+}
+
+#[tauri::command]
+pub async fn place_sketch(library: State<'_, Library>, args: PlaceSketchArgs) -> Result<Sketch> {
+    library.place_sketch(args)
+}
+
+#[tauri::command]
+pub async fn create_rhythm(library: State<'_, Library>, args: CreateRhythmArgs) -> Result<Sketch> {
+    library.create_rhythm(args)
+}
+
+#[tauri::command]
+pub async fn update_rhythm(library: State<'_, Library>, args: UpdateRhythmArgs) -> Result<Sketch> {
+    library.update_rhythm(args)
+}
+
+#[tauri::command]
 pub async fn delete_sketch(library: State<'_, Library>, id: String) -> Result<()> {
     library.delete_sketch(&id)
 }

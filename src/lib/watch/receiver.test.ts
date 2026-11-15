@@ -46,6 +46,11 @@ function sketch(id: string, createdAt: number): Sketch {
     tempoBpm: null,
     beatMs: null,
     tempoSource: null,
+    notebookId: null,
+    canvasXMs: 0,
+    canvasY: 0,
+    kind: 'audio',
+    rhythm: null,
   };
 }
 
@@ -292,7 +297,31 @@ describe('AppState with the watch link', () => {
     await tick();
     expect(app.watch).not.toBeNull();
 
-    app.addReceived([sketch('e'.repeat(32), 10), sketch('f'.repeat(32), 5)]);
+    await app.addReceived([sketch('e'.repeat(32), 10), sketch('f'.repeat(32), 5)]);
     expect(app.sketches.map((s) => s.id)).toEqual(['e'.repeat(32), 'f'.repeat(32)]);
+  });
+
+  it('places a received recording at the end of the open notebook', async () => {
+    const library = new MemoryLibrary();
+    const app = new AppState({ library, captureEngine: null, watchLink: null });
+    app.updateSettings({ autoTranscribe: false });
+    await app.init();
+    const notebookId = app.notebookId!;
+    expect(notebookId).toBeTruthy();
+    // Something already on the canvas, ending at 12 s.
+    const placed = await library.create({ mediaExtension: 'wav', mediaMime: 'audio/wav', captureBackend: 'test', notebookId, canvasXMs: 4000 });
+    await library.writeFile(placed.id, 'media-chunk', new Uint8Array([1]));
+    app.upsert(await library.finalize({ id: placed.id, durationMs: 8000, hasVideo: false, videoWidth: null, videoHeight: null }));
+    // A recording that arrived on no canvas (as the Watch import leaves it).
+    const received = await library.create({ mediaExtension: 'm4a', mediaMime: 'audio/mp4', captureBackend: 'apple-watch' });
+    await library.writeFile(received.id, 'media-chunk', new Uint8Array([1]));
+    const arrived = await library.finalize({ id: received.id, durationMs: 7000, hasVideo: false, videoWidth: null, videoHeight: null });
+    expect(arrived.notebookId).toBeNull();
+
+    await app.addReceived([arrived]);
+    const shown = app.canvasSketches.find((s) => s.id === received.id);
+    expect(shown?.notebookId).toBe(notebookId);
+    // A second after the end of the last sketch.
+    expect(shown?.canvasXMs).toBe(13_000);
   });
 });

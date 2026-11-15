@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { app } from './lib/state/app.svelte';
   import ExportSheet from './lib/ui/ExportSheet.svelte';
-  import Home from './lib/ui/Home.svelte';
+  import NotebookView from './lib/ui/NotebookView.svelte';
   import PermissionSheet from './lib/ui/PermissionSheet.svelte';
   import Recorder from './lib/ui/Recorder.svelte';
   import SketchView from './lib/ui/SketchView.svelte';
@@ -20,7 +20,7 @@
       <SketchView id={app.view.id} />
     {/key}
   {:else}
-    <Home />
+    <NotebookView />
   {/if}
 </div>
 

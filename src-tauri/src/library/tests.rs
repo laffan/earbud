@@ -15,6 +15,7 @@ fn create(lib: &Library) -> CreatedSketch {
         title: None,
         parent_id: None,
         track_id: None,
+        ..Default::default()
     })
     .unwrap()
 }
@@ -28,6 +29,7 @@ fn create_take(lib: &Library, parent: &str, track: Option<&str>) -> CreatedSketc
         title: None,
         parent_id: Some(parent.into()),
         track_id: track.map(String::from),
+        ..Default::default()
     })
     .unwrap()
 }
@@ -42,6 +44,7 @@ fn finalize_take(lib: &Library, created: &CreatedSketch, offset_ms: i64) -> Sket
         video_height: None,
         offset_ms: Some(offset_ms),
         count_in_ms: Some(2_000),
+        ..Default::default()
     })
     .unwrap()
 }
@@ -65,6 +68,7 @@ fn finalize(lib: &Library, id: &str) -> Sketch {
         video_height: Some(720),
         offset_ms: None,
         count_in_ms: None,
+        ..Default::default()
     })
     .unwrap()
 }
@@ -90,6 +94,7 @@ fn record_and_finalize_roundtrip() {
             video_height: None,
             offset_ms: None,
             count_in_ms: None,
+            ..Default::default()
         })
         .is_err());
 
@@ -451,6 +456,7 @@ fn tracks_and_takes() {
             title: None,
             parent_id: Some(second.id.clone()),
             track_id: None,
+            ..Default::default()
         })
         .is_err());
     let other = create(&lib);
@@ -462,6 +468,7 @@ fn tracks_and_takes() {
             title: None,
             parent_id: Some(other.id.clone()),
             track_id: Some(sketch.track_id.clone()),
+            ..Default::default()
         })
         .is_err());
 }
@@ -549,4 +556,154 @@ fn tempo_is_stored_and_validated() {
     // Clearing the tempo clears its beat and source too.
     let cleared = lib.set_tempo(&created.id, None, Some(1), Some("user")).unwrap();
     assert_eq!((cleared.tempo_bpm, cleared.beat_ms, cleared.tempo_source), (None, None, None));
+}
+
+// -------------------------------------------------------------- notebooks
+
+fn create_on(lib: &Library, notebook: &str, x_ms: i64, y: f64) -> CreatedSketch {
+    lib.create_sketch(CreateSketchArgs {
+        media_extension: "webm".into(),
+        media_mime: "audio/webm".into(),
+        capture_backend: "test".into(),
+        notebook_id: Some(notebook.into()),
+        canvas_x_ms: Some(x_ms),
+        canvas_y: Some(y),
+        ..Default::default()
+    })
+    .unwrap()
+}
+
+fn pattern() -> serde_json::Value {
+    serde_json::json!({ "version": 1, "bpm": 96.0, "stepsPerBeat": 4, "beatsPerBar": 4, "bars": 1, "lengthBars": 1,
+                        "pads": [[1,0,0,0, 1,0,0,0, 1,0,0,0, 1,0,0,0], [0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0], [1,1,1,1, 1,1,1,1, 1,1,1,1, 1,1,1,1]] })
+}
+
+#[test]
+fn notebooks_are_created_listed_renamed_and_looped() {
+    let (_dir, lib) = lib();
+    assert!(lib.list_notebooks().unwrap().is_empty());
+    let a = lib.create_notebook("  First  ").unwrap();
+    let b = lib.create_notebook("Second").unwrap();
+    assert_eq!(a.title, "First");
+    let all = lib.list_notebooks().unwrap();
+    assert_eq!(all.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(), vec![a.id.as_str(), b.id.as_str()]);
+
+    assert_eq!(lib.rename_notebook(&a.id, "Ideas").unwrap().title, "Ideas");
+    let looped = lib.set_notebook_loop(&a.id, Some(1_000), Some(9_000)).unwrap();
+    assert_eq!((looped.loop_start_ms, looped.loop_end_ms), (Some(1_000), Some(9_000)));
+    assert!(lib.set_notebook_loop(&a.id, Some(1_000), Some(1_100)).is_err());
+    let cleared = lib.set_notebook_loop(&a.id, None, None).unwrap();
+    assert_eq!((cleared.loop_start_ms, cleared.loop_end_ms), (None, None));
+    assert!(lib.rename_notebook(&"0".repeat(32), "x").is_err());
+}
+
+#[test]
+fn a_recording_is_placed_on_its_notebook_and_moved() {
+    let (_dir, lib) = lib();
+    let notebook = lib.create_notebook("N").unwrap();
+    let created = create_on(&lib, &notebook.id, 4_000, 120.0);
+    fs::write(&created.media_path, b"sound").unwrap();
+    // The downbeat lands where the press was: the recording's time 0 is earlier.
+    let saved = lib
+        .finalize_sketch(FinalizeSketchArgs {
+            id: created.id.clone(),
+            duration_ms: Some(6_000),
+            count_in_ms: Some(2_000),
+            canvas_x_ms: Some(2_000),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(saved.notebook_id.as_deref(), Some(notebook.id.as_str()));
+    assert_eq!((saved.canvas_x_ms, saved.canvas_y), (2_000, 120.0));
+    assert_eq!(saved.kind, "audio");
+
+    let moved = lib
+        .place_sketch(PlaceSketchArgs { id: created.id.clone(), notebook_id: None, canvas_x_ms: 10_000, canvas_y: 40.0 })
+        .unwrap();
+    assert_eq!((moved.canvas_x_ms, moved.canvas_y), (10_000, 40.0));
+    assert!(lib
+        .place_sketch(PlaceSketchArgs { id: created.id.clone(), notebook_id: None, canvas_x_ms: 0, canvas_y: f64::NAN })
+        .is_err());
+    // An unknown notebook is refused, at creation and when moving.
+    assert!(lib
+        .create_sketch(CreateSketchArgs {
+            media_extension: "webm".into(),
+            media_mime: "audio/webm".into(),
+            capture_backend: "test".into(),
+            notebook_id: Some("f".repeat(32)),
+            ..Default::default()
+        })
+        .is_err());
+    assert!(lib
+        .place_sketch(PlaceSketchArgs { id: created.id, notebook_id: Some("f".repeat(32)), canvas_x_ms: 0, canvas_y: 0.0 })
+        .is_err());
+}
+
+#[test]
+fn rhythm_sketches_store_their_pattern_and_have_no_recording() {
+    let (_dir, lib) = lib();
+    let notebook = lib.create_notebook("N").unwrap();
+    let rhythm = lib
+        .create_rhythm(CreateRhythmArgs {
+            notebook_id: notebook.id.clone(),
+            canvas_x_ms: 1_500,
+            canvas_y: 300.0,
+            title: Some("Groove".into()),
+            rhythm: pattern(),
+            duration_ms: 2_500,
+        })
+        .unwrap();
+    assert_eq!(rhythm.kind, "rhythm");
+    assert_eq!(rhythm.status, SketchStatus::Saved);
+    assert_eq!(rhythm.transcription_status, TranscriptionStatus::Done);
+    assert!(rhythm.media_path.is_none());
+    assert_eq!(rhythm.duration_ms, Some(2_500));
+    assert_eq!(rhythm.rhythm.as_ref().unwrap()["bpm"], 96.0);
+
+    let mut longer = pattern();
+    longer["lengthBars"] = 3.into();
+    let updated = lib
+        .update_rhythm(UpdateRhythmArgs { id: rhythm.id.clone(), rhythm: longer, duration_ms: 7_500 })
+        .unwrap();
+    assert_eq!(updated.duration_ms, Some(7_500));
+    assert_eq!(updated.rhythm.unwrap()["lengthBars"], 3);
+    assert!(lib
+        .update_rhythm(UpdateRhythmArgs { id: rhythm.id.clone(), rhythm: serde_json::json!([1, 2]), duration_ms: 1_000 })
+        .is_err());
+
+    // Recording into it is impossible, and nothing about it is queued.
+    assert!(lib.write_file(&rhythm.id, FileKind::MediaChunk, b"x").is_err());
+    assert!(lib.recover().unwrap().requeued.is_empty());
+    // An audio sketch is not a rhythm.
+    let audio = create_on(&lib, &notebook.id, 0, 0.0);
+    assert!(lib
+        .update_rhythm(UpdateRhythmArgs { id: audio.id, rhythm: pattern(), duration_ms: 1_000 })
+        .is_err());
+}
+
+#[test]
+fn deleting_a_notebook_deletes_its_sketches_only() {
+    let (_dir, lib) = lib();
+    let keep = lib.create_notebook("Keep").unwrap();
+    let gone = lib.create_notebook("Gone").unwrap();
+    let kept = create_on(&lib, &keep.id, 0, 0.0);
+    let doomed = create_on(&lib, &gone.id, 0, 0.0);
+    let beat = lib
+        .create_rhythm(CreateRhythmArgs {
+            notebook_id: gone.id.clone(),
+            canvas_x_ms: 0,
+            canvas_y: 0.0,
+            title: None,
+            rhythm: pattern(),
+            duration_ms: 2_500,
+        })
+        .unwrap();
+    lib.delete_notebook(&gone.id).unwrap();
+    assert!(lib.get(&doomed.id).is_err());
+    assert!(lib.get(&beat.id).is_err());
+    assert!(!lib.sketch_dir(&doomed.id).exists());
+    assert!(!lib.sketch_dir(&beat.id).exists());
+    assert!(lib.get(&kept.id).is_ok());
+    assert_eq!(lib.list_notebooks().unwrap().len(), 1);
+    assert!(lib.delete_notebook(&gone.id).is_err());
 }

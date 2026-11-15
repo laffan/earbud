@@ -5,14 +5,13 @@
 
 <script lang="ts">
   /**
-   * One track of a sketch: a title bar (collapse, name, mute / solo /
-   * record-a-new-take toggles, menu), then the piano roll, its chords and the
-   * waveform, as one block; collapsed, just the waveform. With "Separate"
-   * listening, its own Take / Notes / Both choice below. Editing the notes of
-   * the take that plays happens here.
+   * A sketch's recording: the piano roll, its chords and the waveform, as one
+   * block, with a menu (transcribe again, revert edits). Editing the notes
+   * happens here. (On this branch a sketch has one recording; the tracks of
+   * the storage layer are not shown.)
    */
   import { onDestroy, onMount, untrack } from 'svelte';
-  import type { Sketch, SketchDetail, Track, UpdateTrackArgs } from '../library/types';
+  import type { Sketch, SketchDetail } from '../library/types';
   import { chordVoicing, detectChords, type ChordSegment } from '../music/chords';
   import { notesToMidi } from '../music/midi';
   import { normalizeNote, sortNotes } from '../music/notes';
@@ -30,11 +29,9 @@
   import Sheet from './Sheet.svelte';
   import TranscriptionSettings from './TranscriptionSettings.svelte';
   import Waveform from './Waveform.svelte';
-  import { formatDate, formatTimeOfDay } from './format';
 
   interface Props {
-    track: Track;
-    /** The take that plays (its row in the library). */
+    /** The recording (its row in the library). */
     take: Sketch;
     sketchTitle: string;
     /** Length of the sketch's timeline (seconds). */
@@ -44,32 +41,16 @@
     cropStart: number | null;
     cropEnd: number | null;
     view: RollViewport;
-    /** The sketch has several tracks (smaller rolls). */
-    multi: boolean;
-    audible: boolean;
-    armed: boolean;
-    /** A take can be recorded right now. */
-    canRecord: boolean;
-    /** Not the track that holds the sketch's own recording. */
-    deletable: boolean;
     synth: NoteSynth;
     onseek: (time: number) => void;
     oncropchange: (start: number, end: number, done: boolean) => void;
-    onupdate: (patch: Omit<UpdateTrackArgs, 'id'>) => void;
-    onarm: () => void;
-    ondelete: () => void;
-    ondeletetake: (takeId: string) => void;
     /** The notes changed (loaded, transcribed or edited), in the take's own time. */
     onnotes: (notes: PianoNote[]) => void;
-    /** This track's own Take / Notes / Both choice ("Separate" listening), or null. */
-    listenMode?: ListenMode | null;
-    onlisten?: (mode: ListenMode) => void;
     /** A chord's symbol as the sketch shows it (spelled for its key). */
     spell?: (chord: ChordSegment) => string;
   }
 
   let {
-    track,
     take,
     sketchTitle,
     duration,
@@ -78,21 +59,10 @@
     cropStart,
     cropEnd,
     view,
-    multi,
-    audible,
-    armed,
-    canRecord,
-    deletable,
     synth,
     onseek,
     oncropchange,
-    onupdate,
-    onarm,
-    ondelete,
-    ondeletetake,
     onnotes,
-    listenMode = null,
-    onlisten,
     spell,
   }: Props = $props();
 
@@ -100,7 +70,6 @@
   let detail = $state<SketchDetail | null>(null);
   // Replaced wholesale on every edit; raw keeps object identity (selection, undo).
   let notes = $state.raw<PianoNote[]>([]);
-  let name = $state(untrack(() => track.name));
 
   // ---------------------------------------------------------- editing
   let editing = $state(false);
@@ -131,9 +100,6 @@
   const transcribing = $derived(!!job || live.transcriptionStatus === 'running');
   const hasTranscription = $derived(!!detail?.transcription);
   const chords = $derived(detectChords(notes));
-  const collapsed = $derived(track.collapsed);
-  const takeNumber = $derived(track.takes.findIndex((t) => t.id === take.id) + 1);
-  const label = $derived(track.name || `Track ${track.position + 1}`);
 
   function workingNotes(d: SketchDetail): PianoNote[] {
     const t = d.transcription;
@@ -165,14 +131,6 @@
       seenRevision = revision;
       untrack(() => void load());
     }
-  });
-
-  $effect(() => {
-    // Keep the name field in step when the track is renamed elsewhere.
-    const n = track.name;
-    untrack(() => {
-      if (document.activeElement?.getAttribute('data-track') !== track.id) name = n;
-    });
   });
 
   onMount(() => {
@@ -318,22 +276,6 @@
 
   // ------------------------------------------------------------ track
 
-  function toggleCollapsed() {
-    if (!collapsed && editing) toggleEditing();
-    onupdate({ collapsed: !collapsed });
-  }
-
-  function saveName() {
-    const next = name.trim();
-    if (next && next !== track.name) onupdate({ name: next });
-    else name = track.name;
-  }
-
-  /** Nudge the take on the timeline (to line it up by ear). */
-  function nudge(ms: number) {
-    onupdate({ offsetMs: take.offsetMs + ms });
-  }
-
   // ------------------------------------------------------------ actions
 
   function retranscribe() {
@@ -394,150 +336,35 @@
     };
   }
 
-  function confirmDeleteTake() {
-    showMenu = false;
-    confirmation = {
-      title: `Delete take ${takeNumber}?`,
-      message:
-        track.takes.length > 1
-          ? 'This recording and its notes will be removed. The track plays its latest other take.'
-          : 'This is the only take, so the track is removed with it.',
-      action: 'Delete take',
-      danger: true,
-      run: () => ondeletetake(take.id),
-    };
-  }
-
-  function confirmDeleteTrack() {
-    showMenu = false;
-    confirmation = {
-      title: `Delete ${label}?`,
-      message: `${track.takes.length === 1 ? 'Its recording' : `All ${track.takes.length} takes`} and their notes will be removed from this device.`,
-      action: 'Delete track',
-      danger: true,
-      run: ondelete,
-    };
-  }
-
-  function chooseTake(id: string) {
-    showMenu = false;
-    if (id !== take.id) onupdate({ takeId: id });
-  }
 </script>
 
 <svelte:window onkeydown={onKey} />
 
-<section class="track" class:collapsed class:muted={!audible} class:armed aria-label={label}>
+<section class="track" aria-label="Recording">
   <header class="track-bar">
-    <button
-      class="icon-button collapse"
-      onclick={toggleCollapsed}
-      aria-expanded={!collapsed}
-      aria-label={collapsed ? `Expand ${label}` : `Collapse ${label}`}
-    >
-      <Icon name="down" size={18} />
-    </button>
-    <input
-      class="track-name"
-      data-track={track.id}
-      bind:value={name}
-      maxlength="60"
-      aria-label="Track name"
-      onblur={saveName}
-      onkeydown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
-    />
-    {#if track.takes.length > 1}<span class="take-chip tabular" title="Take {takeNumber} of {track.takes.length}">take {takeNumber}</span>{/if}
-    {#if collapsed && transcribing}<span class="mini-status">{Math.round((job?.fraction ?? 0) * 100)}%</span>{/if}
     <span class="spacer"></span>
-    <div class="toggles" role="group" aria-label="{label} controls">
-      <button
-        class="toggle mute"
-        aria-pressed={track.muted}
-        aria-label="Mute"
-        title="Mute"
-        onclick={() => onupdate({ muted: !track.muted })}>M</button
-      >
-      <button
-        class="toggle solo"
-        aria-pressed={track.solo}
-        aria-label="Solo"
-        title="Solo"
-        onclick={() => onupdate({ solo: !track.solo })}>S</button
-      >
-      <button
-        class="toggle arm"
-        aria-pressed={armed}
-        aria-label="Record a new take"
-        title="Record a new take"
-        disabled={!canRecord && !armed}
-        onclick={onarm}><span class="rec-dot"></span></button
-      >
-    </div>
     <div class="menu-anchor">
-      <button class="icon-button" onclick={() => (showMenu = !showMenu)} aria-label="{label} actions" aria-expanded={showMenu}>
+      <button class="icon-button" onclick={() => (showMenu = !showMenu)} aria-label="Recording actions" aria-expanded={showMenu}>
         <Icon name="more" />
       </button>
       {#if showMenu}
         <div class="menu" role="menu">
-          {#if track.takes.length > 1}
-            <div class="menu-label">Takes</div>
-            {#each track.takes as t, i (t.id)}
-              <button
-                role="menuitemradio"
-                aria-checked={t.id === take.id}
-                onclick={() => chooseTake(t.id)}
-                disabled={t.status !== 'saved'}
-              >
-                <span class="check">{#if t.id === take.id}<Icon name="check" size={16} />{/if}</span>
-                Take {i + 1}
-                <span class="dim">{formatDate(t.createdAt)}, {formatTimeOfDay(t.createdAt)}</span>
-              </button>
-            {/each}
-            <div class="menu-sep"></div>
-          {/if}
           <button role="menuitem" onclick={askRetranscribe} disabled={transcribing}>
             <Icon name="refresh" size={18} /> {hasTranscription ? 'Transcribe again' : 'Transcribe'}
           </button>
           {#if detail?.hasEdits}
             <button role="menuitem" onclick={revertEdits}><Icon name="undo" size={18} /> Revert note edits</button>
           {/if}
-          <div class="nudge" role="group" aria-label="Line up this take">
-            <span>Line up</span>
-            <button onclick={() => nudge(-20)} aria-label="Move this take 20 ms earlier"><Icon name="left" size={16} /></button>
-            <span class="tabular dim">{take.offsetMs >= 0 ? '+' : ''}{(take.offsetMs / 1000).toFixed(2)} s</span>
-            <button onclick={() => nudge(20)} aria-label="Move this take 20 ms later"><Icon name="right" size={16} /></button>
-          </div>
           {#if transcribedWith || detail?.transcription}
             <p class="menu-info">
               {#if detail?.transcription}Transcribed by {detail.transcription.engine} {detail.transcription.engineVersion}{/if}{#if transcribedWith}, for {transcribedWith}{/if}
             </p>
-          {/if}
-          {#if take.parentId !== null}
-            <button role="menuitem" class="danger" onclick={confirmDeleteTake}><Icon name="trash" size={18} /> Delete this take</button>
-          {/if}
-          {#if deletable}
-            <button role="menuitem" class="danger" onclick={confirmDeleteTrack}><Icon name="trash" size={18} /> Delete track</button>
           {/if}
         </div>
       {/if}
     </div>
   </header>
 
-  {#if collapsed}
-    <div class="stack">
-      <Waveform
-        path={live.analysisPath}
-        {duration}
-        {currentTime}
-        {offset}
-        {cropStart}
-        {cropEnd}
-        flush
-        onseek={(t) => onseek(t)}
-        {oncropchange}
-      />
-    </div>
-  {:else}
     {#if transcribing}
       <div class="banner">
         <span>
@@ -605,7 +432,7 @@
     {/if}
 
     <div class="stack" class:editing>
-      <div class="roll-wrap" class:multi>
+      <div class="roll-wrap">
         <PianoRoll
           {notes}
           {cropStart}
@@ -654,20 +481,7 @@
         {oncropchange}
       />
     </div>
-  {/if}
 
-  {#if listenMode}
-    <!-- "Separate" listening: this track's own choice, attached under it. -->
-    <div class="segmented track-listen" role="group" aria-label="{label} plays">
-      <button aria-pressed={listenMode === 'recording'} onclick={() => onlisten?.('recording')}>Take</button>
-      <button aria-pressed={listenMode === 'notes'} onclick={() => onlisten?.('notes')} disabled={notes.length === 0}
-        >Notes</button
-      >
-      <button aria-pressed={listenMode === 'both'} onclick={() => onlisten?.('both')} disabled={notes.length === 0}
-        >Both</button
-      >
-    </div>
-  {/if}
 </section>
 
 {#if showRetranscribe}
@@ -721,106 +535,10 @@
     align-items: center;
     gap: 2px;
     min-width: 0;
-    padding: 2px 0;
-  }
-  .collapse :global(svg) {
-    transition: transform 160ms ease;
-  }
-  .collapsed .collapse :global(svg) {
-    transform: rotate(-90deg);
-  }
-  .track-name {
-    flex: 0 1 auto;
-    min-width: 3ch;
-    width: 9ch;
-    font-weight: 600;
-    font-size: 0.95rem;
-    border: none;
-    background: transparent;
-    padding: 4px 6px;
-    border-radius: var(--radius-sm);
-    text-overflow: ellipsis;
-  }
-  .track-name:hover,
-  .track-name:focus {
-    background: var(--paper-sunk);
-    outline: none;
-  }
-  .take-chip {
-    flex: none;
-    font-size: 0.72rem;
-    color: var(--ink-3);
-    padding: 1px 6px;
-    border-radius: 999px;
-    border: 1px solid var(--rule);
-  }
-  .track-listen {
-    justify-self: start;
-    margin-top: -2px;
-  }
-  .track-listen button {
-    min-height: 28px;
-    padding: 0 12px;
-    font-size: 0.8rem;
-  }
-  .mini-status {
-    font-size: 0.75rem;
-    color: var(--ink-3);
+    margin-bottom: -6px;
   }
   .spacer {
     flex: 1;
-  }
-  .toggles {
-    display: flex;
-    gap: 4px;
-    flex: none;
-  }
-  .toggle {
-    width: 30px;
-    height: 26px;
-    border-radius: 7px;
-    border: 1px solid var(--rule-strong);
-    font-size: 0.78rem;
-    font-weight: 700;
-    color: var(--ink-2);
-    display: grid;
-    place-items: center;
-  }
-  .toggle.mute[aria-pressed='true'] {
-    background: var(--ink-2);
-    border-color: var(--ink-2);
-    color: var(--paper);
-  }
-  .toggle.solo[aria-pressed='true'] {
-    background: var(--chord);
-    border-color: var(--chord);
-    color: var(--paper);
-  }
-  .rec-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    background: var(--accent);
-    opacity: 0.55;
-  }
-  .toggle.arm[aria-pressed='true'] {
-    background: var(--accent-soft);
-    border-color: var(--accent);
-  }
-  .toggle.arm[aria-pressed='true'] .rec-dot {
-    opacity: 1;
-    animation: armed 1s ease-in-out infinite alternate;
-  }
-  @keyframes armed {
-    to {
-      opacity: 0.4;
-    }
-  }
-  .muted .stack {
-    opacity: 0.55;
-  }
-  .armed .stack {
-    box-shadow: 0 0 0 2px var(--accent);
   }
 
   .menu-anchor {
@@ -850,50 +568,6 @@
   }
   .menu button:hover:not(:disabled) {
     background: var(--paper-sunk);
-  }
-  .menu .danger {
-    color: var(--accent);
-  }
-  .menu-label {
-    padding: 4px 10px 2px;
-    font-size: 0.72rem;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--ink-3);
-  }
-  .menu-sep {
-    height: 1px;
-    margin: 4px 6px;
-    background: var(--rule);
-  }
-  .menu .check {
-    width: 16px;
-    display: inline-grid;
-    color: var(--accent);
-  }
-  .menu .dim,
-  .nudge .dim {
-    color: var(--ink-3);
-    font-size: 0.8rem;
-    margin-left: auto;
-  }
-  .nudge {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 10px;
-    font-size: 0.9rem;
-  }
-  .nudge .dim {
-    margin-left: 0;
-    min-width: 6ch;
-    text-align: center;
-  }
-  .nudge span:first-child {
-    flex: 1;
-  }
-  .nudge button {
-    padding: 6px;
   }
   .menu-info {
     margin: 2px 10px 6px;
@@ -949,9 +623,6 @@
   .roll-wrap {
     position: relative;
     height: clamp(240px, 44vh, 560px);
-  }
-  .roll-wrap.multi {
-    height: clamp(200px, 32vh, 440px);
   }
   /* The pencil sits in the corner above the keyboard. */
   .pencil {

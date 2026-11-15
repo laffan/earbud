@@ -83,6 +83,30 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE sketches ADD COLUMN beat_ms INTEGER;
     ALTER TABLE sketches ADD COLUMN tempo_source TEXT;
     "#,
+    // v5: notebooks. A notebook is a canvas on which sketches are placed:
+    // `canvas_x_ms` is where the sketch's recording (time 0) lies on the
+    // notebook's timeline, `canvas_y` how far down the canvas it sits (free
+    // placement, canvas pixels). The playhead plays every sketch it crosses.
+    // `kind` is 'audio' (a recording) or 'rhythm' (a step pattern in
+    // `rhythm_json`, rendered when played; no media file). The notebook's
+    // loop range is where repeat plays (NULL = from the first sketch to the
+    // end of the last).
+    r#"
+    CREATE TABLE notebooks (
+        id            TEXT PRIMARY KEY NOT NULL,
+        title         TEXT NOT NULL DEFAULT '',
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL,
+        loop_start_ms INTEGER,
+        loop_end_ms   INTEGER
+    );
+    ALTER TABLE sketches ADD COLUMN notebook_id TEXT;
+    ALTER TABLE sketches ADD COLUMN canvas_x_ms INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE sketches ADD COLUMN canvas_y REAL NOT NULL DEFAULT 0;
+    ALTER TABLE sketches ADD COLUMN kind TEXT NOT NULL DEFAULT 'audio';
+    ALTER TABLE sketches ADD COLUMN rhythm_json TEXT;
+    CREATE INDEX sketches_notebook ON sketches(notebook_id);
+    "#,
 ];
 
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {

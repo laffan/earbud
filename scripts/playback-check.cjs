@@ -3,13 +3,11 @@
  * Audio engine. Every buffer source the page starts is recorded (when, from
  * where in its buffer), so sound can be checked without listening.
  *
- * One track (?demo): scrub the waveform then play (playhead moves and matches
- * the audio clock), crop with the waveform handles, stop at the crop end,
- * loop without a gap, clear the crop.
- * Four tracks (?demo=tracks4): every track starts on one clock at its place
- * on the timeline, mute and Separate do not restart anything, the synth plays
- * notes in Separate, a seek restarts all tracks together, a chord in a
- * track's chord strip plays, and a collapsed track's waveform seeks.
+ * The ?demo notebook's "Sixteen bars" sketch, opened from the canvas: scrub
+ * the waveform then play (playhead moves and matches the audio clock), crop
+ * with the waveform handles, stop at the crop end, loop without a gap, clear
+ * the crop. (Several sketches playing together on one clock is checked on
+ * the canvas by `npm run smoke:notebook`.)
  * Fails on any page error or error toast.
  *
  *   npm run dev            # terminal 1
@@ -56,10 +54,13 @@ function instrument() {
   };
 }
 
-async function openSketch(page, demo) {
-  await page.goto(`${URL}?demo=${demo}`);
-  await page.waitForSelector('.card', { timeout: 60000 });
-  await page.click('.front');
+/** Open the demo notebook's 16-bar sketch (double-tap its tile on the canvas). */
+async function openSketch(page) {
+  await page.goto(`${URL}?demo`);
+  const tile = page.locator('[data-tile][aria-label="Sixteen bars"]');
+  await tile.waitFor({ timeout: 60000 });
+  await page.waitForTimeout(800);
+  await tile.dblclick({ position: { x: 30, y: 40 } });
   await page.waitForSelector('.waveform canvas');
   await page.waitForTimeout(1200);
 }
@@ -84,8 +85,7 @@ async function openSketch(page, demo) {
       return s ? s.offset + (ctx.currentTime - s.when) : null;
     });
 
-  // ---------------------------------------------------------------- one track
-  await openSketch(page, '1');
+  await openSketch(page);
   const wfEl = await page.$('.waveform canvas');
   const wf = await wfEl.boundingBox();
   const y = wf.y + wf.height / 2;
@@ -158,71 +158,6 @@ async function openSketch(page, demo) {
   await page.click('.crop-info .link');
   await page.waitForTimeout(200);
   if (await page.$('.crop-info')) problems.push('crop not cleared');
-
-  // ------------------------------------------------------------- four tracks
-  await openSketch(page, 'tracks4');
-  const t0 = (await sources()).length;
-  await page.click('.play');
-  await page.waitForTimeout(1500);
-  const four = (await sources()).slice(t0);
-  console.log('four tracks:', JSON.stringify(four.map((s) => [+s.when.toFixed(3), +s.offset.toFixed(3)])));
-  // Demo offsets: 0, 1.5, 0, 0.25 s.
-  if (four.length !== 4) problems.push(`expected 4 tracks to start, got ${four.length}`);
-  else {
-    const base = four[0].when;
-    const expected = [0, 1.5, 0, 0.25];
-    four.forEach((s, i) => {
-      if (Math.abs(s.when - base - expected[i]) > 0.002) problems.push(`track ${i + 1} is not placed on the shared clock`);
-    });
-  }
-
-  // Separate: track 2 plays its notes; no recording restarts.
-  await page.evaluate(() => (window.__notes = 0));
-  await page.click('button:has-text("Separate")');
-  const groups = await page.$$('.track-listen');
-  await (await groups[1].$('button:has-text("Notes")')).click();
-  await (await page.$$('.toggle.mute'))[3].click();
-  await page.waitForTimeout(2500);
-  const notes = await page.evaluate(() => window.__notes);
-  console.log('synth notes in 2.5 s of Separate:', notes);
-  if (notes === 0) problems.push('the synth is silent in Separate');
-  if ((await sources()).length !== t0 + 4) problems.push('Separate or mute restarted the recordings');
-
-  // A seek restarts every track together.
-  const s0 = (await sources()).length;
-  const firstWave = await page.$('.waveform canvas');
-  await firstWave.scrollIntoViewIfNeeded();
-  const fw = await firstWave.boundingBox();
-  await page.mouse.click(fw.x + fw.width * 0.6, fw.y + fw.height / 2);
-  await page.waitForTimeout(600);
-  const seeked = (await sources()).slice(s0).filter((s) => s.stoppedAt === null);
-  console.log('after a seek:', await shown(), JSON.stringify(seeked.map((s) => [+s.when.toFixed(3), +s.offset.toFixed(3)])));
-  if (seeked.length !== 4 || new Set(seeked.map((s) => s.when.toFixed(4))).size !== 1) problems.push('a seek did not restart all tracks together');
-  await page.click('.play');
-
-  // A chord in the first track's chord strip plays.
-  await page.evaluate(() => (window.__notes = 0));
-  const chord = await page.$('.chord-strip .chord');
-  await chord.scrollIntoViewIfNeeded();
-  await chord.click();
-  await page.waitForTimeout(300);
-  if ((await page.evaluate(() => window.__notes)) < 3) problems.push('tapping a chord in the strip did not play it');
-
-  // A collapsed track shows its waveform, which seeks.
-  await (await page.$$('button.collapse'))[3].click();
-  await page.waitForTimeout(200);
-  const collapsedWave = await page.$('.track.collapsed .waveform canvas');
-  if (!collapsedWave) problems.push('a collapsed track shows no waveform');
-  else {
-    await collapsedWave.scrollIntoViewIfNeeded();
-    const cw = await collapsedWave.boundingBox();
-    await page.mouse.click(cw.x + cw.width * 0.25, cw.y + cw.height / 2);
-    await page.waitForTimeout(200);
-    const at = await shown();
-    console.log('collapsed waveform seek to', at);
-    if (Math.abs(at - 10) > 2) problems.push(`collapsed waveform seek landed at ${at}`);
-  }
-  if (OUT) await page.screenshot({ path: `${OUT}/tracks.png` });
 
   const toasts = await page.$$eval('.toast', (els) => els.map((e) => e.textContent));
   if (toasts.length) problems.push(`toasts: ${toasts.join(' | ')}`);

@@ -13,8 +13,9 @@ import {
   type RecordingResult,
 } from '../capture';
 import { Metronome } from '../capture/countIn';
-import { importAudioTrack, importMidiTrack } from '../library/importTrack';
+import { importAudioSketch, importMidiSketch, type Placement } from '../library/importTrack';
 import { getLibrary, type Sketch, type SketchLibrary } from '../library';
+import type { CreateRhythmArgs, Notebook, UpdateRhythmArgs } from '../library/types';
 import { ProcessingQueue, type JobProgress } from '../pipeline/processingQueue';
 import { errorCode, errorMessage, isIOSLike } from '../platform/tauri';
 import {
@@ -65,6 +66,25 @@ export interface TakeTarget {
   onEnd?: (saved: Sketch | null) => void;
 }
 
+/**
+ * Recording a new sketch onto a notebook's canvas, where it was pressed. The
+ * canvas plays from there at the downbeat, so the new sketch can be played
+ * over whatever is already on it.
+ */
+export interface CanvasTarget {
+  notebookId: string;
+  /** Where the take's downbeat goes on the notebook's timeline (seconds). */
+  at: number;
+  /** How far down the canvas it goes (canvas pixels). */
+  y: number;
+  /** A rhythm under the press: the count-in runs at its tempo. */
+  tempo?: { bpm: number; beat: number };
+  /** The downbeat: start playing the canvas and return the position heard now (seconds). */
+  onDownbeat?: () => number;
+  /** The take was saved, discarded or failed; stop playback. */
+  onEnd?: (saved: Sketch | null) => void;
+}
+
 export type View = { name: 'home' } | { name: 'sketch'; id: string };
 
 export interface RecordingState {
@@ -92,6 +112,8 @@ export interface RecordingState {
   playFrom: number | null;
   /** Recording a take into an open sketch (null: a new sketch). */
   take: { sketchId: string; trackId: string | null; label: string } | null;
+  /** Recording a new sketch onto a notebook's canvas. */
+  canvas: { notebookId: string; at: number; y: number } | null;
   /** The sketch's beat while recording a take into it: when one falls (performance.now ms) and how far apart. */
   pulse: { firstBeatAt: number; periodMs: number } | null;
 }
@@ -110,6 +132,8 @@ export interface PermissionProblem {
 }
 
 const SETTINGS_KEY = 'earbud.settings.v1';
+/** The notebook last open. */
+const NOTEBOOK_KEY = 'earbud.notebook.v1';
 
 /** A take that ends on its own sooner than this is treated as a failed start. */
 export const EARLY_FAILURE_MS = 1500;
@@ -198,6 +222,15 @@ export class AppState {
   exportRequest = $state<string[] | null>(null);
   /** Receiving recordings from the Apple Watch app (null in the browser preview). */
   watch = $state<WatchReceiver | null>(null);
+  /** Every notebook, oldest first. */
+  notebooks = $state<Notebook[]>([]);
+  /** The notebook whose canvas is shown. */
+  notebookId = $state<string | null>(null);
+  readonly notebook = $derived(this.notebooks.find((n) => n.id === this.notebookId) ?? null);
+  /** The sketches on the open notebook's canvas. */
+  readonly canvasSketches = $derived(
+    this.sketches.filter((s) => s.parentId === null && s.status === 'saved' && s.notebookId !== null && s.notebookId === this.notebookId),
+  );
 
   private captureEngine: CaptureEngine | null = null;
   private active: ActiveRecording | null = null;
@@ -207,6 +240,8 @@ export class AppState {
   private pendingFinish: RecordingResult | null = null;
   /** The take being recorded into an open sketch (kept across the automatic retry). */
   private takeTarget: TakeTarget | null = null;
+  /** The sketch being recorded onto a canvas (kept across the automatic retry). */
+  private canvasTarget: CanvasTarget | null = null;
   private readonly metronome: Metronome;
   private countInAbort: AbortController | null = null;
   /** Last level event: the recorder's own clock, to place the downbeat in the recording. */
@@ -250,12 +285,11 @@ export class AppState {
       const report = await this.library.recover();
       const demo = new URLSearchParams(location.search).get('demo');
       if (!this.library.persistent && demo !== null) {
-        const { seedDemo } = await import('../dev/demo');
-        // `?demo`, `?demo=tracks` (two tracks) or `?demo=tracks4` (up to four).
-        const tracks = demo.startsWith('tracks') ? Math.min(4, Math.max(2, Number(demo.slice(6)) || 2)) : 1;
-        await seedDemo(this.library, { tracks });
+        const { seedDemoNotebook } = await import('../dev/demo');
+        await seedDemoNotebook(this.library);
       }
       this.sketches = await this.library.list();
+      await this.loadNotebooks();
       if (report.recovered.length > 0) {
         this.toast(
           report.recovered.length === 1
@@ -299,12 +333,171 @@ export class AppState {
     });
   }
 
-  /** Sketches that arrived from the Watch: list them and transcribe, oldest first. */
-  addReceived(sketches: Sketch[]) {
+  /** Sketches that arrived from the Watch: placed at the end of the open notebook, and transcribed, oldest first. */
+  async addReceived(sketches: Sketch[]) {
     const oldestFirst = [...sketches].sort((a, b) => a.createdAt - b.createdAt);
-    for (const sketch of oldestFirst) {
+    for (let sketch of oldestFirst) {
+      if (sketch.notebookId === null && this.notebookId) {
+        try {
+          const at = this.canvasEnd() + 1;
+          sketch = await this.library.placeSketch({ id: sketch.id, notebookId: this.notebookId, canvasXMs: Math.round(at * 1000), canvasY: 40 });
+        } catch (error) {
+          this.logCapture(`could not place a received recording: ${errorMessage(error)}`);
+        }
+      }
       this.upsert(sketch);
       if (this.settings.autoTranscribe && sketch.transcriptionStatus === 'pending') this.queue.enqueue(sketch.id);
+    }
+  }
+
+  // -------------------------------------------------------------- notebooks
+
+  private async loadNotebooks() {
+    let notebooks = await this.library.listNotebooks();
+    if (notebooks.length === 0) notebooks = [await this.library.createNotebook('Notebook 1')];
+    this.notebooks = notebooks;
+    let stored: string | null = null;
+    try {
+      stored = localStorage.getItem(NOTEBOOK_KEY);
+    } catch {
+      // storage unavailable
+    }
+    const open = notebooks.find((n) => n.id === stored) ?? notebooks[notebooks.length - 1];
+    this.notebookId = open.id;
+  }
+
+  selectNotebook(id: string) {
+    if (!this.notebooks.some((n) => n.id === id)) return;
+    this.notebookId = id;
+    try {
+      localStorage.setItem(NOTEBOOK_KEY, id);
+    } catch {
+      // storage unavailable
+    }
+  }
+
+  /** "Notebook 3": the first number not taken. */
+  nextNotebookTitle(): string {
+    const taken = new Set(this.notebooks.map((n) => n.title.trim()));
+    let n = this.notebooks.length + 1;
+    while (taken.has(`Notebook ${n}`)) n++;
+    return `Notebook ${n}`;
+  }
+
+  async createNotebook(title = this.nextNotebookTitle()): Promise<Notebook | null> {
+    try {
+      const notebook = await this.library.createNotebook(title);
+      this.notebooks = [...this.notebooks, notebook];
+      this.selectNotebook(notebook.id);
+      return notebook;
+    } catch (error) {
+      this.toast(`Could not create a notebook: ${errorMessage(error)}`, 'error');
+      return null;
+    }
+  }
+
+  private replaceNotebook(notebook: Notebook) {
+    this.notebooks = this.notebooks.map((n) => (n.id === notebook.id ? notebook : n));
+  }
+
+  async renameNotebook(id: string, title: string) {
+    try {
+      this.replaceNotebook(await this.library.renameNotebook(id, title));
+    } catch (error) {
+      this.toast(`Could not rename the notebook: ${errorMessage(error)}`, 'error');
+    }
+  }
+
+  /** Where repeat loops on the notebook (ms), or nulls for the extent of its sketches. */
+  async setNotebookLoop(id: string, startMs: number | null, endMs: number | null) {
+    const current = this.notebooks.find((n) => n.id === id);
+    if (current) this.replaceNotebook({ ...current, loopStartMs: startMs, loopEndMs: endMs });
+    try {
+      this.replaceNotebook(await this.library.setNotebookLoop(id, startMs, endMs));
+    } catch (error) {
+      this.toast(`Could not save the loop: ${errorMessage(error)}`, 'error');
+    }
+  }
+
+  /** Delete a notebook with every sketch on it; another one opens (a new one if it was the last). */
+  async deleteNotebook(id: string) {
+    const gone = new Set(this.sketches.filter((s) => s.notebookId === id && s.parentId === null).map((s) => s.id));
+    for (const s of this.sketches) if (s.parentId && gone.has(s.parentId)) gone.add(s.id);
+    for (const sketch of gone) this.queue.cancel(sketch);
+    try {
+      await this.library.removeNotebook(id);
+    } catch (error) {
+      this.toast(`Could not delete the notebook: ${errorMessage(error)}`, 'error');
+      return;
+    }
+    this.sketches = this.sketches.filter((s) => !gone.has(s.id));
+    this.notebooks = this.notebooks.filter((n) => n.id !== id);
+    if (this.notebookId === id) {
+      const next = this.notebooks[this.notebooks.length - 1];
+      if (next) this.selectNotebook(next.id);
+      else await this.createNotebook('Notebook 1');
+    }
+    this.toast('Notebook deleted.');
+  }
+
+  /** The end of the last sketch on the open canvas (seconds of its timeline). */
+  canvasEnd(): number {
+    let end = 0;
+    for (const s of this.canvasSketches) end = Math.max(end, s.canvasXMs / 1000 + (s.durationMs ?? 0) / 1000);
+    return end;
+  }
+
+  /** Move a sketch on its canvas. Shown at once; the library confirms. */
+  async placeSketch(id: string, canvasXMs: number, canvasY: number) {
+    const index = this.sketches.findIndex((s) => s.id === id);
+    if (index >= 0) this.sketches[index] = { ...this.sketches[index], canvasXMs: Math.round(canvasXMs), canvasY };
+    try {
+      this.upsert(await this.library.placeSketch({ id, canvasXMs: Math.round(canvasXMs), canvasY }));
+    } catch (error) {
+      this.toast(`Could not move the sketch: ${errorMessage(error)}`, 'error');
+      void this.refresh();
+    }
+  }
+
+  async createRhythm(args: CreateRhythmArgs): Promise<Sketch | null> {
+    try {
+      const sketch = await this.library.createRhythm(args);
+      this.upsert(sketch);
+      return sketch;
+    } catch (error) {
+      this.toast(`Could not save the rhythm: ${errorMessage(error)}`, 'error');
+      return null;
+    }
+  }
+
+  async updateRhythm(args: UpdateRhythmArgs): Promise<Sketch | null> {
+    try {
+      const sketch = await this.library.updateRhythm(args);
+      this.upsert(sketch);
+      return sketch;
+    } catch (error) {
+      this.toast(`Could not save the rhythm: ${errorMessage(error)}`, 'error');
+      return null;
+    }
+  }
+
+  /**
+   * Import a MIDI or audio file as a new sketch on a canvas. Audio is
+   * transcribed like a recording; MIDI brings its own notes. Returns whether
+   * it worked (problems are toasted).
+   */
+  async importSketch(kind: 'midi' | 'audio', file: File, place: Placement): Promise<boolean> {
+    try {
+      const deps = { library: this.library };
+      const result = kind === 'midi' ? await importMidiSketch(deps, file, place) : await importAudioSketch(deps, file, place);
+      this.upsert(result.sketch);
+      if (result.transcribe && this.settings.autoTranscribe) this.queue.enqueue(result.sketch.id);
+      this.logCapture(`imported ${file.name} (${kind}, ${file.size} bytes)`);
+      this.toast(`Imported “${result.sketch.title}”.`);
+      return true;
+    } catch (error) {
+      this.toast(`Could not import ${file.name}: ${errorMessage(error)}`, 'error');
+      return false;
     }
   }
 
@@ -376,31 +569,6 @@ export class AppState {
     this.sketches = this.sketches.filter((s) => s.id !== takeId);
     this.touch(sketchId);
     this.toast('Take deleted.');
-  }
-
-  /**
-   * Import a MIDI or audio file as a new track of a sketch, starting at
-   * `offsetMs` on its timeline. Audio is transcribed like a recording; MIDI
-   * brings its own notes. Returns whether it worked (problems are toasted).
-   */
-  async importTrack(sketchId: string, kind: 'midi' | 'audio', file: File, offsetMs: number): Promise<boolean> {
-    try {
-      const deps = { library: this.library };
-      const result =
-        kind === 'midi'
-          ? await importMidiTrack(deps, sketchId, file, offsetMs)
-          : await importAudioTrack(deps, sketchId, file, offsetMs);
-      this.upsert(result.take);
-      this.touch(sketchId);
-      if (result.transcribe && this.settings.autoTranscribe) this.queue.enqueue(result.take.id);
-      this.logCapture(`imported ${file.name} (${kind}, ${file.size} bytes) as ${result.track.name}`);
-      this.toast(`Imported “${result.track.name}”.`);
-      return true;
-    } catch (error) {
-      this.touch(sketchId);
-      this.toast(`Could not import ${file.name}: ${errorMessage(error)}`, 'error');
-      return false;
-    }
   }
 
   /** Open the export sheet for one or more sketches. */
@@ -485,20 +653,22 @@ export class AppState {
    * A start that fails, times out, or dies within the first moments is
    * retried once automatically before the user sees an error.
    */
-  async startRecording(options: { retry?: boolean; take?: TakeTarget } = {}) {
+  async startRecording(options: { retry?: boolean; take?: TakeTarget; canvas?: CanvasTarget } = {}) {
     const engine = this.captureEngine;
     if (this.recording && !options.retry) return;
     if (!engine) {
       this.toast('Recording is not available on this device.', 'error');
-      options.take?.onEnd?.(null);
+      (options.take ?? options.canvas)?.onEnd?.(null);
       return;
     }
     if (!options.retry) {
       this.takeTarget = options.take ?? null;
+      this.canvasTarget = options.take ? null : (options.canvas ?? null);
       // Still inside the tap: the only moment iOS lets audio start.
       if (this.settings.countIn) this.metronome.prepare();
     }
     const take = this.takeTarget;
+    const canvas = this.canvasTarget;
     const settings: CaptureSettings = {
       camera: this.settings.camera,
       lens: this.settings.lens,
@@ -525,6 +695,7 @@ export class AppState {
       downbeatMs: null,
       playFrom: null,
       take: take ? { sketchId: take.sketchId, trackId: take.trackId, label: take.label } : null,
+      canvas: canvas ? { notebookId: canvas.notebookId, at: canvas.at, y: canvas.y } : null,
       pulse: null,
     };
     this.lastLevel = null;
@@ -553,6 +724,8 @@ export class AppState {
         mediaMime: format.mime,
         captureBackend: engine.id,
         ...(take ? { parentId: take.sketchId, trackId: take.trackId ?? undefined } : {}),
+        // Placed where it was pressed until the downbeat says exactly where.
+        ...(canvas ? { notebookId: canvas.notebookId, canvasXMs: Math.round(canvas.at * 1000), canvasY: canvas.y } : {}),
       });
       sketchId = created.id;
       if (this.recording?.nativePreview) document.documentElement.classList.add('native-preview');
@@ -614,6 +787,11 @@ export class AppState {
     }
   }
 
+  /** What is being recorded into: a sketch (a take) or a canvas. */
+  private get target(): TakeTarget | CanvasTarget | null {
+    return this.takeTarget ?? this.canvasTarget;
+  }
+
   /** Where the recorder is in the take right now (ms), by its own clock where possible. */
   private recordingElapsedMs(): number {
     const now = performance.now();
@@ -635,8 +813,8 @@ export class AppState {
       if (!this.metronome.audible) this.logCapture('count-in without sound (no running audio context)');
       const reached = await this.metronome.run({
         beats: COUNT_IN_BEATS,
-        // Into a sketch: at its tempo, so the take starts in time with it.
-        bpm: this.takeTarget?.tempo?.bpm ?? this.settings.countInBpm,
+        // Into a sketch, or over a rhythm: at its tempo, so the take starts in time with it.
+        bpm: this.target?.tempo?.bpm ?? this.settings.countInBpm,
         signal: abort.signal,
         onBeat: (beat) => {
           if (attempt === this.attempt && this.recording?.countIn) this.recording.countIn.beat = beat;
@@ -650,14 +828,15 @@ export class AppState {
     if (!recording || attempt !== this.attempt || recording.phase !== 'recording') return;
     recording.downbeatMs = Math.max(0, this.recordingElapsedMs());
     const downbeatAt = performance.now();
-    if (this.takeTarget?.onDownbeat) {
+    const target = this.target;
+    if (target?.onDownbeat) {
       try {
-        recording.playFrom = this.takeTarget.onDownbeat();
+        recording.playFrom = target.onDownbeat();
       } catch (error) {
         this.logCapture(`could not start the other tracks: ${errorMessage(error)}`);
       }
     }
-    const tempo = this.takeTarget?.tempo;
+    const tempo = target?.tempo;
     if (tempo && tempo.bpm > 0) {
       // The sketch's beats from here on, on the clock the dot is drawn with.
       const period = 60 / tempo.bpm;
@@ -833,6 +1012,9 @@ export class AppState {
     const offsetMs = take
       ? Math.round((recording?.playFrom ?? 0) * 1000 - (downbeatMs ?? 0))
       : undefined;
+    // On a canvas the same way: the downbeat lands where the canvas was heard at that moment.
+    const canvas = recording?.canvas ?? null;
+    const canvasXMs = canvas ? Math.round((recording?.playFrom ?? canvas.at) * 1000 - (downbeatMs ?? 0)) : undefined;
     let saved: Sketch | null = null;
     const countedIn = recording?.countIn === null && downbeatMs !== null && this.settings.countIn;
     try {
@@ -844,10 +1026,12 @@ export class AppState {
         videoHeight: result.height ?? null,
         offsetMs,
         countInMs: countedIn ? Math.round(downbeatMs!) : null,
+        canvasXMs,
       });
       if (!take && countedIn) {
         // Until the notes say otherwise: the tempo it was counted in at, with a beat on the downbeat.
-        sketch = await this.library.setTempo(id, this.settings.countInBpm, Math.round(downbeatMs!), 'count-in');
+        const bpm = this.canvasTarget?.tempo?.bpm ?? this.settings.countInBpm;
+        sketch = await this.library.setTempo(id, bpm, Math.round(downbeatMs!), 'count-in');
       }
       saved = sketch;
       this.logCapture(
@@ -858,6 +1042,8 @@ export class AppState {
       if (take) {
         this.touch(take.sketchId);
         this.toast(userStopped || result.ok ? `${take.label}: take saved.` : 'Recording was interrupted, but the take was saved.');
+      } else if (canvas) {
+        this.toast(userStopped || result.ok ? 'Sketch saved.' : 'Recording was interrupted, but the take was saved.');
       } else {
         this.toast(
           userStopped || result.ok ? 'Sketch saved.' : 'Recording was interrupted, but the take was saved.',
@@ -887,8 +1073,9 @@ export class AppState {
     this.queue.setPaused(false);
     this.countInAbort?.abort();
     this.countInAbort = null;
-    const target = this.takeTarget;
+    const target = this.target;
     this.takeTarget = null;
+    this.canvasTarget = null;
     if (this.settings.countIn) this.metronome.close();
     target?.onEnd?.(saved);
   }

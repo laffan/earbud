@@ -155,6 +155,61 @@ pub struct Sketch {
     pub beat_ms: Option<i64>,
     /// Where the tempo came from: `detected`, `count-in` or `user`.
     pub tempo_source: Option<String>,
+    /// The notebook whose canvas the sketch is on (None: not on any canvas).
+    pub notebook_id: Option<String>,
+    /// Where the recording's time 0 lies on the notebook's timeline (milliseconds).
+    pub canvas_x_ms: i64,
+    /// How far down the notebook's canvas the sketch sits (canvas pixels).
+    pub canvas_y: f64,
+    /// `audio` (a recording) or `rhythm` (a step pattern, no media).
+    pub kind: String,
+    /// The step pattern of a rhythm sketch (opaque to the library).
+    pub rhythm: Option<serde_json::Value>,
+}
+
+/// A notebook: a canvas of sketches placed on one timeline.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Notebook {
+    pub id: String,
+    pub title: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    /// Where repeat loops (milliseconds of the notebook's timeline); None = the sketches' extent.
+    pub loop_start_ms: Option<i64>,
+    pub loop_end_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaceSketchArgs {
+    pub id: String,
+    /// Move it to another notebook (None keeps the one it is on).
+    #[serde(default)]
+    pub notebook_id: Option<String>,
+    pub canvas_x_ms: i64,
+    pub canvas_y: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateRhythmArgs {
+    pub notebook_id: String,
+    pub canvas_x_ms: i64,
+    pub canvas_y: f64,
+    #[serde(default)]
+    pub title: Option<String>,
+    pub rhythm: serde_json::Value,
+    /// Length of the rhythm as it plays on the canvas (milliseconds).
+    pub duration_ms: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateRhythmArgs {
+    pub id: String,
+    pub rhythm: serde_json::Value,
+    pub duration_ms: i64,
 }
 
 /// One track of a sketch: a lane of takes, of which one plays.
@@ -213,7 +268,7 @@ pub struct SketchDetail {
     pub tracks: Vec<Track>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateSketchArgs {
     /// File extension of the media the capture backend will write, e.g. `mov`.
@@ -228,6 +283,14 @@ pub struct CreateSketchArgs {
     /// With `parent_id`: the track the take is for; None starts a new track.
     #[serde(default)]
     pub track_id: Option<String>,
+    /// A new sketch (no `parent_id`): the notebook whose canvas it goes on,
+    /// and where (see [`Sketch::canvas_x_ms`], [`Sketch::canvas_y`]).
+    #[serde(default)]
+    pub notebook_id: Option<String>,
+    #[serde(default)]
+    pub canvas_x_ms: Option<i64>,
+    #[serde(default)]
+    pub canvas_y: Option<f64>,
 }
 
 /// A finished recording made elsewhere (the Apple Watch companion) that is
@@ -257,7 +320,7 @@ pub struct CreatedSketch {
     pub track_id: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FinalizeSketchArgs {
     pub id: String,
@@ -271,6 +334,9 @@ pub struct FinalizeSketchArgs {
     /// Where the count-in ended in the recording (milliseconds).
     #[serde(default)]
     pub count_in_ms: Option<i64>,
+    /// Where the recording's time 0 lies on its notebook's timeline (milliseconds).
+    #[serde(default)]
+    pub canvas_x_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

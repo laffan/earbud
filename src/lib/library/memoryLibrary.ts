@@ -8,12 +8,15 @@
 import type { SketchSummary } from '../music/summary';
 import type { PianoNote } from '../transcription/types';
 import type {
+  CreateRhythmArgs,
   CreateSketchArgs,
   CreatedSketch,
   ExportBundle,
   ExportKind,
   FileKind,
   FinalizeSketchArgs,
+  Notebook,
+  PlaceSketchArgs,
   RecoveryReport,
   SaveEditsArgs,
   SaveTranscriptionArgs,
@@ -24,6 +27,7 @@ import type {
   Track,
   Transcription,
   TranscriptionStatus,
+  UpdateRhythmArgs,
   UpdateSketchArgs,
   UpdateTrackArgs,
 } from './types';
@@ -44,6 +48,7 @@ export class MemoryLibrary implements SketchLibrary {
   readonly persistent = false;
   private entries = new Map<string, Entry>();
   private tracks = new Map<string, TrackRow>();
+  private notebooks = new Map<string, Notebook>();
 
   private entry(id: string): Entry {
     const entry = this.entries.get(id);
@@ -108,6 +113,8 @@ export class MemoryLibrary implements SketchLibrary {
       trackId = newId();
       newTrack = { id: trackId, sketchId: id, position: 0, name: 'Track 1', takeId: id, muted: false, solo: false, collapsed: false, createdAt: now };
     }
+    const notebookId = args.parentId ? null : (args.notebookId ?? null);
+    if (notebookId) this.notebook(notebookId);
     const dir = `memory://${id}`;
     const mediaPath = `${dir}/recording.${args.mediaExtension}`;
     this.entries.set(id, {
@@ -140,6 +147,11 @@ export class MemoryLibrary implements SketchLibrary {
         tempoBpm: null,
         beatMs: null,
         tempoSource: null,
+        notebookId,
+        canvasXMs: Math.round(args.canvasXMs ?? 0),
+        canvasY: validY(args.canvasY ?? 0),
+        kind: 'audio',
+        rhythm: null,
       },
       transcription: null,
       chunks: [],
@@ -166,6 +178,7 @@ export class MemoryLibrary implements SketchLibrary {
       updatedAt: Date.now(),
       offsetMs: args.offsetMs ?? entry.sketch.offsetMs,
       countInMs: args.countInMs ?? entry.sketch.countInMs,
+      canvasXMs: args.canvasXMs ?? entry.sketch.canvasXMs,
     } satisfies Partial<Sketch>);
     const track = entry.sketch.trackId ? this.tracks.get(entry.sketch.trackId) : undefined;
     if (track) track.takeId = args.id;
@@ -360,6 +373,128 @@ export class MemoryLibrary implements SketchLibrary {
   async copyOut(): Promise<void> {
     throw new Error('copyOut is not available in the browser');
   }
+
+  // ------------------------------------------------------------ notebooks
+
+  private notebook(id: string): Notebook {
+    const notebook = this.notebooks.get(id);
+    if (!notebook) throw new Error(`notebook not found: ${id}`);
+    return notebook;
+  }
+
+  async listNotebooks(): Promise<Notebook[]> {
+    return [...this.notebooks.values()].sort((a, b) => a.createdAt - b.createdAt).map((n) => ({ ...n }));
+  }
+
+  async createNotebook(title: string): Promise<Notebook> {
+    // Strictly increasing, so the order of creation is kept within one millisecond.
+    const last = Math.max(0, ...[...this.notebooks.values()].map((n) => n.createdAt));
+    const now = Math.max(Date.now(), last + 1);
+    const notebook: Notebook = { id: newId(), title: title.trim().slice(0, 120), createdAt: now, updatedAt: now, loopStartMs: null, loopEndMs: null };
+    this.notebooks.set(notebook.id, notebook);
+    return { ...notebook };
+  }
+
+  async renameNotebook(id: string, title: string): Promise<Notebook> {
+    const notebook = this.notebook(id);
+    notebook.title = title.trim().slice(0, 120);
+    notebook.updatedAt = Date.now();
+    return { ...notebook };
+  }
+
+  async setNotebookLoop(id: string, startMs: number | null, endMs: number | null): Promise<Notebook> {
+    const notebook = this.notebook(id);
+    if (startMs !== null && endMs !== null) {
+      if (startMs < 0 || endMs - startMs < 250) throw new Error('the loop range is too short');
+      notebook.loopStartMs = Math.round(startMs);
+      notebook.loopEndMs = Math.round(endMs);
+    } else {
+      notebook.loopStartMs = null;
+      notebook.loopEndMs = null;
+    }
+    notebook.updatedAt = Date.now();
+    return { ...notebook };
+  }
+
+  async removeNotebook(id: string): Promise<void> {
+    this.notebook(id);
+    for (const e of [...this.entries.values()]) {
+      if (e.sketch.notebookId === id && e.sketch.parentId === null) await this.remove(e.sketch.id);
+    }
+    this.notebooks.delete(id);
+  }
+
+  async placeSketch(args: PlaceSketchArgs): Promise<Sketch> {
+    const entry = this.entry(args.id);
+    if (entry.sketch.parentId !== null) throw new Error(`sketch not found: ${args.id}`);
+    if (args.notebookId) this.notebook(args.notebookId);
+    entry.sketch.notebookId = args.notebookId ?? entry.sketch.notebookId;
+    entry.sketch.canvasXMs = Math.round(args.canvasXMs);
+    entry.sketch.canvasY = validY(args.canvasY);
+    entry.sketch.updatedAt = Date.now();
+    return this.snapshot(entry);
+  }
+
+  async createRhythm(args: CreateRhythmArgs): Promise<Sketch> {
+    this.notebook(args.notebookId);
+    const id = newId();
+    const now = Date.now();
+    this.entries.set(id, {
+      sketch: {
+        id,
+        title: (args.title ?? '').trim(),
+        createdAt: now,
+        updatedAt: now,
+        status: 'saved',
+        durationMs: Math.round(args.durationMs),
+        mediaPath: null,
+        mediaMime: null,
+        hasVideo: false,
+        videoWidth: null,
+        videoHeight: null,
+        analysisPath: null,
+        textNotes: '',
+        transcriptionStatus: 'done',
+        transcriptionError: null,
+        captureBackend: 'rhythm-pads',
+        recovered: false,
+        summary: null,
+        hasEdits: false,
+        cropStartMs: null,
+        cropEndMs: null,
+        parentId: null,
+        trackId: null,
+        offsetMs: 0,
+        countInMs: null,
+        tempoBpm: null,
+        beatMs: null,
+        tempoSource: null,
+        notebookId: args.notebookId,
+        canvasXMs: Math.round(args.canvasXMs),
+        canvasY: validY(args.canvasY),
+        kind: 'rhythm',
+        rhythm: clone(args.rhythm),
+      },
+      transcription: null,
+      chunks: [],
+      files: new Map(),
+    });
+    return this.snapshot(this.entry(id));
+  }
+
+  async updateRhythm(args: UpdateRhythmArgs): Promise<Sketch> {
+    const entry = this.entry(args.id);
+    if (entry.sketch.kind !== 'rhythm') throw new Error(`rhythm sketch not found: ${args.id}`);
+    entry.sketch.rhythm = clone(args.rhythm);
+    entry.sketch.durationMs = Math.round(args.durationMs);
+    entry.sketch.updatedAt = Date.now();
+    return this.snapshot(entry);
+  }
+}
+
+function validY(y: number): number {
+  if (!Number.isFinite(y) || y < 0 || y > 1_000_000) throw new Error(`canvas position ${y} is out of range`);
+  return y;
 }
 
 function validate(notes: PianoNote[]) {

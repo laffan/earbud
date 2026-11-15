@@ -16,6 +16,8 @@ export interface StartedSource {
   buffer: unknown;
   when: number;
   offset: number;
+  /** How long it plays from `offset` (seconds; null = to its end). */
+  duration: number | null;
   stoppedAt: number | null;
 }
 
@@ -100,14 +102,15 @@ export class FakeAudioContext {
   }
   createBufferSource() {
     const ctx = this;
-    const record: StartedSource = { buffer: null, when: -1, offset: 0, stoppedAt: null };
+    const record: StartedSource = { buffer: null, when: -1, offset: 0, duration: null, stoppedAt: null };
     return Object.assign(new FakeNode(), {
       buffer: null as unknown,
       onended: null as (() => void) | null,
-      start(this: { buffer: unknown }, when = 0, offset = 0) {
+      start(this: { buffer: unknown }, when = 0, offset = 0, duration?: number) {
         record.buffer = this.buffer;
         record.when = when;
         record.offset = offset;
+        record.duration = duration ?? null;
         ctx.sources.push(record);
       },
       stop(when = 0) {

@@ -1,11 +1,14 @@
 /**
- * Browser-preview demo data (`npm run dev`, open `/?demo`): an audio sketch
- * with a 40-second, many-chord progression, rendered with the built-in
- * synth, plus its "transcription". Used to work on the UI without recording.
- * Never used inside the Tauri app.
+ * Browser-preview demo data (`npm run dev`, open `/?demo`): a notebook with
+ * piano sketches (a 40-second, many-chord progression and parts that go with
+ * it, rendered with the built-in synth, with their "transcriptions") and a
+ * rhythm. Used to work on the UI without recording. Never used inside the
+ * Tauri app.
  */
 import { ANALYSIS_SAMPLE_RATE } from '../audio/analysisAudio';
 import type { SketchLibrary } from '../library/types';
+import { notesEndTime } from '../music/notes';
+import { emptyPattern, playSeconds } from '../music/rhythm';
 import { summarize } from '../music/summary';
 import { renderNotesToWav } from '../music/synth';
 import type { PianoNote } from '../transcription/types';
@@ -69,84 +72,53 @@ export function demoThirdPart(): PianoNote[] {
   return notes;
 }
 
-/** A fourth part: the bass an octave down on beats one and three. */
-export function demoFourthPart(): PianoNote[] {
-  const notes: PianoNote[] = [];
-  PROGRESSION.forEach(([bass], i) => {
-    const t = 0.4 + i * 2.5;
-    notes.push({ pitch: bass - 12, startTime: t, endTime: t + 1.1, velocity: 80, confidence: 0.9 });
-    notes.push({ pitch: bass - 5, startTime: t + 1.25, endTime: t + 2.3, velocity: 72, confidence: 0.85 });
+/**
+ * `?demo`: a notebook with three piano sketches and a rhythm. The 16-bar
+ * piece (a bar every 2.5 s, so 96 BPM) sits over a rhythm stretched to
+ * the same length; its bass and tenor line is a separate sketch further
+ * down, starting four bars in; the treble arpeggio comes later on, past the
+ * first screen, to show the canvas going on.
+ */
+export async function seedDemoNotebook(library: SketchLibrary): Promise<void> {
+  const notebook = await library.createNotebook('Demo notebook');
+  const place = (x: number, y: number) => ({ notebookId: notebook.id, canvasXMs: Math.round(x * 1000), canvasY: y });
+  // The piece's first chord is 0.4 s into its recording: it lands at 2 s.
+  await addDemoSketch(library, 'Sixteen bars', demoNotes(), place(1.6, 40));
+  const fourBars = 4 * 2.5;
+  const laterPart = demoSecondPart()
+    .filter((n) => n.startTime >= fourBars)
+    .map((n) => ({ ...n, startTime: n.startTime - fourBars, endTime: n.endTime - fourBars }));
+  await addDemoSketch(library, 'Bass and tenor', laterPart, place(1.6 + fourBars, 330));
+  await addDemoSketch(library, 'Arpeggio', demoThirdPart().slice(0, 64), place(52, 120));
+  const beat = emptyPattern(96, 1);
+  for (const s of [0, 8]) beat.pads[0][s] = 1;
+  for (const s of [4, 12]) beat.pads[1][s] = 1;
+  for (let s = 0; s < 16; s += 2) beat.pads[2][s] = 1;
+  const rhythm = { ...beat, lengthBars: 16 };
+  await library.createRhythm({
+    ...place(2, 210),
+    title: 'Backbeat',
+    rhythm,
+    durationMs: Math.round(playSeconds(rhythm) * 1000),
   });
-  return notes;
 }
 
-/**
- * `?demo`: one sketch. `?demo=tracks`: the same sketch with a second track
- * (whose recording starts 1.5 s into the first). `?demo=tracks3` and
- * `?demo=tracks4` add a treble arpeggio (starting at 0) and a low bass line
- * (starting 0.25 s in).
- */
-export async function seedDemo(library: SketchLibrary, options: { tracks?: number } = {}): Promise<void> {
-  const notes = demoNotes();
-  const created = await library.create({
-    mediaExtension: 'wav',
-    mediaMime: 'audio/wav',
-    captureBackend: 'demo',
-    title: 'Demo: sixteen bars',
-  });
-  const take = await renderNotesToWav(notes, { sampleRate: 44100 });
-  await library.writeFile(created.id, 'media-chunk', take);
+/** A piano sketch whose recording is `notes` rendered by the synth, with them as its transcription. */
+async function addDemoSketch(
+  library: SketchLibrary,
+  title: string,
+  notes: PianoNote[],
+  place: { notebookId: string; canvasXMs: number; canvasY: number },
+) {
+  const created = await library.create({ mediaExtension: 'wav', mediaMime: 'audio/wav', captureBackend: 'demo', title, ...place });
+  await library.writeFile(created.id, 'media-chunk', await renderNotesToWav(notes, { sampleRate: 44100 }));
   await library.finalize({
     id: created.id,
-    durationMs: Math.round((0.4 + PROGRESSION.length * 2.5 + 1.5) * 1000),
+    durationMs: Math.round((notesEndTime(notes) + 1.5) * 1000),
     hasVideo: false,
     videoWidth: null,
     videoHeight: null,
   });
   await library.writeFile(created.id, 'analysis', await renderNotesToWav(notes, { sampleRate: ANALYSIS_SAMPLE_RATE }));
-  await library.saveTranscription({
-    id: created.id,
-    engine: 'demo',
-    engineVersion: '1',
-    params: {},
-    notes,
-    summary: summarize(notes),
-  });
-  const parts: [() => PianoNote[], number][] = [
-    [demoSecondPart, 1.5],
-    [demoThirdPart, 0],
-    [demoFourthPart, 0.25],
-  ];
-  for (const [make, offset] of parts.slice(0, Math.max(0, (options.tracks ?? 1) - 1))) {
-    await addDemoTrack(library, created.id, make(), offset);
-  }
-}
-
-/** A track "recorded later", whose recording starts `offset` seconds into the sketch. */
-async function addDemoTrack(library: SketchLibrary, parentId: string, notes: PianoNote[], offset: number) {
-  const part = notes.map((n) => ({ ...n, startTime: n.startTime - offset, endTime: n.endTime - offset }));
-  const take = await library.create({
-    mediaExtension: 'wav',
-    mediaMime: 'audio/wav',
-    captureBackend: 'demo',
-    parentId,
-  });
-  await library.writeFile(take.id, 'media-chunk', await renderNotesToWav(part, { sampleRate: 44100 }));
-  await library.finalize({
-    id: take.id,
-    durationMs: Math.round((part.reduce((t, n) => Math.max(t, n.endTime), 0) + 1.5) * 1000),
-    hasVideo: false,
-    videoWidth: null,
-    videoHeight: null,
-    offsetMs: offset * 1000,
-  });
-  await library.writeFile(take.id, 'analysis', await renderNotesToWav(part, { sampleRate: ANALYSIS_SAMPLE_RATE }));
-  await library.saveTranscription({
-    id: take.id,
-    engine: 'demo',
-    engineVersion: '1',
-    params: {},
-    notes: part,
-    summary: summarize(part),
-  });
+  await library.saveTranscription({ id: created.id, engine: 'demo', engineVersion: '1', params: {}, notes, summary: summarize(notes) });
 }

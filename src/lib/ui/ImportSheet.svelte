@@ -1,52 +1,36 @@
 <script lang="ts">
   /**
-   * Import a track: a MIDI file (its notes, played by the built-in piano)
-   * or an audio file (a recording, transcribed like a take), starting at
-   * the start of the sketch or at the playhead.
+   * Import a file as a new sketch where the canvas was pressed: an audio
+   * file (a recording, transcribed like a take) or a MIDI file (its notes,
+   * played by the built-in piano).
    */
   import { AUDIO_ACCEPT, MIDI_ACCEPT } from '../library/importTrack';
   import Icon from './Icon.svelte';
   import Sheet from './Sheet.svelte';
-  import { formatClock } from './format';
 
   interface Props {
-    /** Where the sketch's playing starts (after the first track's count-in), seconds. */
-    start: number;
-    playhead: number;
-    onimport: (kind: 'midi' | 'audio', file: File, offsetMs: number) => Promise<boolean>;
+    onimport: (kind: 'midi' | 'audio', file: File) => Promise<boolean>;
     onclose: () => void;
   }
 
-  let { start, playhead, onimport, onclose }: Props = $props();
+  let { onimport, onclose }: Props = $props();
 
-  let at = $state<'start' | 'playhead'>('start');
   let busy = $state<string | null>(null);
-  /** The playhead is somewhere other than the start, so it is a real choice. */
-  const offerPlayhead = $derived(Math.abs(playhead - start) > 0.05);
 
   async function picked(kind: 'midi' | 'audio', input: HTMLInputElement) {
     const file = input.files?.[0];
     input.value = '';
     if (!file || busy) return;
     busy = file.name;
-    const offset = at === 'playhead' && offerPlayhead ? playhead : start;
-    const ok = await onimport(kind, file, Math.round(offset * 1000));
+    const ok = await onimport(kind, file);
     busy = null;
     if (ok) onclose();
   }
 </script>
 
-<Sheet title="Import a track" onclose={() => !busy && onclose()}>
+<Sheet title="Import audio" onclose={() => !busy && onclose()}>
   <div class="import">
     <div class="choices">
-      <label class="choice" class:disabled={busy}>
-        <input type="file" accept={MIDI_ACCEPT} disabled={!!busy} onchange={(e) => picked('midi', e.currentTarget)} />
-        <span class="icon"><Icon name="import" /></span>
-        <span class="text">
-          <strong>MIDI file</strong>
-          <span>Its notes as they are, played by the built-in piano (.mid)</span>
-        </span>
-      </label>
       <label class="choice" class:disabled={busy}>
         <input type="file" accept={AUDIO_ACCEPT} disabled={!!busy} onchange={(e) => picked('audio', e.currentTarget)} />
         <span class="icon"><Icon name="mic" /></span>
@@ -55,24 +39,20 @@
           <span>A recording (or a video's sound), transcribed like a take</span>
         </span>
       </label>
+      <label class="choice" class:disabled={busy}>
+        <input type="file" accept={MIDI_ACCEPT} disabled={!!busy} onchange={(e) => picked('midi', e.currentTarget)} />
+        <span class="icon"><Icon name="import" /></span>
+        <span class="text">
+          <strong>MIDI file</strong>
+          <span>Its notes as they are, played by the built-in piano (.mid)</span>
+        </span>
+      </label>
     </div>
-
-    {#if offerPlayhead}
-      <div class="start">
-        <span>Starts</span>
-        <div class="segmented" role="group" aria-label="Where the track starts">
-          <button aria-pressed={at === 'start'} onclick={() => (at = 'start')} disabled={!!busy}>At the start</button>
-          <button aria-pressed={at === 'playhead'} onclick={() => (at = 'playhead')} disabled={!!busy}
-            >At the playhead ({formatClock(playhead)})</button
-          >
-        </div>
-      </div>
-    {/if}
 
     {#if busy}
       <p class="busy" aria-live="polite">Importing {busy}…</p>
     {:else}
-      <p class="help">The file is copied into the sketch; the original is not changed. Use a track's ⋯ → Line up to adjust where it sits.</p>
+      <p class="help">It goes where you pressed. The file is copied in; the original is not changed.</p>
     {/if}
   </div>
 </Sheet>
@@ -132,17 +112,8 @@
     font-size: 0.82rem;
     color: var(--ink-3);
   }
-  .start {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 8px 12px;
-    font-size: 0.9rem;
-  }
-  .start .segmented button {
-    padding: 0 10px;
-    font-size: 0.82rem;
-  }
+
+
   .help,
   .busy {
     margin: 0;

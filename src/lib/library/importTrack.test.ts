@@ -3,14 +3,11 @@ import { Midi } from '@tonejs/midi';
 import { describe, expect, it } from 'vitest';
 import { encodeWav16 } from '../audio/wav';
 import type { PianoNote } from '../transcription/types';
-import { fileStem, importAudioTrack, importMidiTrack, MIDI_IMPORT_ENGINE } from './importTrack';
+import { fileStem, importAudioSketch, importMidiSketch, MIDI_IMPORT_ENGINE } from './importTrack';
 import { MemoryLibrary } from './memoryLibrary';
 
-async function sketch(library: MemoryLibrary) {
-  const created = await library.create({ mediaExtension: 'wav', mediaMime: 'audio/wav', captureBackend: 'test' });
-  await library.writeFile(created.id, 'media-chunk', encodeWav16([new Float32Array(4410)], 44100));
-  await library.finalize({ id: created.id, durationMs: 100, hasVideo: false, videoWidth: null, videoHeight: null });
-  return created.id;
+async function notebook(library: MemoryLibrary) {
+  return (await library.createNotebook('Imports')).id;
 }
 
 /** A silent WAV as long as the notes (instead of the synth, which needs Web Audio). */
@@ -29,66 +26,66 @@ function midiFile(name: string): File {
   return new File([midi.toArray().slice()], name, { type: 'audio/midi' });
 }
 
-describe('importing a track', () => {
-  it('turns a MIDI file into a track with its notes, rendered audio and a waveform', async () => {
+describe('importing a sketch onto a canvas', () => {
+  it('turns a MIDI file into a sketch with its notes, rendered audio and a waveform', async () => {
     const library = new MemoryLibrary();
-    const id = await sketch(library);
-    const result = await importMidiTrack({ library, render }, id, midiFile('Bassline.mid'), 2000);
+    const notebookId = await notebook(library);
+    const result = await importMidiSketch({ library, render }, midiFile('Bassline.mid'), { notebookId, canvasXMs: 2000, canvasY: 80 });
     expect(result.transcribe).toBe(false);
-    expect(result.track.name).toBe('Bassline');
+    expect(result.sketch.title).toBe('Bassline');
 
-    const detail = await library.get(id);
-    expect(detail.tracks).toHaveLength(2);
-    const take = await library.get(detail.tracks[1].takeId);
-    expect(take.offsetMs).toBe(2000);
-    expect(take.status).toBe('saved');
-    expect(take.transcriptionStatus).toBe('done');
-    expect(take.transcription?.engine).toBe(MIDI_IMPORT_ENGINE);
+    const detail = await library.get(result.sketch.id);
+    expect(detail.notebookId).toBe(notebookId);
+    expect([detail.canvasXMs, detail.canvasY]).toEqual([2000, 80]);
+    expect(detail.status).toBe('saved');
+    expect(detail.transcriptionStatus).toBe('done');
+    expect(detail.transcription?.engine).toBe(MIDI_IMPORT_ENGINE);
     // The drum channel is left out; the rest is as written.
-    expect(take.transcription?.originalNotes.map((n) => [n.pitch, n.startTime, n.endTime])).toEqual([
+    expect(detail.transcription?.originalNotes.map((n) => [n.pitch, n.startTime, n.endTime])).toEqual([
       [36, 0.5, 1.5],
       [43, 1.5, 2],
     ]);
-    expect(take.analysisPath).not.toBeNull();
-    expect(take.durationMs).toBe(3500);
+    expect(detail.analysisPath).not.toBeNull();
+    expect(detail.durationMs).toBe(3500);
   });
 
-  it('copies an audio file in as a take to transcribe, named after the file', async () => {
+  it('copies an audio file in as a sketch to transcribe, named after the file', async () => {
     const library = new MemoryLibrary();
-    const id = await sketch(library);
+    const notebookId = await notebook(library);
     const wav = encodeWav16([new Float32Array(22050)], 22050);
     const file = new File([wav.slice()], 'Night take (2).wav', { type: 'audio/wav' });
     const probe = async () => ({ durationMs: 1000, hasVideo: false, width: null, height: null });
-    const result = await importAudioTrack({ library, probe }, id, file, 0);
+    const result = await importAudioSketch({ library, probe }, file, { notebookId, canvasXMs: 0, canvasY: 0 });
     expect(result.transcribe).toBe(true);
-    expect(result.track.name).toBe('Night take (2)');
-    expect(result.take.mediaMime).toBe('audio/wav');
-    expect(result.take.durationMs).toBe(1000);
-    expect(result.take.transcriptionStatus).toBe('pending');
-    expect(result.take.captureBackend).toBe('import');
-    const stored = await (await fetchBlob(result.take.mediaPath!)).arrayBuffer();
+    expect(result.sketch.title).toBe('Night take (2)');
+    expect(result.sketch.mediaMime).toBe('audio/wav');
+    expect(result.sketch.durationMs).toBe(1000);
+    expect(result.sketch.transcriptionStatus).toBe('pending');
+    expect(result.sketch.captureBackend).toBe('import');
+    expect(result.sketch.notebookId).toBe(notebookId);
+    const stored = await (await fetchBlob(result.sketch.mediaPath!)).arrayBuffer();
     expect(new Uint8Array(stored)).toEqual(wav);
   });
 
   it('leaves nothing behind when a file cannot be imported', async () => {
     const library = new MemoryLibrary();
-    const id = await sketch(library);
+    const notebookId = await notebook(library);
+    const place = { notebookId, canvasXMs: 0, canvasY: 0 };
     const junk = new File([new Uint8Array([1, 2, 3, 4])], 'notes.mid');
-    await expect(importMidiTrack({ library, render }, id, junk, 0)).rejects.toThrow(/not a MIDI file/);
+    await expect(importMidiSketch({ library, render }, junk, place)).rejects.toThrow(/not a MIDI file/);
     const empty = new File([], 'silence.wav', { type: 'audio/wav' });
     const probe = async () => ({ durationMs: null, hasVideo: false, width: null, height: null });
-    await expect(importAudioTrack({ library, probe }, id, empty, 0)).rejects.toThrow(/empty/);
+    await expect(importAudioSketch({ library, probe }, empty, place)).rejects.toThrow(/empty/);
     let calls = 0;
     const failing = async (notes: PianoNote[], rate: number) => {
       if (++calls === 2) throw new Error('no audio');
       return render(notes, rate);
     };
-    await expect(importMidiTrack({ library, render: failing }, id, midiFile('x.mid'), 0)).rejects.toThrow('no audio');
-    expect((await library.get(id)).tracks).toHaveLength(1);
-    expect((await library.list()).filter((s) => s.parentId === id)).toHaveLength(0);
+    await expect(importMidiSketch({ library, render: failing }, midiFile('x.mid'), place)).rejects.toThrow('no audio');
+    expect(await library.list()).toHaveLength(0);
   });
 
-  it('names tracks after their files', () => {
+  it('names sketches after their files', () => {
     expect(fileStem('/Users/me/Music/Waltz in A.final.m4a')).toBe('Waltz in A.final');
     expect(fileStem('.hidden')).toBe('.hidden');
     expect(fileStem('  .mid')).toBe('Imported');

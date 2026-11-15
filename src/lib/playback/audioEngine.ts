@@ -33,6 +33,9 @@ export interface EngineTrack {
   offset: number;
   /** Its recording is heard (mute, solo, listen mode). */
   audible: boolean;
+  /** Only this part of the recording plays (seconds of its own time; default: all of it). */
+  start?: number;
+  end?: number;
 }
 
 /** Timeline position `position` sounds at audio-clock time `time`; the timeline moves `rate` s per second. */
@@ -114,6 +117,8 @@ export class AudioEngine {
   private rangeStart = 0;
   private rangeEnd: number | null = null;
   private loop = false;
+  /** Where a loop's next pass starts (null: the range start). */
+  private loopFrom: number | null = null;
   private duration = 0;
   private stretched = new Map<AudioBuffer, Stretched>();
   private frame = 0;
@@ -234,7 +239,14 @@ export class AudioEngine {
       // A track whose sound or place changed restarts on its own; the others play on.
       for (const track of tracks) {
         const before = previous.get(track.id);
-        if (before && before.buffer === track.buffer && before.offset === track.offset) continue;
+        if (
+          before &&
+          before.buffer === track.buffer &&
+          before.offset === track.offset &&
+          before.start === track.start &&
+          before.end === track.end
+        )
+          continue;
         this.restartTrack(track);
       }
     } else if (this.wantPlaying) {
@@ -258,9 +270,14 @@ export class AudioEngine {
     else if (this.mapping) this.updateUntil();
   }
 
-  setLoop(loop: boolean) {
-    if (loop === this.loop) return;
+  /**
+   * Loop at the end of the range. Each next pass starts at `from` (default
+   * the range start), so playing from before it runs into the loop.
+   */
+  setLoop(loop: boolean, from: number | null = null) {
+    if (loop === this.loop && from === this.loopFrom) return;
     this.loop = loop;
+    this.loopFrom = from;
     // A pass already scheduled to stop (or to loop) is replanned.
     if (this.mapping && this.endScheduled) this.restartAll(this.scheduledPosition());
   }
@@ -431,20 +448,32 @@ export class AudioEngine {
     // Never schedule in the past: start no earlier than just ahead of the clock.
     const at = Math.max(mapping.time, ctx.currentTime + 0.01);
     const local = mapping.position + (at - mapping.time) * rate - track.offset;
-    if (local >= length - 1e-3) return;
-    if (mapping.until !== null && track.offset >= mapping.until) return;
-    const when = local < 0 ? at - local / rate : at;
-    const offset = Math.max(0, local) / rate;
+    // The part of the recording that plays (track seconds).
+    const from = Math.max(0, track.start ?? 0);
+    const to = Math.min(length, track.end ?? Infinity);
+    if (local >= to - 1e-3 || to - from < 1e-3) return;
+    if (mapping.until !== null && track.offset + from >= mapping.until) return;
+    const begin = Math.max(local, from);
+    const when = at + (begin - local) / rate;
+    const offset = begin / rate;
     const source = ctx.createBufferSource();
     source.buffer = buffer;
     const fade = ctx.createGain();
     if (offset > 0) {
-      // Starting inside the recording (a seek, a loop): fade in so it does not click.
+      // Starting inside the recording (a seek, a loop, a trimmed start): fade in so it does not click.
       fade.gain.setValueAtTime(0, when);
       fade.gain.linearRampToValueAtTime(1, when + FADE);
     }
     source.connect(fade).connect(gain);
-    source.start(when, offset);
+    if (to < length) {
+      // A trimmed end: stop there, faded.
+      const stop = when + (to - begin) / rate;
+      fade.gain.setValueAtTime(1, Math.max(when + FADE, stop - FADE));
+      fade.gain.linearRampToValueAtTime(0, stop);
+      source.start(when, offset, (to - begin) / rate);
+    } else {
+      source.start(when, offset);
+    }
     const voice: Voice = { trackId: track.id, source, fade };
     source.onended = () => {
       this.voices = this.voices.filter((v) => v !== voice);
@@ -564,11 +593,12 @@ export class AudioEngine {
       const endTime = current.time + (end - current.position) / current.rate;
       if (now >= endTime - AHEAD) {
         this.endScheduled = true;
-        const looping = this.loop && end - this.rangeStart >= MIN_LOOP;
+        const loopStart = Math.max(this.rangeStart, this.loopFrom ?? this.rangeStart);
+        const looping = this.loop && end - loopStart >= MIN_LOOP;
         this.stopVoices(() => true, endTime);
         if (looping) {
           // The next pass starts exactly where this one ends.
-          const next: ClockMapping = { position: this.rangeStart, time: Math.max(endTime, now + 0.01), rate: current.rate, until: end };
+          const next: ClockMapping = { position: loopStart, time: Math.max(endTime, now + 0.01), rate: current.rate, until: end };
           for (const track of this.tracks) this.startVoice(track, next);
           this.nextPass = next;
           this.options.onCue?.(next);

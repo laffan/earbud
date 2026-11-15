@@ -1,8 +1,9 @@
 /**
  * Browser end-to-end smoke test of the full sketch workflow, using Chromium's
  * fake camera and a WAV file as the fake microphone:
- *   record → save → transcribe (Basic Pitch) → review → rename → notes →
- *   select/transpose/delete/undo a note → autosave.
+ *   hold the notebook's canvas → Record audio → save (a tile where it was
+ *   held) → transcribe (Basic Pitch) → open (double-tap) → review → rename →
+ *   notes → select/transpose/delete/undo a note → autosave.
  *
  * Runs against the Vite dev server (the in-memory library is used outside
  * Tauri). Requires Playwright with Chromium installed.
@@ -75,35 +76,40 @@ async function findNote(page) {
 
   await page.goto(URL);
   await page.waitForSelector('text=An empty page.');
-  await shot(page, '01-home-empty');
+  await shot(page, '01-notebook-empty');
 
-  // Capture.
-  await page.click('button[aria-label="Record a new sketch"]');
+  // Capture: hold the canvas, then Record audio.
+  const canvas = await page.$eval('.canvas', (e) => e.getBoundingClientRect().toJSON());
+  const held = { x: canvas.x + 60, y: canvas.y + 160 };
+  await page.mouse.move(held.x, held.y);
+  await page.mouse.down();
+  await page.waitForTimeout(650);
+  await page.mouse.up();
+  await page.click('[role=menuitem]:has-text("Record audio")');
   await page.waitForSelector('button[aria-label="Stop and save"]:not([disabled])', { timeout: 15000 });
   await page.waitForTimeout(7600);
   await shot(page, '02-recording');
   await page.click('button[aria-label="Stop and save"]');
-  await page.waitForSelector('.card', { timeout: 15000 });
+  await page.waitForSelector('[data-tile]', { timeout: 15000 });
+  const tile = await page.$eval('[data-tile]', (e) => e.getBoundingClientRect().toJSON());
+  console.log(`tile at ${Math.round(tile.x)}, ${Math.round(tile.y)} (held at ${held.x}, ${held.y})`);
+  if (Math.abs(tile.x - held.x) > 6) fail('the sketch is not where the canvas was held');
 
   // Transcription runs in the background.
   const started = Date.now();
-  await page.waitForFunction(
-    () => {
-      const card = document.querySelector('.card');
-      return card && (card.querySelector('.chords') || /failed/i.test(card.textContent));
-    },
-    null,
-    { timeout: 240000 },
-  );
-  const card = await text(page, '.card');
-  console.log(`transcribed in ${((Date.now() - started) / 1000).toFixed(1)} s: ${card}`);
-  if (!card.includes('C – Am – F – G7')) fail(`unexpected chords: ${card}`);
-  await shot(page, '03-home-transcribed');
+  await page.waitForFunction(() => !/transcribing/.test(document.querySelector('[data-tile]')?.textContent ?? 'transcribing'), null, {
+    timeout: 240000,
+  });
+  console.log(`transcribed in ${((Date.now() - started) / 1000).toFixed(1)} s`);
+  await shot(page, '03-notebook-transcribed');
 
-  // Review.
-  await page.click('.card');
+  // Review: double-tap the sketch.
+  await page.mouse.dblclick(tile.x + 30, tile.y + 30);
   await page.waitForSelector('.roll canvas');
   await page.waitForTimeout(800);
+  const progression = await page.$$eval('.progression .symbol', (els) => els.map((e) => e.textContent.trim()).join(' – '));
+  console.log(`progression: ${progression}`);
+  if (!progression.startsWith('C – Am – F – G7')) fail(`unexpected chords: ${progression}`);
   // Phone layout: nothing wider than the screen; the video fits the width.
   const layout = await page.evaluate(() => ({
     page: document.documentElement.scrollWidth,
@@ -114,7 +120,7 @@ async function findNote(page) {
   console.log(`layout: ${JSON.stringify(layout)}`);
   if (layout.page > layout.viewport) fail(`page scrolls sideways (${layout.page} > ${layout.viewport})`);
   if (layout.video === 0 || layout.video > layout.viewport) fail(`video does not fit the width (${layout.video})`);
-  if (!layout.order.startsWith('Tracks > Recording')) fail(`unexpected order ${layout.order}`);
+  if (!layout.order.startsWith('Piano roll > Recording')) fail(`unexpected order ${layout.order}`);
   // The transport stays at the bottom of the screen.
   const bar = await page.$eval('.transport-bar', (e) => e.getBoundingClientRect().bottom);
   if (Math.abs(bar - 844) > 1) fail(`transport is not at the bottom (${bar})`);
@@ -150,16 +156,23 @@ async function findNote(page) {
   await shot(page, '05-editing');
   await page.click('button[aria-label="Done editing notes"]');
 
-  await page.click('button[aria-label="Back to sketches"]');
+  await page.click('button[aria-label="Back to the notebook"]');
+  await page.waitForSelector('[data-tile]');
   await page.waitForTimeout(500);
-  const after = await text(page, '.card');
-  console.log(`card after editing: ${after}`);
-  if (!after.includes('Morning chords') || !after.includes('Edited')) fail('edits were not reflected in the library');
-  await shot(page, '06-home-after');
+  const after = await page.getAttribute('[data-tile]', 'aria-label');
+  console.log(`tile after editing: ${after}`);
+  if (after !== 'Morning chords') fail('the new title was not reflected on the canvas');
+  await shot(page, '06-notebook-after');
 
   await page.setViewportSize({ width: 1280, height: 800 });
-  await page.click('.card');
+  await page.waitForTimeout(300);
+  await shot(page, '07-desktop-notebook');
+  const wide = await page.$eval('[data-tile]', (e) => e.getBoundingClientRect().toJSON());
+  await page.mouse.dblclick(wide.x + 30, wide.y + 30);
+  await page.waitForSelector('.roll canvas');
   await page.waitForTimeout(1000);
+  const edited = await text(page, '.details');
+  if (!/edited/.test(edited)) fail(`the edit was not kept: ${edited}`);
   await shot(page, '07-desktop');
 
   await browser.close();

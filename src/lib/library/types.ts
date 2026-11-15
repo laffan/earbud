@@ -1,4 +1,5 @@
 /** TypeScript mirror of `src-tauri/src/library/models.rs`. */
+import type { RhythmPattern } from '../music/rhythm';
 import type { SketchSummary } from '../music/summary';
 import type { PianoNote } from '../transcription/types';
 
@@ -47,6 +48,53 @@ export interface Sketch {
   /** Where one of its beats falls on the sketch's timeline (ms). */
   beatMs: number | null;
   tempoSource: TempoSource | null;
+  /** The notebook whose canvas the sketch is on (null: not on any canvas). */
+  notebookId: string | null;
+  /** Where the recording's time 0 lies on the notebook's timeline (ms). */
+  canvasXMs: number;
+  /** How far down the canvas the sketch sits (canvas pixels). */
+  canvasY: number;
+  /** A recording, or a rhythm (a step pattern played by the drum pads; no media). */
+  kind: SketchKind;
+  /** The pattern of a rhythm sketch. */
+  rhythm: RhythmPattern | null;
+}
+
+export type SketchKind = 'audio' | 'rhythm';
+
+/** A notebook: a canvas of sketches placed on one timeline. */
+export interface Notebook {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  /** Where repeat loops on the timeline (ms); null = from the first sketch to the end of the last. */
+  loopStartMs: number | null;
+  loopEndMs: number | null;
+}
+
+export interface PlaceSketchArgs {
+  id: string;
+  /** Move it to another notebook (omitted: stays on its own). */
+  notebookId?: string;
+  canvasXMs: number;
+  canvasY: number;
+}
+
+export interface CreateRhythmArgs {
+  notebookId: string;
+  canvasXMs: number;
+  canvasY: number;
+  title?: string;
+  rhythm: RhythmPattern;
+  /** How long it plays on the canvas (ms). */
+  durationMs: number;
+}
+
+export interface UpdateRhythmArgs {
+  id: string;
+  rhythm: RhythmPattern;
+  durationMs: number;
 }
 
 /** Where a sketch's tempo came from. */
@@ -105,6 +153,10 @@ export interface CreateSketchArgs {
   parentId?: string;
   /** With `parentId`: the track the take is for; omitted starts a new track. */
   trackId?: string;
+  /** A new sketch: the notebook it goes on, and where (see `Sketch.canvasXMs`, `Sketch.canvasY`). */
+  notebookId?: string;
+  canvasXMs?: number;
+  canvasY?: number;
 }
 
 export interface CreatedSketch {
@@ -126,6 +178,8 @@ export interface FinalizeSketchArgs {
   offsetMs?: number;
   /** Where the count-in ended in the recording (ms). */
   countInMs?: number | null;
+  /** Where the recording's time 0 lies on its notebook's timeline (ms). */
+  canvasXMs?: number;
 }
 
 export interface UpdateSketchArgs {
@@ -197,6 +251,19 @@ export interface SketchLibrary {
   /** Friendly-named copies (hard links) of the requested files, for sharing. */
   prepareExport(id: string, baseName: string, kinds: ExportKind[]): Promise<ExportBundle>;
   copyOut(src: string, dest: string): Promise<void>;
+
+  /** Every notebook, oldest first. */
+  listNotebooks(): Promise<Notebook[]>;
+  createNotebook(title: string): Promise<Notebook>;
+  renameNotebook(id: string, title: string): Promise<Notebook>;
+  /** Set (or clear, with nulls) where repeat loops. */
+  setNotebookLoop(id: string, startMs: number | null, endMs: number | null): Promise<Notebook>;
+  /** Delete a notebook and every sketch on it. */
+  removeNotebook(id: string): Promise<void>;
+  /** Move a sketch on its canvas (or onto another notebook). */
+  placeSketch(args: PlaceSketchArgs): Promise<Sketch>;
+  createRhythm(args: CreateRhythmArgs): Promise<Sketch>;
+  updateRhythm(args: UpdateRhythmArgs): Promise<Sketch>;
 }
 
 /** Where the derived analysis WAV for a recording lives. */

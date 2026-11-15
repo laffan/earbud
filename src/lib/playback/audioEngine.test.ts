@@ -69,6 +69,28 @@ describe('AudioEngine', () => {
     expect(sb.when - sa.when).toBeCloseTo(0.5, 6);
   });
 
+  it('plays only the trimmed part of a track, where it lies on the timeline', () => {
+    const { ctx, engine, run } = harness();
+    // Recording time 0 at 2 s on the timeline; only its seconds 1–4 play (timeline 3–6 s).
+    engine.setTracks([track('a', a, 2, { start: 1, end: 4 })]);
+    engine.setDuration(12);
+    engine.play();
+    const first = ctx.sources[0];
+    expect(first.offset).toBeCloseTo(1, 6);
+    expect(first.duration).toBeCloseTo(3, 6);
+    expect(first.when - ctx.currentTime).toBeCloseTo(0.05 + 3, 6);
+    // From inside the part: starts at once, for what is left of it.
+    engine.seek(4.5);
+    const inside = ctx.sources[ctx.sources.length - 1];
+    expect(inside.offset).toBeCloseTo(2.5, 6);
+    expect(inside.duration).toBeCloseTo(1.5, 6);
+    // Past it: nothing plays.
+    const count = ctx.sources.length;
+    engine.seek(7);
+    run(0.1);
+    expect(ctx.sources.length).toBe(count);
+  });
+
   it('reports the position being heard, behind the clock by the output latency', () => {
     const { ctx, engine, run, last } = harness();
     ctx.baseLatency = 0.01;
@@ -180,6 +202,20 @@ describe('AudioEngine', () => {
     expect(last().position).toBeLessThanOrEqual(3);
     // Followers were told about each pass ahead of time.
     expect(cues.filter((c) => c && c.position === 2).length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('loops back to its own start, so playing from before it runs into the loop', () => {
+    const { engine, cues, run } = harness();
+    engine.setTracks([track('a', a)]);
+    engine.setDuration(10);
+    engine.setRange(0, 4);
+    engine.setLoop(true, 2);
+    engine.seek(1);
+    engine.play();
+    run(3.4);
+    const next = cues.filter((c) => c !== null).at(-1)!;
+    expect(next.position).toBeCloseTo(2, 6);
+    expect(next.until).toBeCloseTo(4, 6);
   });
 
   it('plays stretched copies for slowed playback, with the timeline at the slower speed', async () => {

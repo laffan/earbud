@@ -1,5 +1,5 @@
 /**
- * Note-editing regression check (browser preview with the ?demo sketch, phone
+ * Note-editing regression check (browser preview with the ?demo notebook's first sketch, phone
  * width): drag a rectangle to select several notes, transpose / move / delete
  * them together, undo, join notes of the same pitch, scroll by the time ruler.
  * Fails on any page error or error toast.
@@ -20,8 +20,11 @@ const OUT = process.env.SMOKE_OUT;
     if (m.type() === 'error') problems.push(m.text());
   });
   await page.goto(`${URL}?demo`);
-  await page.waitForSelector('.card', { timeout: 30000 });
-  await page.click('.front');
+  // Open the demo notebook's 16-bar sketch from the canvas.
+  const tile = page.locator('[data-tile][aria-label="Sixteen bars"]');
+  await tile.waitFor({ timeout: 30000 });
+  await page.waitForTimeout(800);
+  await tile.dblclick({ position: { x: 30, y: 40 } });
   await page.waitForSelector('.roll canvas');
   await page.waitForTimeout(800);
 
