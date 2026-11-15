@@ -52,7 +52,8 @@
   import { nearestBeat } from '../music/tempo';
   import { MAX_CANVAS_REPEATS } from '../library/types';
   import { AudioEngine, type EngineTrack } from '../playback/audioEngine';
-  import { loadTakeBuffer } from '../playback/takeBuffers';
+  import { loadCanvasSound } from '../playback/canvasAudio';
+  import type { PianoNote } from '../transcription/types';
   import { errorMessage } from '../platform/tauri';
   import { app } from '../state/app.svelte';
   import CanvasNote from './CanvasNote.svelte';
@@ -85,8 +86,10 @@
   /** Each sketch's sound: a recording decoded, or a rhythm rendered. */
   let buffers = $state.raw<Record<string, AudioBuffer>>({});
   /** Recordings being decoded or that failed (with the analysis audio tried); rhythms by the pattern rendered. */
-  let decoding = $state.raw<Record<string, { state: 'loading' | 'failed'; key: string | null }>>({});
+  let decoding = $state.raw<Record<string, { state: 'loading' | 'failed' | 'ready'; key: string }>>({});
   let peaks = $state.raw<Record<string, Float32Array>>({});
+  let previewNotes = $state.raw<Record<string, PianoNote[]>>({});
+  let lengths = $state.raw<Record<string, number>>({});
   let currentTime = $state(0);
   let playing = $state(false);
   let buffering = $state(false);
@@ -174,64 +177,59 @@
     return s.kind === 'rhythm' ? normalizePattern(s.rhythm) : null;
   }
 
-  // Each sketch's sound appears as it is needed; a rhythm is rendered again when its pattern changes.
+  // Revision changes include saved edits and active-take changes. A mode
+  // change invalidates the old sound immediately; late renders cannot put it back.
   $effect(() => {
-    const wanted = sketches.map((s) => ({ s, key: s.kind === 'rhythm' ? JSON.stringify(s.rhythm) : s.analysisPath }));
+    const wanted = sketches.map((s) => ({
+      s,
+      key: s.kind === 'rhythm' ? JSON.stringify(s.rhythm) :
+        JSON.stringify([s.listenMode, s.analysisPath, s.transcriptionStatus, s.updatedAt, app.revision[s.id] ?? 0]),
+    }));
     untrack(() => {
       const capture = app.exportDeps().capture;
       for (const { s, key } of wanted) {
-        const tried = decoding[s.id];
-        if (s.kind === 'rhythm') {
-          if (tried?.key === key) continue;
-          const pattern = patternOf(s);
-          if (!pattern) continue;
-          decoding = { ...decoding, [s.id]: { state: 'loading', key } };
-          renderRhythm(engine.context, pattern).then(
-            (buffer) => {
-              if (disposed || decoding[s.id]?.key !== key) return;
-              buffers = { ...buffers, [s.id]: buffer };
-            },
-            (error) => app.logCapture(`[canvas] could not render a rhythm: ${errorMessage(error)}`),
-          );
-          continue;
-        }
-        if (buffers[s.id] || tried?.state === 'loading' || (tried && tried.key === key) || !s.mediaPath) continue;
+        if (decoding[s.id]?.key === key) continue;
         const id = s.id;
         decoding = { ...decoding, [id]: { state: 'loading', key } };
-        loadTakeBuffer(
-          engine.context,
-          { mediaPath: s.mediaPath, analysisPath: s.analysisPath, hasVideo: s.hasVideo },
-          {
-            exportAudio: capture?.exportAudio ? (media, out) => capture.exportAudio!(media, out) : undefined,
-            log: (message) => app.logCapture(`[canvas] ${message}`),
-          },
-        ).then(
-          (buffer) => {
-            if (disposed) return;
-            buffers = { ...buffers, [id]: buffer };
-            peaks = { ...peaks, [id]: computePeaks(buffer.getChannelData(0), Math.max(1, Math.round(buffer.duration * PEAK_RATE))) };
-            const { [id]: _done, ...rest } = decoding;
-            decoding = rest;
+        const { [id]: _old, ...rest } = buffers;
+        buffers = rest;
+        previewNotes = { ...previewNotes, [id]: [] };
+        const pattern = patternOf(s);
+        const pending = pattern
+          ? renderRhythm(engine.context, pattern).then((buffer) => ({ buffer, recording: null, notes: [], duration: playSeconds(pattern) }))
+          : loadCanvasSound(engine.context, s, app.library, {
+              exportAudio: capture?.exportAudio ? (media, out) => capture.exportAudio!(media, out) : undefined,
+              log: (message) => app.logCapture(`[canvas] ${message}`),
+            });
+        pending.then(
+          (sound) => {
+            if (disposed || decoding[id]?.key !== key) return;
+            buffers = { ...buffers, [id]: sound.buffer };
+            lengths = { ...lengths, [id]: sound.duration };
+            previewNotes = { ...previewNotes, [id]: sound.notes };
+            if (sound.recording) {
+              peaks = { ...peaks, [id]: computePeaks(sound.recording.getChannelData(0), Math.max(1, Math.round(sound.recording.duration * PEAK_RATE))) };
+            }
+            decoding = { ...decoding, [id]: { state: 'ready', key } };
           },
           (error) => {
-            if (disposed) return;
-            app.logCapture(`[canvas] could not decode ${id}: ${errorMessage(error)}`);
+            if (disposed || decoding[id]?.key !== key) return;
+            app.logCapture(`[canvas] could not prepare ${id}: ${errorMessage(error)}`);
             decoding = { ...decoding, [id]: { state: 'failed', key } };
           },
         );
       }
-      // Let go of the sound of sketches no longer on this canvas.
       const keep = new Set(wanted.map((w) => w.s.id));
-      if (Object.keys(buffers).some((k) => !keep.has(k))) {
-        buffers = Object.fromEntries(Object.entries(buffers).filter(([k]) => keep.has(k)));
-        peaks = Object.fromEntries(Object.entries(peaks).filter(([k]) => keep.has(k)));
-        decoding = Object.fromEntries(Object.entries(decoding).filter(([k]) => keep.has(k)));
-      }
+      buffers = Object.fromEntries(Object.entries(buffers).filter(([id]) => keep.has(id)));
+      peaks = Object.fromEntries(Object.entries(peaks).filter(([id]) => keep.has(id)));
+      previewNotes = Object.fromEntries(Object.entries(previewNotes).filter(([id]) => keep.has(id)));
+      lengths = Object.fromEntries(Object.entries(lengths).filter(([id]) => keep.has(id)));
+      decoding = Object.fromEntries(Object.entries(decoding).filter(([id]) => keep.has(id)));
     });
   });
 
   const spans = $derived<Record<string, Span>>(
-    Object.fromEntries(items.map((s) => [s.id, sketchSpan(s, s.kind === 'audio' ? buffers[s.id]?.duration : undefined)])),
+    Object.fromEntries(items.map((s) => [s.id, sketchSpan(s, s.kind === 'audio' ? lengths[s.id] : undefined)])),
   );
   const itemsEnd = $derived(
     sketches.reduce((end, s) => Math.max(end, spans[s.id].end + (s.kind === 'rhythm' ? RHYTHM_TAIL : 0)), 0),
@@ -1142,7 +1140,7 @@
             ? span
             : pattern
               ? sketchSpan({ ...s, rhythm: stretched })
-              : sketchSpan({ ...s, canvasRepeats: stretching }, s.kind === 'audio' ? buffers[s.id]?.duration : undefined)}
+              : sketchSpan({ ...s, canvasRepeats: stretching }, s.kind === 'audio' ? lengths[s.id] : undefined)}
         {@const moving = dragging?.id === s.id ? dragging : null}
         <CanvasTile
           sketch={s}
@@ -1153,6 +1151,7 @@
           top={moving ? moving.y : s.canvasY}
           peaks={peaks[s.id] ?? null}
           peakRate={PEAK_RATE}
+          notes={previewNotes[s.id] ?? []}
           pattern={stretched}
           viewLeft={viewLeft}
           viewRight={viewLeft + cw}

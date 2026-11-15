@@ -119,6 +119,11 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE sketches ADD COLUMN canvas_w REAL;
     ALTER TABLE sketches ADD COLUMN canvas_h REAL;
     "#,
+    // v8: the playback source is a per-sketch preference, shared with the canvas.
+    r#"
+    ALTER TABLE sketches ADD COLUMN listen_mode TEXT NOT NULL DEFAULT 'recording'
+        CHECK (listen_mode IN ('recording', 'notes', 'both'));
+    "#,
 ];
 
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {

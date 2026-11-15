@@ -324,6 +324,15 @@ export async function renderNotesToWav(
   notes: PianoNote[],
   options: { sampleRate?: number; tail?: number; volume?: number } = {},
 ): Promise<Uint8Array> {
+  const buffer = await renderNotesBuffer(notes, options);
+  return encodeWav16([buffer.getChannelData(0)], buffer.sampleRate);
+}
+
+/** The same synth voice rendered for canvas playback, without a WAV round trip. */
+export async function renderNotesBuffer(
+  notes: PianoNote[],
+  options: { sampleRate?: number; tail?: number; volume?: number } = {},
+): Promise<AudioBuffer> {
   const sampleRate = options.sampleRate ?? 44100;
   const seconds = Math.max(0.5, notesEndTime(notes) + (options.tail ?? 1.5));
   const OfflineCtx: typeof OfflineAudioContext =
@@ -341,5 +350,5 @@ export async function renderNotesToWav(
     const result = ctx.startRendering() as Promise<AudioBuffer> | undefined;
     result?.then(resolve, reject);
   });
-  return encodeWav16([buffer.getChannelData(0)], sampleRate);
+  return buffer;
 }

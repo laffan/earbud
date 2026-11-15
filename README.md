@@ -164,7 +164,9 @@ vertically. Everything below works with a finger, a mouse or a trackpad.
   the range runs into it.
 - **A sketch** (double-tap) is the sketch view from before without tracks: piano roll, chord strip and waveform,
   the Chords section, the video, notes, tempo, crop, loop, *Take / Notes / Both*, note editing, transcribing again
-  and sharing. *Back* returns to the canvas.
+  and sharing. The *Take / Notes / Both* choice is saved per sketch across app launches and also controls its
+  canvas playback. *Notes* plays the current edited transcription and shows a miniature piano roll on the canvas;
+  *Take* and *Both* show the waveform. Crops and repeats apply to the selected sound. *Back* returns to the canvas.
 - **Apple Watch** recordings are placed at the end of the open notebook.
 
 On this branch Settings, transcription, chords, editing, tempo, export and the Watch link work as described
@@ -337,6 +339,10 @@ npm run smoke:edit       # drag-select, move, transpose, delete, join and undo n
 
 ```bash
 npm run smoke:notebook   # the canvas: sketches on one clock, gestures, the sketch menu, repeats, export, copy/paste, the rhythm view, text notes, notebooks
+```
+
+```bash
+npm run smoke:listen     # saved Take/Notes/Both choice, canvas audio and preview, cropped repeats (needs npm run dev)
 ```
 
 On this branch `smoke:browser` records from the canvas and opens the sketch with a double-tap, and `smoke:playback`

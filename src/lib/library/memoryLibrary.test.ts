@@ -19,6 +19,26 @@ async function recording(library: MemoryLibrary, notebookId: string) {
 }
 
 describe('MemoryLibrary on the canvas', () => {
+  it('remembers the playback mode per sketch, including on duplicates', async () => {
+    const library = new MemoryLibrary();
+    const notebook = await library.createNotebook('N');
+    const id = await recording(library, notebook.id);
+    const other = await recording(library, notebook.id);
+    expect((await library.get(id)).listenMode).toBe('recording');
+    await library.update({ id, listenMode: 'notes' });
+    await library.update({ id, title: 'New title' });
+    expect((await library.get(id)).listenMode).toBe('notes');
+    expect((await library.list()).find((s) => s.id === id)?.listenMode).toBe('notes');
+    expect((await library.get(other)).listenMode).toBe('recording');
+    await library.saveTranscription({ id, engine: 'test', engineVersion: '2', params: {}, notes: [], summary: null });
+    expect((await library.get(id)).listenMode).toBe('notes');
+    await library.update({ id, listenMode: 'both' });
+    const copy = await library.duplicate({ id, notebookId: notebook.id, canvasXMs: 4000, canvasY: 50 });
+    expect(copy.listenMode).toBe('both');
+    await expect(library.update({ id, listenMode: 'invalid' as 'notes' })).rejects.toThrow();
+    expect((await library.get(id)).listenMode).toBe('both');
+  });
+
   it('repeats a recording, within limits', async () => {
     const library = new MemoryLibrary();
     const notebook = await library.createNotebook('N');

@@ -552,6 +552,7 @@ impl Library {
             canvas_repeats: row.get("canvas_repeats")?,
             canvas_w: row.get("canvas_w")?,
             canvas_h: row.get("canvas_h")?,
+            listen_mode: row.get("listen_mode")?,
             id,
         })
     }
@@ -668,19 +669,26 @@ impl Library {
 
     pub fn update(&self, args: UpdateSketchArgs) -> Result<Sketch> {
         validate_id(&args.id)?;
+        if let Some(mode) = args.listen_mode.as_deref() {
+            if !matches!(mode, "recording" | "notes" | "both") {
+                return Err(Error::Invalid(format!("unknown listen mode '{mode}'")));
+            }
+        }
         let changed = self.conn().execute(
             "UPDATE sketches
                 SET title = COALESCE(?2, title),
                     text_notes = COALESCE(?3, text_notes),
                     duration_ms = COALESCE(?4, duration_ms),
-                    updated_at = ?5
+                    updated_at = ?5,
+                    listen_mode = COALESCE(?6, listen_mode)
               WHERE id = ?1",
             params![
                 args.id,
                 args.title.as_deref().map(str::trim),
                 args.text_notes,
                 args.duration_ms,
-                now_ms()
+                now_ms(),
+                args.listen_mode
             ],
         )?;
         if changed == 0 {
@@ -978,14 +986,14 @@ impl Library {
                                        transcription_status, transcription_error, capture_backend, recovered,
                                        crop_start_ms, crop_end_ms, parent_id, track_id, offset_ms, count_in_ms,
                                        tempo_bpm, beat_ms, tempo_source, notebook_id, canvas_x_ms, canvas_y,
-                                       kind, rhythm_json, canvas_repeats, canvas_w, canvas_h)
+                                       kind, rhythm_json, canvas_repeats, canvas_w, canvas_h, listen_mode)
                  SELECT ?2, title, created_at, ?3, status, duration_ms, media_file,
                         media_mime, has_video, video_width, video_height, text_notes,
                         CASE transcription_status WHEN 'running' THEN 'pending' ELSE transcription_status END,
                         transcription_error, capture_backend, 0,
                         crop_start_ms, crop_end_ms, NULL, ?4, offset_ms, count_in_ms,
                         tempo_bpm, beat_ms, tempo_source, ?5, ?6, ?7,
-                        kind, rhythm_json, canvas_repeats, canvas_w, canvas_h
+                        kind, rhythm_json, canvas_repeats, canvas_w, canvas_h, listen_mode
                    FROM sketches WHERE id = ?1",
                 params![args.id, id, now, new_track, args.notebook_id, x, y],
             )?;

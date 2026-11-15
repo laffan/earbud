@@ -9,8 +9,9 @@
    * `data-tile`, and the repeat grip on its right edge by `data-resize`).
    */
   import type { Sketch } from '../library/types';
+  import type { PianoNote } from '../transcription/types';
   import { barSeconds, patternSteps, rhythmHits, stepSeconds, type RhythmPattern } from '../music/rhythm';
-  import { RULER_H, TILE_H, type Span } from './canvasGeometry';
+  import { canvasNoteRects, RULER_H, TILE_H, type Span } from './canvasGeometry';
 
   interface Props {
     sketch: Sketch;
@@ -23,6 +24,7 @@
     /** Peaks of the whole recording, `peakRate` buckets per second (0–1), or null while loading. */
     peaks: Float32Array | null;
     peakRate: number;
+    notes: PianoNote[];
     pattern: RhythmPattern | null;
     /** The visible part of the canvas, in world px (to draw only that). */
     viewLeft: number;
@@ -46,6 +48,7 @@
     top,
     peaks,
     peakRate,
+    notes,
     pattern,
     viewLeft,
     viewRight,
@@ -88,8 +91,23 @@
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.clearRect(0, 0, w, WAVE_H);
     if (pattern) drawRhythm(g, pattern, from, to);
+    else if (sketch.listenMode === 'notes') drawNotes(g, from, to);
     else drawWave(g, from, to);
   });
+
+  function drawNotes(g: CanvasRenderingContext2D, from: number, to: number) {
+    g.fillStyle = color('--note', '#2e4a66');
+    for (const rect of canvasNoteRects(notes, span, pps, from, to, WAVE_H)) {
+      g.globalAlpha = rect.repeat === 0 ? 1 : 0.5;
+      g.fillRect(rect.x, rect.y, rect.width, rect.height);
+    }
+    g.globalAlpha = 1;
+    g.fillStyle = color('--ink-3', '#8c8478');
+    for (let k = 1; k < span.repeats; k++) {
+      const x = Math.round(k * span.cycle * pps) - from;
+      if (x >= 0 && x <= to - from) g.fillRect(x, 0, 1, WAVE_H);
+    }
+  }
 
   function drawWave(g: CanvasRenderingContext2D, from: number, to: number) {
     const mid = WAVE_H / 2;
@@ -175,7 +193,9 @@
     {#if note}<span class="meta">{note}</span>{/if}
   </div>
   {#if clipTo > clipFrom}
-    <canvas bind:this={canvas} style:left="{clipFrom}px" style:width="{clipTo - clipFrom}px" style:height="{WAVE_H}px"></canvas>
+    <canvas bind:this={canvas} data-preview={pattern ? 'rhythm' : sketch.listenMode === 'notes' ? 'notes' : 'waveform'}
+      aria-label={pattern ? 'Rhythm preview' : sketch.listenMode === 'notes' ? 'Notes preview' : 'Waveform preview'}
+      style:left="{clipFrom}px" style:width="{clipTo - clipFrom}px" style:height="{WAVE_H}px"></canvas>
   {/if}
   {#if soloing && progress !== null && progress >= span.start}
     <div class="progress" style:left="{(progress - span.start) * pps}px"></div>

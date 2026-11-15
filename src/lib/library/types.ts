@@ -5,6 +5,7 @@ import type { PianoNote } from '../transcription/types';
 
 export type SketchStatus = 'recording' | 'saved';
 export type TranscriptionStatus = 'pending' | 'running' | 'done' | 'failed';
+export type ListenMode = 'recording' | 'notes' | 'both';
 
 export interface Sketch {
   id: string;
@@ -29,6 +30,8 @@ export interface Sketch {
   recovered: boolean;
   summary: SketchSummary | null;
   hasEdits: boolean;
+  /** What plays in the sketch and on its notebook canvas. */
+  listenMode: ListenMode;
   /** Playback crop range in milliseconds (null = whole take). */
   cropStartMs: number | null;
   cropEndMs: number | null;
@@ -223,6 +226,7 @@ export interface UpdateSketchArgs {
   title?: string;
   textNotes?: string;
   durationMs?: number;
+  listenMode?: ListenMode;
 }
 
 export interface SaveTranscriptionArgs {

@@ -142,6 +142,7 @@ export class MemoryLibrary implements SketchLibrary {
         recovered: false,
         summary: null,
         hasEdits: false,
+        listenMode: 'recording',
         cropStartMs: null,
         cropEndMs: null,
         parentId: args.parentId ?? null,
@@ -255,6 +256,10 @@ export class MemoryLibrary implements SketchLibrary {
 
   async update(args: UpdateSketchArgs): Promise<Sketch> {
     const entry = this.entry(args.id);
+    if (args.listenMode !== undefined) {
+      if (!['recording', 'notes', 'both'].includes(args.listenMode)) throw new Error('unknown listen mode');
+      entry.sketch.listenMode = args.listenMode;
+    }
     if (args.title !== undefined) entry.sketch.title = args.title.trim();
     if (args.textNotes !== undefined) entry.sketch.textNotes = args.textNotes;
     if (args.durationMs !== undefined) entry.sketch.durationMs = args.durationMs;
@@ -518,6 +523,7 @@ export class MemoryLibrary implements SketchLibrary {
         recovered: false,
         summary: null,
         hasEdits: false,
+        listenMode: 'recording',
         cropStartMs: null,
         cropEndMs: null,
         parentId: null,
@@ -569,6 +575,7 @@ export class MemoryLibrary implements SketchLibrary {
         recovered: false,
         summary: null,
         hasEdits: false,
+        listenMode: 'recording',
         cropStartMs: null,
         cropEndMs: null,
         parentId: null,

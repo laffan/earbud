@@ -287,6 +287,7 @@ fn update_and_delete() {
     finalize(&lib, &created.id);
     let s = lib
         .update(UpdateSketchArgs {
+            listen_mode: None,
             id: created.id.clone(),
             title: Some("  Waltz idea ".into()),
             text_notes: Some("try in 3/4, left hand lighter".into()),
@@ -362,6 +363,7 @@ fn migrates_a_v1_database() {
     assert_eq!(sketches.len(), 1);
     assert_eq!(sketches[0].title, "Old");
     assert_eq!(sketches[0].crop_start_ms, None);
+    assert_eq!(sketches[0].listen_mode, "recording");
     // v3: the old sketch is the only take of its one track.
     let detail = lib.get("0123456789abcdef0123456789abcdef").unwrap();
     assert_eq!(detail.tracks.len(), 1);
@@ -747,7 +749,7 @@ fn duplicating_a_recording_copies_its_files_notes_and_settings() {
     })
     .unwrap();
     lib.save_edits(SaveEditsArgs { id: created.id.clone(), notes: vec![note(62, 0.5, 1.0)], summary: None }).unwrap();
-    lib.update(UpdateSketchArgs { id: created.id.clone(), title: Some("Riff".into()), text_notes: Some("left hand".into()), duration_ms: None })
+    lib.update(UpdateSketchArgs { id: created.id.clone(), title: Some("Riff".into()), text_notes: Some("left hand".into()), duration_ms: None, listen_mode: Some("both".into()) })
         .unwrap();
     lib.set_crop(&created.id, Some(2_000), Some(5_000)).unwrap();
     lib.set_sketch_repeats(&created.id, 3).unwrap();
@@ -762,6 +764,7 @@ fn duplicating_a_recording_copies_its_files_notes_and_settings() {
     assert_eq!((copy.canvas_x_ms, copy.canvas_y), (9_000, 300.0));
     assert_eq!(copy.title, "Riff");
     assert_eq!(copy.text_notes, "left hand");
+    assert_eq!(copy.listen_mode, "both");
     assert_eq!((copy.crop_start_ms, copy.crop_end_ms, copy.count_in_ms), (Some(2_000), Some(5_000), Some(1_500)));
     assert_eq!(copy.canvas_repeats, 3);
     assert!(copy.has_edits);
@@ -861,4 +864,34 @@ fn text_notes_are_placed_edited_resized_and_copied() {
         .is_err());
     lib.delete_notebook(&notebook.id).unwrap();
     assert!(lib.get(&note.id).is_err());
+}
+
+#[test]
+fn listen_mode_survives_reopening_and_rejects_invalid_values() {
+    let (tmp, lib) = lib();
+    let created = create(&lib);
+    fs::write(&created.media_path, b"movie").unwrap();
+    finalize(&lib, &created.id);
+    assert_eq!(lib.get(&created.id).unwrap().sketch.listen_mode, "recording");
+    for mode in ["notes", "both", "recording", "notes"] {
+        let args: UpdateSketchArgs = serde_json::from_value(serde_json::json!({
+            "id": created.id, "listenMode": mode
+        })).unwrap();
+        assert_eq!(lib.update(args).unwrap().listen_mode, mode);
+    }
+    drop(lib);
+    let reopened = Library::open(tmp.path().join("library")).unwrap();
+    assert_eq!(reopened.get(&created.id).unwrap().sketch.listen_mode, "notes");
+    assert_eq!(reopened.list().unwrap()[0].listen_mode, "notes");
+    let rename: UpdateSketchArgs = serde_json::from_value(serde_json::json!({
+        "id": created.id, "title": "Renamed"
+    })).unwrap();
+    assert_eq!(reopened.update(rename).unwrap().listen_mode, "notes");
+    let invalid: UpdateSketchArgs = serde_json::from_value(serde_json::json!({
+        "id": created.id, "listenMode": "invalid", "title": "Must not change"
+    })).unwrap();
+    assert!(reopened.update(invalid).is_err());
+    let saved = reopened.get(&created.id).unwrap().sketch;
+    assert_eq!(saved.listen_mode, "notes");
+    assert_eq!(saved.title, "Renamed");
 }

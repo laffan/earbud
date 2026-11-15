@@ -75,7 +75,7 @@
   let playing = $state(false);
   let rate = $state(1);
   /** What plays: the recording, its notes or both. */
-  let listen = $state<ListenMode>('recording');
+  const listen = $derived<ListenMode>(app.sketches.find((s) => s.id === id)?.listenMode ?? detail?.listenMode ?? 'recording');
   let buffering = $state(false);
   /** Playback crop range in seconds (null = whole sketch). */
   let cropStart = $state<number | null>(null);
@@ -398,8 +398,8 @@
   }
 
   function setListen(mode: ListenMode) {
-    listen = mode;
     if (mode !== 'recording') synth.unlock();
+    void app.setListenMode(id, mode).catch((error) => app.toast(`Could not save playback choice: ${errorMessage(error)}`, 'error'));
   }
 
   // ------------------------------------------------------------ tempo

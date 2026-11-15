@@ -136,6 +136,7 @@ pub struct Sketch {
     /// produced by the music engine so the list does not need every note.
     pub summary: Option<serde_json::Value>,
     pub has_edits: bool,
+    pub listen_mode: String,
     /// Playback crop range in milliseconds (None = whole take).
     pub crop_start_ms: Option<i64>,
     pub crop_end_ms: Option<i64>,
@@ -391,6 +392,7 @@ pub struct UpdateSketchArgs {
     pub title: Option<String>,
     pub text_notes: Option<String>,
     pub duration_ms: Option<i64>,
+    pub listen_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

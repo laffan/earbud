@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Sketch } from '../library/types';
 import { emptyPattern } from '../music/rhythm';
-import { clampView, fitView, MAX_PPS, rulerStep, sketchSpan, zoomAround } from './canvasGeometry';
+import { canvasNoteRects, clampView, fitView, MAX_PPS, rulerStep, sketchSpan, zoomAround } from './canvasGeometry';
 
 function sketch(patch: Partial<Sketch>): Sketch {
   return {
@@ -24,6 +24,7 @@ function sketch(patch: Partial<Sketch>): Sketch {
     recovered: false,
     summary: null,
     hasEdits: false,
+    listenMode: 'recording',
     cropStartMs: null,
     cropEndMs: null,
     parentId: null,
@@ -110,5 +111,26 @@ describe('the view', () => {
     expect(rulerStep(100)).toBe(1);
     expect(rulerStep(20)).toBe(5);
     expect(rulerStep(2)).toBe(60);
+  });
+});
+
+describe('canvas notes preview', () => {
+  it('clips notes to the crop and viewport and shows the same notes in each repeat', () => {
+    const span = sketchSpan(sketch({ cropStartMs: 1000, cropEndMs: 3000, canvasRepeats: 3 }));
+    const notes = [
+      { pitch: 60, startTime: 0.5, endTime: 1.5, velocity: 80 },
+      { pitch: 72, startTime: 2.5, endTime: 3.5, velocity: 80 },
+      { pitch: 80, startTime: 4, endTime: 5, velocity: 80 },
+    ];
+    const rects = canvasNoteRects(notes, span, 100, 25, 425);
+    expect(rects.map((r) => [r.x, r.width, r.repeat])).toEqual([
+      [0, 25, 0], [125, 50, 0], [175, 50, 1], [325, 50, 1], [375, 25, 2],
+    ]);
+    expect(rects[0].y).toBeGreaterThan(rects[1].y);
+    expect(rects.every((r) => r.x >= 0 && r.x + r.width <= 400 && r.y >= 0 && r.y + r.height <= 36)).toBe(true);
+  });
+
+  it('leaves an empty transcription empty', () => {
+    expect(canvasNoteRects([], sketchSpan(sketch({})), 100, 0, 200)).toEqual([]);
   });
 });

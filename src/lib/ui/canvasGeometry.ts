@@ -4,6 +4,7 @@
  * pixels. Pure functions, unit tested.
  */
 import type { Sketch } from '../library/types';
+import type { PianoNote } from '../transcription/types';
 import { normalizePattern, playSeconds } from '../music/rhythm';
 
 /** Height of a sketch on the canvas: its title and waveform (px). */
@@ -40,6 +41,36 @@ export interface Span {
   /** Length of one pass of the part (seconds), and how many play in a row (a rhythm: 1, it repeats by bars). */
   cycle: number;
   repeats: number;
+}
+
+/** Visible piano-roll rectangles in the tile's source coordinates, cropped and repeated like its sound. */
+export function canvasNoteRects(notes: PianoNote[], span: Span, pps: number, from: number, to: number, height = 36) {
+  const visible = notes.filter((n) => n.endTime > span.from && n.startTime < span.to);
+  if (!visible.length || to <= from || span.cycle <= 0 || pps <= 0) return [];
+  const low = Math.min(...visible.map((n) => n.pitch));
+  const high = Math.max(...visible.map((n) => n.pitch));
+  const rows = Math.max(12, high - low + 1);
+  const top = high + (rows - (high - low + 1)) / 2;
+  const rowHeight = (height - 4) / rows;
+  const first = Math.max(0, Math.floor(from / (span.cycle * pps)));
+  const last = Math.min(span.repeats - 1, Math.floor(to / (span.cycle * pps)));
+  const rects: { x: number; y: number; width: number; height: number; repeat: number }[] = [];
+  for (let k = first; k <= last; k++) {
+    for (const n of visible) {
+      const left = (Math.max(span.from, n.startTime) - span.from + k * span.cycle) * pps;
+      const right = (Math.min(span.to, n.endTime) - span.from + k * span.cycle) * pps;
+      if (right <= from || left >= to) continue;
+      const x = Math.max(from, left);
+      rects.push({
+        x: x - from,
+        y: 2 + (top - n.pitch) * rowHeight,
+        width: Math.min(to - x, Math.max(1, Math.min(to, right) - x)),
+        height: Math.max(1, Math.min(4, rowHeight - 0.5)),
+        repeat: k,
+      });
+    }
+  }
+  return rects;
 }
 
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));

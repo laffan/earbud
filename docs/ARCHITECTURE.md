@@ -292,7 +292,7 @@ which makes the whole UI testable in Chromium.
   menu (empty canvas) or picks a tile up (drag to move; let go for its menu); a tap seeks (empty) or, after 280 ms
   without a second tap, plays the tile alone (two taps open it); a second finger turns the gesture into a pinch;
   `wheel` scrolls and, with ctrl/⌘, zooms. All sound goes through one `AudioEngine`: each sketch is a track
-  (`offset` = `canvas_x_ms`, trimmed to its span with the engine's `start`/`end`), decoded with `takeBuffers.ts` or,
+  (`offset` = `canvas_x_ms`, trimmed to its span with the engine's `start`/`end`), prepared with `canvasAudio.ts` or,
   for a rhythm, rendered by `drums.ts` (again when its pattern changes). A recording with repeats is one track per
   repeat on the same buffer, each a part's length later (`#k` ids), so the repeats are sample-locked like any
   tracks. Holding a sketch opens its menu at once and picks it up; moving closes the menu and drags. The right-edge
@@ -300,6 +300,12 @@ which makes the whole UI testable in Chromium.
   the sketch's id in `app.clipboard`; *Paste* and *Duplicate* call `duplicate_sketch`. Playing a sketch alone sets the engine's
   range to it and the others' gain to 0; repeat sets the range to [0, loop end] with the loop's next pass starting at
   the loop start, so playing from before the range runs into it. Scroll, zoom and repeat are kept per notebook.
+- Each sketch's `listen_mode` (schema v8, default `recording`) stores Take / Notes / Both. The sketch view and
+  canvas share this setting; duplicates preserve it. `canvasAudio.ts` loads the active, audible takes and current
+  edited notes, renders the notes with the same synth voice as the sketch view, and mixes Both through Web Audio
+  (including sample-rate conversion for analysis WAVs). Track offsets are translated to the original recording's
+  coordinates so the canvas's crop/count-in and repeats still apply. Mode and library revisions invalidate the
+  prepared sound; stale async results are discarded. Rapid mode changes are saved in order.
 - Canvas audio is renewable: after a recording onto the canvas (the canvas stays mounted, hidden, while the
   recorder has the audio session), after the page was hidden, when the context is closed or `interrupted`, and when
   a play got no sound within 2 s, the next tap that leads to sound (`wakeAudio`) disposes the engine and makes a new
@@ -317,9 +323,9 @@ which makes the whole UI testable in Chromium.
   and are saved 0.5 s after the last one (`update_rhythm`). The step grid shows one pad and one bar; a press on a
   step becomes a velocity drag once it moves 6 px vertically (160 px from silent to full, one undo step per drag),
   otherwise a tap toggles it.
-- `CanvasTile.svelte`: a sketch on the canvas, its title over its waveform (peaks of the decoded buffer, 100 per
-  second; repeats after the first lighter) or its hits; only the part in view is drawn, so zooming far in costs no
-  more than the screen.
+- `CanvasTile.svelte`: a sketch on the canvas, its title over its waveform (Take/Both), a miniature piano roll
+  (Notes), or its rhythm hits. The waveform uses recording-only peaks, 100 per second. Notes reflect edits, crop,
+  count-in and repeats; repeats after the first are lighter. Only the part in view is drawn.
 - `Minimap.svelte`: the whole notebook, the view, the playhead and, with repeat on, the loop's handles.
 - `RhythmModal.svelte`: the draggable rhythm panel: pads (pointer-down strikes, so taps are timed by the event's
   timestamp), then the step sequencer, previewed with a 25 ms look-ahead scheduler that reads the pattern on every

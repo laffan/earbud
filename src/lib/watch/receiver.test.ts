@@ -37,6 +37,7 @@ function sketch(id: string, createdAt: number): Sketch {
     recovered: false,
     summary: null,
     hasEdits: false,
+    listenMode: 'recording',
     cropStartMs: null,
     cropEndMs: null,
     parentId: null,

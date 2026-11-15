@@ -16,7 +16,7 @@ import { Metronome } from '../capture/countIn';
 import { beginCaptureSession, webAudioSessionSummary } from '../audio/session';
 import { importAudioSketch, importMidiSketch, type Placement } from '../library/importTrack';
 import { getLibrary, type Sketch, type SketchLibrary } from '../library';
-import type { CreateRhythmArgs, CreateTextNoteArgs, Notebook, UpdateRhythmArgs, UpdateTextNoteArgs } from '../library/types';
+import type { CreateRhythmArgs, CreateTextNoteArgs, ListenMode, Notebook, UpdateRhythmArgs, UpdateTextNoteArgs } from '../library/types';
 import { ProcessingQueue, type JobProgress } from '../pipeline/processingQueue';
 import { errorCode, errorMessage, isIOSLike } from '../platform/tauri';
 import {
@@ -238,6 +238,7 @@ export class AppState {
   private captureEngine: CaptureEngine | null = null;
   private active: ActiveRecording | null = null;
   private toastId = 0;
+  private listenSaves = new Map<string, Promise<Sketch>>();
   private attempt = 0;
   /** A `finished` event that arrived before the start request resolved. */
   private pendingFinish: RecordingResult | null = null;
@@ -613,6 +614,7 @@ export class AppState {
     if (index >= 0) this.sketches[index] = sketch;
     else this.sketches = [sketch, ...this.sketches].sort((a, b) => b.createdAt - a.createdAt);
     this.revision[sketch.id] = (this.revision[sketch.id] ?? 0) + 1;
+    if (sketch.parentId) this.touch(sketch.parentId);
   }
 
   async refresh() {
@@ -625,6 +627,29 @@ export class AppState {
 
   async saveNotesText(id: string, textNotes: string) {
     this.upsert(await this.library.update({ id, textNotes }));
+  }
+
+  async setListenMode(id: string, listenMode: ListenMode) {
+    const sketch = this.sketches.find((s) => s.id === id);
+    if (sketch) this.upsert({ ...sketch, listenMode });
+    // Rapid taps must reach storage in order; an older reply must not undo
+    // the latest selection or change what the canvas plays while saving.
+    const save = (this.listenSaves.get(id) ?? Promise.resolve())
+      .catch(() => {})
+      .then(() => this.library.update({ id, listenMode }));
+    this.listenSaves.set(id, save);
+    try {
+      const saved = await save;
+      if (this.listenSaves.get(id) === save) this.upsert(saved);
+    } catch (error) {
+      if (this.listenSaves.get(id) === save) {
+        const saved = await this.library.get(id);
+        if (this.listenSaves.get(id) === save) this.upsert(saved);
+      }
+      throw error;
+    } finally {
+      if (this.listenSaves.get(id) === save) this.listenSaves.delete(id);
+    }
   }
 
   async deleteSketch(id: string) {

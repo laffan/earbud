@@ -1,6 +1,6 @@
 <script lang="ts" module>
   /** What a track plays: its recording, its notes (the synth), or both. */
-  export type ListenMode = 'recording' | 'notes' | 'both';
+  export type { ListenMode } from '../library/types';
 </script>
 
 <script lang="ts">
