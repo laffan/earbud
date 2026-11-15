@@ -173,6 +173,7 @@ class CapturePlugin: Plugin, AVCaptureFileOutputRecordingDelegate {
     let outputs = audio.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
     return "category=\(audio.category.rawValue) mode=\(audio.mode.rawValue) "
       + "options=\(audio.categoryOptions.rawValue) otherAudioPlaying=\(audio.isOtherAudioPlaying) "
+      + "outputVolume=\(audio.outputVolume) "
       + "in=[\(inputs)] out=[\(outputs)]"
   }
 

@@ -7,6 +7,7 @@
  *  - `renderNotesToWav` renders notes offline with the same voice, for export.
  */
 import { encodeWav16 } from '../audio/wav';
+import { preparePlaybackSession } from '../audio/session';
 import type { PianoNote } from '../transcription/types';
 import { notesEndTime, sortNotes } from './notes';
 
@@ -141,6 +142,7 @@ export class NoteSynth {
    * and leave `resume()` pending outside one.
    */
   unlock() {
+    preparePlaybackSession();
     const ctx = this.ensureContext();
     if (ctx.state === 'running') return;
     void ctx.resume().catch(() => {});

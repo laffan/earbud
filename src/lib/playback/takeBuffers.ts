@@ -56,6 +56,14 @@ export function loadTakeBuffer(ctx: BaseAudioContext, take: TakeAudioSource, dep
     (buffer) => {
       sizes.set(key, buffer.length * buffer.numberOfChannels);
       evict(key);
+      if (deps.log) {
+        let peak = 0;
+        for (let c = 0; c < buffer.numberOfChannels; c++) {
+          for (const value of buffer.getChannelData(c)) peak = Math.max(peak, Math.abs(value));
+        }
+        deps.log(`decoded sound: ${buffer.duration.toFixed(2)} s, ${buffer.sampleRate} Hz, ` +
+          `${buffer.numberOfChannels} channels, peak=${peak > 0 ? `${(20 * Math.log10(peak)).toFixed(1)} dBFS` : 'silent'}`);
+      }
     },
     () => {
       cache.delete(key);

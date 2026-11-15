@@ -1,10 +1,10 @@
 // @vitest-environment happy-dom
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { FakeAudioContext, fakeBuffer, GestureGatedAudioContext, inGesture } from '../testing/fakeAudioContext';
 import { AudioEngine, type ClockMapping, type EngineState, type EngineTrack } from './audioEngine';
 
 /** A frame loop the test advances by hand, with the audio clock. */
-function harness(options: { ctx?: FakeAudioContext; stretch?: AudioEngineStretch } = {}) {
+function harness(options: { ctx?: FakeAudioContext; stretch?: AudioEngineStretch; log?: (message: string) => void } = {}) {
   const ctx = options.ctx ?? new FakeAudioContext();
   let frames: (() => void)[] = [];
   const states: EngineState[] = [];
@@ -14,6 +14,7 @@ function harness(options: { ctx?: FakeAudioContext; stretch?: AudioEngineStretch
     onState: (s) => states.push(s),
     onCue: (m) => cues.push(m ? { ...m } : null),
     stretch: options.stretch,
+    log: options.log,
     requestFrame: (cb) => {
       frames.push(cb);
       return frames.length;
@@ -51,6 +52,37 @@ describe('AudioEngine', () => {
     a = fakeBuffer(10);
     b = fakeBuffer(8);
     c = fakeBuffer(6);
+  });
+
+  it('reports graph signal separately from context state and detects a stalled clock', async () => {
+    vi.useFakeTimers();
+    const log = vi.fn();
+    const ctx = Object.assign(new FakeAudioContext(), {
+      createAnalyser: () => ({
+        fftSize: 2048,
+        getFloatTimeDomainData: (samples: Float32Array) => samples.fill(0.25),
+      }),
+    });
+    const { engine } = harness({ ctx, log });
+    try {
+      engine.setTracks([track('a', a)]);
+      engine.setDuration(10);
+      engine.play();
+      // A running context does not establish that the audio clock advances.
+      await vi.advanceTimersByTimeAsync(2100);
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('context=running, clock advanced=0.00 s'));
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('sampled graph peak=-12.0 dBFS'));
+      expect(log).toHaveBeenCalledTimes(1);
+      engine.pause();
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(log).toHaveBeenCalledTimes(1);
+      engine.play();
+      engine.dispose();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      engine.dispose();
+      vi.useRealTimers();
+    }
   });
 
   it('starts every track on one clock, each at its place on the timeline', () => {

@@ -344,10 +344,8 @@
 
   onMount(() => {
     void load();
-    // Note: do not set `navigator.audioSession.type` here. On iOS it makes
-    // WebKit hold its own (separate-process) playback session, which then
-    // fights the native recorder's session and ends recordings at once. The
-    // native plugin already sets the app's category to `.playback`.
+    // The playback gesture requests WebKit's playback session. The capture
+    // flow switches back to automatic selection before starting the recorder.
   });
 
   onDestroy(() => {

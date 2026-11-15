@@ -23,6 +23,8 @@
  * of a loop is scheduled just before the end, so loops are gapless.
  */
 
+import { preparePlaybackSession, webAudioSessionSummary } from '../audio/session';
+
 export interface EngineTrack {
   id: string;
   /** The decoded recording; null while it loads or when it cannot be decoded. */
@@ -103,6 +105,8 @@ export function audioContextClass(): typeof AudioContext {
 export class AudioEngine {
   private ctx: AudioContext | null = null;
   private bus: GainNode | null = null;
+  private analyser: AnalyserNode | null = null;
+  private outputProbe: { timer: ReturnType<typeof setInterval>; finish: () => void } | null = null;
   private gains = new Map<string, GainNode>();
   private tracks: EngineTrack[] = [];
   private voices: Voice[] = [];
@@ -152,6 +156,13 @@ export class AudioEngine {
       setParam(limiter.release, 0.15);
       const bus = ctx.createGain();
       bus.connect(limiter).connect(ctx.destination);
+      if (this.options.log) {
+        // A side branch observes the signal after the limiter. It measures
+        // graph output, not the physical speaker or the system's mute state.
+        this.analyser = ctx.createAnalyser();
+        this.analyser.fftSize = 2048;
+        limiter.connect(this.analyser);
+      }
       this.bus = bus;
       (ctx as EventTarget).addEventListener?.('statechange', this.onStateChange);
     }
@@ -200,6 +211,7 @@ export class AudioEngine {
 
   /** Wake the audio context. Call inside the tap that leads to sound (WebKit starts audio only in a gesture). */
   unlock() {
+    preparePlaybackSession(this.options.log);
     const ctx = this.context;
     if (ctx.state === 'running') return;
     void ctx.resume().catch(() => {});
@@ -309,10 +321,12 @@ export class AudioEngine {
       this.position = this.rangeStart;
     }
     this.tryStart();
+    this.probeOutput();
     this.emit();
   }
 
   pause() {
+    this.finishOutputProbe();
     if (this.mapping) this.position = this.clamp(this.heardPosition(true));
     this.wantPlaying = false;
     this.halt();
@@ -336,6 +350,7 @@ export class AudioEngine {
   }
 
   dispose() {
+    this.finishOutputProbe();
     this.disposed = true;
     this.wantPlaying = false;
     this.halt();
@@ -347,6 +362,45 @@ export class AudioEngine {
   }
 
   // -------------------------------------------------------------- internals
+
+  /** Sample the first two seconds, even if a "running" context's clock stalls. */
+  private probeOutput() {
+    this.finishOutputProbe();
+    const analyser = this.analyser;
+    const log = this.options.log;
+    if (!analyser || !log) return;
+    const ctx = this.context;
+    const clock = ctx.currentTime;
+    const started = performance.now();
+    const samples = new Float32Array(analyser.fftSize);
+    let peak = 0;
+    const sample = () => {
+      analyser.getFloatTimeDomainData(samples);
+      for (const value of samples) peak = Math.max(peak, Math.abs(value));
+    };
+    const timer = setInterval(() => {
+      sample();
+      if (performance.now() - started >= 2000) this.finishOutputProbe();
+    }, 100);
+    this.outputProbe = {
+      timer,
+      finish: () => {
+        sample();
+        const db = peak > 0 ? `${(20 * Math.log10(peak)).toFixed(1)} dBFS` : 'silent';
+        log(`output probe: context=${ctx.state}, clock advanced=${(ctx.currentTime - clock).toFixed(2)} s, ` +
+          `sampled graph peak=${db}, audible buffers=${this.tracks.filter((t) => t.audible && t.buffer).length}/${this.tracks.length}, ` +
+          `web session ${webAudioSessionSummary()}`);
+      },
+    };
+  }
+
+  private finishOutputProbe() {
+    const probe = this.outputProbe;
+    if (!probe) return;
+    this.outputProbe = null;
+    clearInterval(probe.timer);
+    probe.finish();
+  }
 
   private latency(): number {
     const ctx = this.ctx;

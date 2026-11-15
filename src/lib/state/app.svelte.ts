@@ -13,6 +13,7 @@ import {
   type RecordingResult,
 } from '../capture';
 import { Metronome } from '../capture/countIn';
+import { beginCaptureSession, webAudioSessionSummary } from '../audio/session';
 import { importAudioSketch, importMidiSketch, type Placement } from '../library/importTrack';
 import { getLibrary, type Sketch, type SketchLibrary } from '../library';
 import type { CreateRhythmArgs, CreateTextNoteArgs, Notebook, UpdateRhythmArgs, UpdateTextNoteArgs } from '../library/types';
@@ -245,6 +246,7 @@ export class AppState {
   /** The sketch being recorded onto a canvas (kept across the automatic retry). */
   private canvasTarget: CanvasTarget | null = null;
   private readonly metronome: Metronome;
+  private releaseCaptureSession: (() => void) | null = null;
   private countInAbort: AbortController | null = null;
   /** Last level event: the recorder's own clock, to place the downbeat in the recording. */
   private lastLevel: { elapsedMs: number; at: number } | null = null;
@@ -717,6 +719,7 @@ export class AppState {
       `Earbud capture diagnostics, ${new Date().toString()}`,
       `backend: ${engine?.id ?? 'none'}; platform: ${this.capabilities?.platform ?? 'unknown'}`,
       `user agent: ${navigator.userAgent}`,
+      `web audio session: ${webAudioSessionSummary()}`,
     ];
     let nativeLines: string[] = [];
     try {
@@ -750,6 +753,7 @@ export class AppState {
       return;
     }
     if (!options.retry) {
+      this.releaseCaptureSession = beginCaptureSession((message) => this.logCapture(message));
       this.takeTarget = options.take ?? null;
       this.canvasTarget = options.take ? null : (options.canvas ?? null);
       // Still inside the tap: the only moment iOS lets audio start.
@@ -1165,6 +1169,8 @@ export class AppState {
     this.takeTarget = null;
     this.canvasTarget = null;
     if (this.settings.countIn) this.metronome.close();
+    this.releaseCaptureSession?.();
+    this.releaseCaptureSession = null;
     target?.onEnd?.(saved);
   }
 }

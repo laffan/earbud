@@ -149,7 +149,13 @@ side:
 - Auto-lock is disabled while recording.
 - The audio session uses `.playAndRecord` with `.videoRecording` mode by default. Settings → *Unprocessed
   microphone* switches to `.measurement` mode (no system AGC/EQ; more faithful but quieter). After recording the
-  session returns to `.playback`, so review playback ignores the silent switch.
+  native session returns to `.playback`.
+- WebKit has its own audio session: a running Web Audio context alone does not establish speaker output.
+  Playback gestures now request `navigator.audioSession.type = 'playback'` when supported, including when the
+  context is already running. Before capture, the app switches WebKit back to `auto` and keeps it there through
+  retries and saving, so its exclusive playback session does not interrupt the native recorder. The next
+  playback gesture requests `playback` again. This change needs confirmation on a physical iPad, including with
+  Silent Mode enabled and when recording immediately after playback.
 - The recording session is **mixable** (`.mixWithOthers`), as a precaution: WKWebView plays audio from a separate
   process with its own audio session, and a non-mixable recording session can be interrupted by it. A side effect:
   music already playing in another app keeps playing (and is picked up by the microphone). Pause it before recording.
@@ -217,6 +223,25 @@ the app and the native recorder: audio-session category and route, how long the 
 interruptions (with the reason iOS gave, e.g. "the microphone was taken by another audio session"), and error codes.
 *Copy* puts it on the clipboard. Please include it when reporting a recording problem. The same lines also go to the
 device console with the prefix `[earbud-capture]` (Xcode console, or Console.app with the phone connected).
+
+### Silent playback
+
+After installing the updated build, play a sketch with known sound for at least two seconds, then copy
+Settings → Diagnostics. The log now distinguishes:
+
+- **Decoded sound peak:** whether the decoded recording contains a signal. `playing the analysis audio` means
+  the original format could not be decoded and the app successfully fell back to the analysis WAV.
+- **Output probe:** the audio clock's progress and sampled signal after the playback limiter. A running context
+  with `clock advanced=0.00 s` is stalled. `sampled graph peak=silent` means no signal was observed during the
+  short sampling window; a quiet introduction, a gap on the canvas, muted tracks, or silent source audio can
+  explain this. A nonzero graph peak proves signal in Web Audio, not that the physical speakers played it.
+- **Web audio session:** WebKit's requested type and reported state, separate from the native audio-session
+  category, speaker route, and output volume. `otherAudioPlaying=true` alone does not identify another app;
+  WebKit's separate audio process may account for it.
+
+On an iPad, check playback with Silent Mode both on and off, record immediately after playback, then play the
+saved take. Also repeat after backgrounding and returning to Earbud. Browser tests on Linux cannot validate
+these iPad audio-session and speaker-routing behaviors.
 
 ## Storage location
 

@@ -5,7 +5,8 @@
  * a start that never answers, events arriving out of order) and check that
  * one tap still produces exactly one good sketch, or a clear error.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { preparePlaybackSession } from '../audio/session';
 import type {
   ActiveRecording,
   CaptureEngine,
@@ -114,9 +115,42 @@ async function recordAndStop(app: AppState) {
 }
 
 beforeEach(() => localStorage.clear());
-afterEach(() => document.documentElement.classList.remove('native-preview'));
+afterEach(() => {
+  document.documentElement.classList.remove('native-preview');
+  vi.unstubAllGlobals();
+});
 
 describe('capture flow', () => {
+  it.each([['ok'], ['rejects', 'ok'], ['rejects', 'rejects']] as Behaviour[][])(
+    'coordinates WebKit playback with capture attempts %j',
+    async (...behaviours: Behaviour[]) => {
+      const audioSession = { type: 'playback' };
+      vi.stubGlobal('navigator', { audioSession });
+      const engine = new FakeEngine(behaviours);
+      const checkPermissions = vi.spyOn(engine, 'checkPermissions').mockImplementation(async () => {
+        // The request is released before any async permissions/start work, on every retry.
+        expect(audioSession.type).toBe('auto');
+        preparePlaybackSession();
+        expect(audioSession.type).toBe('auto');
+        return granted;
+      });
+      const { app } = makeApp(engine);
+      await app.init();
+      await app.startRecording();
+      if (app.recording) {
+        preparePlaybackSession();
+        expect(audioSession.type).toBe('auto');
+        await sleep(STOP_GUARD_MS + 20);
+        await app.stopRecording();
+      }
+      expect(checkPermissions).toHaveBeenCalledTimes(behaviours.length);
+      expect(app.recording).toBeNull();
+      expect(audioSession.type).toBe('auto');
+      preparePlaybackSession();
+      expect(audioSession.type).toBe('playback');
+    },
+  );
+
   it('records and saves one sketch', async () => {
     const engine = new FakeEngine(['ok']);
     const { app, library } = makeApp(engine);

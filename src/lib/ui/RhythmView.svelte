@@ -16,6 +16,7 @@
    */
   import { onDestroy, untrack } from 'svelte';
   import { DrumKit } from '../music/drums';
+  import { preparePlaybackSession } from '../audio/session';
   import {
     doubled,
     emptyPattern,
@@ -143,6 +144,7 @@
 
   /** Wake the audio inside a tap (WebKit starts it only there). */
   function unlock() {
+    preparePlaybackSession((message) => app.logCapture(`[rhythm] ${message}`));
     if (ctx.state === 'running') return;
     void ctx.resume().catch(() => {});
     try {
