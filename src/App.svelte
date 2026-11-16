@@ -16,7 +16,8 @@
 </script>
 
 <!-- Hidden (not unmounted) while recording so the native preview shows through. -->
-<div class="app-main" class:covered={app.recording !== null}>
+<!-- A recording onto the canvas happens in place (a strip on the canvas); others cover the screen. -->
+<div class="app-main" class:covered={app.recording !== null && !app.recording.canvas}>
   {#if app.view.name === 'sketch'}
     {@const id = app.view.id}
     {#key id}
@@ -33,7 +34,7 @@
   {/if}
 </div>
 
-{#if app.recording}
+{#if app.recording && !app.recording.canvas}
   <Recorder recording={app.recording} />
 {/if}
 

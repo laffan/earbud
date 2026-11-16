@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app, COUNT_IN_BEATS } from '../state/app.svelte';
+  import AudioSettings from './AudioSettings.svelte';
   import Sheet from './Sheet.svelte';
   import TranscriptionSettings from './TranscriptionSettings.svelte';
   import WatchSettings from './WatchSettings.svelte';
@@ -59,6 +60,8 @@
       <p class="help">Ultra wide fits the whole keyboard when the phone is close to the keys.</p>
     {/if}
   </section>
+
+  <AudioSettings {native} />
 
   <section>
     <h3>Count-in</h3>

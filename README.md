@@ -32,7 +32,9 @@ Built with Tauri 2, Svelte 5 + TypeScript, Rust + SQLite, Swift + AVFoundation (
 | Rhythm view (this branch): full-size step sequencer, velocity by dragging, record pads into the loop, swing, tap tempo, undo | Done, unit tested (player, swing, bars); checked in Chromium |
 | Text notes on the canvas (this branch): double-tap to write, markdown, move and resize, emoji-only notes large and on the minimap | Done, unit tested (markdown, storage); checked in Chromium |
 | Sketch volume and Slice (this branch): a volume slider in the sketch menu, shown as a bar on the sketch's left; Slice cuts a recording or a rhythm into two sketches | Done, unit tested (Rust storage, slice geometry); checked in Chromium |
-| Reference section (this branch): chords by root and variant with piano and guitar diagrams; circle of fifths that records tapped chords as a sketch | Done, unit tested (chord taps); checked in Chromium at phone and iPad sizes |
+| Reference section (this branch): every chord of a root on one page with piano and guitar diagrams (all shapes); circle of fifths that records tapped chords as a sketch | Done, unit tested (chord taps); checked in Chromium at phone and iPad sizes |
+| Recording in place on the canvas (this branch): count-in, beat and level in a strip where the sketch goes | Done, checked in Chromium with a fake microphone (`smoke:browser`); not yet on a device |
+| Separate microphone and output (Settings → Audio) | Browser/desktop: done, unit tested (output routing), checked in Chromium with fake devices. iOS: written, not compiled or tried on a device |
 | iPad trackpad scrolling on the canvas | Info.plist fix from Snorkle applied (native indirect input, single-window scene); not yet confirmed on an iPad |
 | Home screen, one-tap record, chronological library | Replaced on this branch by the notebook canvas |
 | iOS synchronized audio/video capture (AVFoundation) | Builds and runs on iPhone; start-up reliability fix pending confirmation on a device (see [docs/IOS.md](docs/IOS.md)) |
@@ -119,11 +121,17 @@ vertically. Everything below works with a finger, a mouse or a trackpad.
 - **Notebooks.** The title at the top opens the list of notebooks, with *New notebook*, *Rename* and *Delete*
   (which deletes its sketches). The first launch creates *Notebook 1*. Each notebook remembers its scroll, zoom and
   repeat setting.
-- **Record audio** opens the recording screen used before (camera or audio only, as set in Settings). After the
-  count-in the canvas plays from the point you held, so you can play over what is already there; the new sketch
-  is placed so its downbeat lands where you heard the canvas at that moment (playback latency is taken off, as for
-  tracks before). Held over a rhythm, the count-in runs at the rhythm's tempo and the start moves to its nearest
-  beat. The sketch appears where you held: its title over its waveform. Its count-in is not shown or played.
+- **Record audio** records in place, in a red strip where the sketch will be, so the rest of the notebook stays in
+  view. The strip shows *Starting…*, then the count-in (the beat number and a pip per beat, with the ticks), then
+  the time, the input level as a waveform as it comes in and, over a rhythm, a dot that flashes on its beats. It
+  grows with the playhead (it starts about 170 px wide). Its stop button (or the dock's play button, which is a stop
+  button while recording, or the space bar) stops and saves; during the count-in it cancels. While recording, the
+  canvas can be scrolled and zoomed; taps and holds do nothing else. After the count-in the canvas plays from the
+  point you held, so you can play over what is already there; the new sketch is placed so its downbeat lands where
+  you heard the canvas at that moment (playback latency is taken off, as for tracks before). Held over a rhythm, the
+  count-in runs at the rhythm's tempo and the start moves to its nearest beat. The sketch appears where you held:
+  its title over its waveform. Its count-in is not shown or played. The camera (Settings) still records video, but
+  its image is not shown while recording onto the canvas.
 - **Import audio** opens the import sheet used before: an audio file (transcribed like a recording) or a MIDI file
   (its notes, played by the built-in piano). It is placed where you held.
 - **Record rhythm** opens a panel you can drag by its top. Tap the three pads (*Beat 1*, *Beat 2*, *Beat 3*, which
@@ -172,29 +180,53 @@ vertically. Everything below works with a finger, a mouse or a trackpad.
   recording, after the app was in the background, and after a play that got no sound within 2 s, the next tap
   starts the canvas's sound with a fresh audio context (see Known limitations). Each play writes the audio state to
   Settings → Diagnostics.
+- **Repeat** plays only the loop range, over and over: turning it on (or play) puts the playhead at the range's
+  start when it is outside it, and a tap on the canvas outside the range leaves the playhead at the range's edge.
+  The range is from the first sketch to the end of the last unless set: drag its red handles on the ruler along the
+  top of the canvas or on the minimap; it is saved with the notebook, and *Loop everything* clears it. On the
+  canvas, the range's two edges are dashed red lines down its whole height.
 - **Minimap.** Above the control bar: the whole notebook, the part in view (everything outside it is faded), the
-  playhead. Drag on it to move the view. With repeat on, two red handles mark what repeats (by default from the first
-  sketch to the end of the last); drag them to set a range, saved with the notebook. *Loop everything* clears it.
-  Playing from before the range runs into it. On the canvas, the range's two edges are dashed red lines down its
-  whole height.
+  playhead and, with repeat on, the loop's handles. Drag on it to move the view.
 - **A sketch** (double-tap) is the sketch view from before without tracks: piano roll, chord strip and waveform,
   the Chords section, the video, notes, tempo, crop, loop, *Take / Notes / Both*, note editing, transcribing again
   and sharing. The *Take / Notes / Both* choice is saved per sketch across app launches and also controls its
   canvas playback. *Notes* plays the current edited transcription and shows a miniature piano roll on the canvas;
   *Take* and *Both* show the waveform. Crops and repeats apply to the selected sound. *Back* returns to the canvas.
 - **Apple Watch** recordings are placed at the end of the open notebook.
+- **Audio input and output** (Settings → Audio) are chosen separately; see [Audio devices](#audio-devices).
+
+### Audio devices
+
+Settings → *Audio*:
+
+- **In a browser or the desktop app**: *Microphone* lists the system's microphones (with *System default*), used
+  for every recording. *Output* lists its outputs where the web view can send Web Audio to one (Chromium: Chrome,
+  Edge and the Windows app; `AudioContext.setSinkId`). Playback, the canvas, the count-in, the pads and the
+  Reference section all play there. Safari and the macOS and Linux web views cannot, and play through the system's
+  output (set in the system's sound settings). *Play a test sound* checks the output; *Show device names* appears
+  when the browser hides names until the microphone has been allowed. A chosen microphone that is not connected
+  falls back to the default, with a warning in the recording strip.
+- **On iPhone and iPad**: *Microphone* is *Automatic*, *Built-in*, *Bluetooth* or *Headset or USB*, and *Sound while
+  recording* is *Automatic* (headphones when connected, otherwise the speaker) or *Speaker*. iOS ties some of these
+  together: a Bluetooth microphone uses the headset's hands-free profile, and iOS then plays through that headset,
+  so *Bluetooth* microphone with *Speaker* output is not possible (forcing the speaker also moves the input back to
+  the built-in microphone). The other way round works: the built-in (or a wired or USB) microphone records while
+  Bluetooth headphones play. Outside recording iOS chooses the output (Control Center). Not yet tried on a device;
+  the recording log in Settings → Diagnostics names the input and output used.
 
 ### Reference
 
 The book button next to Settings. Two tabs (the one last used opens):
 
 - **Chords.** The roots down the side (A, A♭, B, B♭, C, D, D♭, E, E♭, F, G, G♭, with the sharp each flat also is).
-  Choosing one puts its chords across the top: major, minor, 7, maj7, m7, dim, aug, sus2, sus4, 6, m6, add9, 9, maj9,
-  m9, m7♭5, dim7, m(maj7), 7sus4 (the chords the transcription recognises). Tapping one plays it and shows it below:
-  its name in words, its notes, and how to play it with the *Piano | Guitar* choice (the same choice as the sketch
-  view's Chords section; guitar has alternative shapes). The play button plays it again.
+  Choosing one shows all of its chords on one page: major, minor, 7, maj7, m7, dim, aug, sus2, sus4, 6, m6, add9, 9,
+  maj9, m9, m7♭5, dim7, m(maj7), 7sus4 (the chords the transcription recognises). Each has its name in words, its
+  notes and how to play it with the *Piano | Guitar* choice (the same choice as the sketch view's Chords section):
+  a keyboard, or every guitar shape found for it side by side, easiest first, each labelled with where it sits on
+  the neck. The play button plays the chord; tapping a guitar shape plays that shape.
 - **Circle of fifths.** The same circle as in a sketch's Chords section. Tap a chord to hear it; its key's wedge is
-  shaded and how to play it appears below the circle (piano or guitar). The small record button under the circle,
+  shaded and how to play it appears below the circle: a keyboard, or all its guitar shapes stacked (tap one to hear
+  it; the one last heard is what a recording plays). The small record button under the circle,
   on the right, records chords: tap it, then tap chords on the circle (recording starts with the first one), then
   tap it again. The chords become a new sketch at the end of the open notebook, titled after them (e.g.
   *C – Am – F – G*): each chord's notes as you heard them (piano voicing or guitar shape) from its tap until the
@@ -370,7 +402,7 @@ npm run smoke:edit       # drag-select, move, transpose, delete, join and undo n
 ```
 
 ```bash
-npm run smoke:notebook   # the canvas: sketches on one clock, gestures, the sketch menu (volume, slice, delete), repeats, export, copy/paste, the rhythm view, text notes, notebooks, the Reference section
+npm run smoke:notebook   # the canvas: sketches on one clock, gestures, the sketch menu (volume, slice, delete), repeats, the loop (ruler handles, playback inside it), export, copy/paste, the rhythm view, text notes, notebooks, the Reference section
 ```
 
 ```bash
@@ -447,6 +479,9 @@ used before the Web Audio player), so both fail at that step.
   (`UIApplicationSupportsIndirectInputEvents`) and a single-window scene with Tao's scene delegate
   (`UIApplicationSceneManifest`, Tao 0.37.2 here as in Snorkle). It only takes effect in a new iOS build, and has not
   been tried on an iPad with Earbud; see [docs/IOS.md](docs/IOS.md#ipad-trackpad).
+- **Recording onto the canvas** shows no camera image (the camera still records when Settings asks for it). On iOS
+  the camera preview layer still sits behind the page while recording, hidden by the canvas; this has not been
+  tried on a device.
 - **Slice and volume** work on the canvas only: a sliced recording's halves are crops (the sketch view shows the
   whole take with the crop handles), and the sketch view plays at full volume.
 - **Text notes**: links in notes are shown but not followed (a tap on the canvas is a canvas gesture). Notes are not

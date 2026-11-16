@@ -16,6 +16,13 @@ export interface CaptureSettings {
   lens: LensChoice;
   /** Ask the OS for an unprocessed microphone signal where supported. */
   rawAudio: boolean;
+  /**
+   * The microphone to record from. Web backends: a device id ('' = the
+   * system's). iOS: a kind, 'auto' | 'builtIn' | 'bluetooth' | 'wired'.
+   */
+  input?: string;
+  /** iOS: where sound plays while recording, 'auto' (headphones when connected) or 'speaker'. */
+  output?: string;
 }
 
 export interface RecordingResult {

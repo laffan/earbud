@@ -1,12 +1,14 @@
 <script lang="ts">
   /**
    * Reference: chords to look up, not taken from a recording.
-   *  - Chords: the roots down the side; the chosen root's chords (major,
-   *    minor, sevenths…) across the top; the chosen chord's notes and how to
-   *    play it on piano or guitar, which can be played.
-   *  - Circle of fifths: tap a chord to hear it and see how to play it below.
-   *    The record button under the circle records the chords tapped, in time,
-   *    as a new sketch at the end of the open notebook.
+   *  - Chords: the roots down the side; every chord of the chosen root (major,
+   *    minor, sevenths…) on one page, each with its notes and how to play it
+   *    on piano or guitar (all its guitar shapes side by side). Tap a chord's
+   *    play button, or a guitar shape, to hear it.
+   *  - Circle of fifths: tap a chord to hear it and see how to play it below
+   *    (its guitar shapes stacked). The record button under the circle records
+   *    the chords tapped, in time, as a new sketch at the end of the open
+   *    notebook.
    * The piano / guitar choice is the one the sketch view's Chords section uses.
    */
   import { onDestroy } from 'svelte';
@@ -69,8 +71,7 @@
   let tab = $state<Tab>(remembered(TAB_KEY, ['chords', 'circle'] as const, 'chords'));
   let instrument = $state<Instrument>(remembered(INSTRUMENT_KEY, ['piano', 'guitar'] as const, 'piano'));
   let rootName = $state<RootName>(remembered(ROOT_KEY, ROOTS.map((r) => r.name), 'C'));
-  let quality = $state('M');
-  /** Which guitar shape is shown, per chord symbol. */
+  /** The guitar shape last heard, per chord symbol (what a recording on the circle takes). */
   let shapeIndex = $state<Record<string, number>>({});
 
   function setTab(next: Tab) {
@@ -128,10 +129,12 @@
     return c.guitar[shapeIndex[c.symbol] ?? 0] ?? c.guitar[0] ?? null;
   }
 
-  /** The pitches heard for a chord on the chosen instrument. */
+  const shapePitches = (shape: GuitarVoicing) => shape.frets.flatMap((f, s) => (f >= 0 ? [GUITAR_TUNING[s] + f] : []));
+
+  /** The pitches heard for a chord on the chosen instrument (on guitar, the shape last heard). */
   function pitchesOf(c: Shown): number[] {
     const shape = instrument === 'guitar' ? shapeOf(c) : null;
-    if (shape) return shape.frets.flatMap((f, s) => (f >= 0 ? [GUITAR_TUNING[s] + f] : []));
+    if (shape) return shapePitches(shape);
     return [...c.piano.left, ...c.piano.right];
   }
 
@@ -140,21 +143,25 @@
     synth.playChord(pitchesOf(c), 80, 1.6, instrument === 'guitar' ? 0.035 : 0.012);
   }
 
-  function cycleShape(c: Shown, step: number) {
-    const n = c.guitar.length;
-    if (n < 2) return;
-    shapeIndex = { ...shapeIndex, [c.symbol]: ((shapeIndex[c.symbol] ?? 0) + step + n) % n };
+  /** One of a chord's guitar shapes, heard (and remembered as the one to play for it). */
+  function playShape(c: Shown, index: number) {
+    shapeIndex = { ...shapeIndex, [c.symbol]: index };
+    synth.unlock();
+    synth.playChord(shapePitches(c.guitar[index]), 80, 1.6, 0.035);
   }
+
+  /** Where a shape sits on the neck, in words. */
+  const shapePlace = (shape: GuitarVoicing) => (shape.frets.includes(0) || shape.position <= 1 ? 'Open position' : `Fret ${shape.position}`);
 
   // ------------------------------------------------------------- chords tab
 
   const root = $derived(ROOTS.find((r) => r.name === rootName) ?? ROOTS[4]);
   const variants = $derived(VARIANTS.map((q) => describe(root.pc, q, root.flat)));
-  const chosen = $derived(variants.find((v) => v.quality === quality) ?? variants[0]);
+  let page = $state<HTMLElement | null>(null);
 
-  function chooseVariant(v: Shown) {
-    quality = v.quality;
-    play(v);
+  function chooseRoot(name: RootName) {
+    setRoot(name);
+    page?.scrollTo({ top: 0 });
   }
 
   // ------------------------------------------------------------- circle tab
@@ -215,9 +222,8 @@
   onDestroy(() => window.clearInterval(ticker));
 </script>
 
-{#snippet chordCard(c: Shown)}
-  {@const shape = shapeOf(c)}
-  <article class="card" aria-label={c.symbol}>
+{#snippet chordCard(c: Shown, shapes: 'row' | 'stack')}
+  <article class="card" class:stacked={shapes === 'stack'} aria-label={c.symbol}>
     <div class="card-head">
       <span class="symbol serif">{c.symbol}</span>
       <span class="words">{c.words}</span>
@@ -225,21 +231,24 @@
       <button class="play" onclick={() => play(c)} aria-label="Play {c.symbol} on {instrument}"><Icon name="play" size={16} /></button>
     </div>
     <p class="tones">{c.tones.join(' · ')}</p>
-    <div class="diagram" class:guitar={instrument === 'guitar'}>
-      {#if instrument === 'piano'}
+    {#if instrument === 'piano'}
+      <div class="diagram">
         <PianoDiagram left={c.piano.left} right={c.piano.right} names={c.names} />
-      {:else if shape}
-        <GuitarDiagram voicing={shape} names={c.names} />
-      {:else}
-        <p class="none">No comfortable guitar shape found.</p>
-      {/if}
-    </div>
-    {#if instrument === 'guitar' && c.guitar.length > 1}
-      <div class="shapes">
-        <button onclick={() => cycleShape(c, -1)} aria-label="Previous shape for {c.symbol}"><Icon name="left" size={16} /></button>
-        <span class="tabular">Shape {(shapeIndex[c.symbol] ?? 0) + 1} of {c.guitar.length}</span>
-        <button onclick={() => cycleShape(c, 1)} aria-label="Next shape for {c.symbol}"><Icon name="right" size={16} /></button>
       </div>
+    {:else if c.guitar.length}
+      <!-- Every shape, easiest first: tap one to hear it. -->
+      <ol class="shapes {shapes}" aria-label="Guitar shapes for {c.symbol}">
+        {#each c.guitar as shape, i (i)}
+          <li>
+            <button class="shape" class:heard={(shapeIndex[c.symbol] ?? 0) === i} onclick={() => playShape(c, i)} aria-label="Play {c.symbol}, {shapePlace(shape).toLowerCase()}">
+              <span class="box"><GuitarDiagram voicing={shape} names={c.names} /></span>
+              <span class="place">{shapePlace(shape)}</span>
+            </button>
+          </li>
+        {/each}
+      </ol>
+    {:else}
+      <p class="none">No comfortable guitar shape found.</p>
     {/if}
   </article>
 {/snippet}
@@ -268,22 +277,19 @@
     <div class="chords">
       <nav class="roots" aria-label="Root">
         {#each ROOTS as r (r.name)}
-          <button class="root" class:on={r.name === rootName} aria-pressed={r.name === rootName} onclick={() => setRoot(r.name)}>
+          <button class="root" class:on={r.name === rootName} aria-pressed={r.name === rootName} onclick={() => chooseRoot(r.name)}>
             <span class="serif">{r.name}</span>
             {#if r.also}<span class="also">{r.also}</span>{/if}
           </button>
         {/each}
       </nav>
-      <section class="content" aria-label="{root.name} chords">
-        <div class="variants" role="group" aria-label="Chords on {root.name}">
+      <section class="content" bind:this={page} aria-label="{root.name} chords">
+        <div class="instrument">{@render instrumentChoice()}</div>
+        <div class="cards" class:guitar={instrument === 'guitar'}>
           {#each variants as v (v.quality)}
-            <button class="variant serif" class:on={v.quality === chosen.quality} aria-pressed={v.quality === chosen.quality} onclick={() => chooseVariant(v)}>
-              {v.symbol}
-            </button>
+            {@render chordCard(v, 'row')}
           {/each}
         </div>
-        <div class="instrument">{@render instrumentChoice()}</div>
-        {@render chordCard(chosen)}
       </section>
     </div>
   {:else}
@@ -319,7 +325,7 @@
       </div>
       {#if pickedChord}
         <div class="instrument">{@render instrumentChoice()}</div>
-        {@render chordCard(pickedChord)}
+        {@render chordCard(pickedChord, 'stack')}
       {/if}
     </div>
   {/if}
@@ -413,31 +419,19 @@
     gap: 12px;
     padding: 14px calc(var(--safe-right) + 14px) calc(var(--safe-bottom) + 24px) 14px;
   }
-  .variants {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-  .variant {
-    min-width: 46px;
-    min-height: 38px;
-    padding: 0 10px;
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--rule);
-    background: var(--paper-raised);
-    font-weight: 700;
-    color: var(--chord);
-  }
-  .variant:hover {
-    border-color: var(--rule-strong);
-  }
-  .variant.on {
-    background: var(--chord);
-    border-color: var(--chord);
-    color: var(--paper);
-  }
   .instrument {
     display: flex;
+  }
+
+  /* Every chord of the root, one page. */
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+    gap: 12px;
+    align-items: start;
+  }
+  .cards.guitar {
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr));
   }
 
   /* A chord: its name, notes and how to play it. */
@@ -488,33 +482,59 @@
   .diagram {
     max-width: 440px;
   }
-  .diagram.guitar {
-    width: 60%;
-    max-width: 220px;
-    justify-self: center;
-  }
   .none {
     margin: 8px 0;
     color: var(--ink-3);
   }
+  /* Guitar shapes: side by side in a chord's card, stacked under the circle. */
   .shapes {
     display: flex;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .shapes.stack {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .shape {
+    display: grid;
+    justify-items: center;
+    gap: 2px;
+    padding: 6px 6px 4px;
+    border-radius: var(--radius-sm);
+    border: 1px solid transparent;
+  }
+  .shape:hover {
+    background: var(--paper-sunk);
+  }
+  .shape.heard {
+    border-color: var(--rule);
+  }
+  .shape .box {
+    display: block;
+    width: 96px;
+  }
+  .stack .shape {
+    grid-template-columns: 150px 1fr;
+    justify-items: start;
     align-items: center;
-    justify-content: center;
-    gap: 6px;
-    font-size: 0.85rem;
+    gap: 14px;
+    width: 100%;
+  }
+  .stack .shape .box {
+    width: 150px;
+  }
+  .place {
+    font-size: 0.75rem;
     color: var(--ink-3);
   }
-  .shapes button {
-    display: grid;
-    place-items: center;
-    width: 32px;
-    height: 32px;
-    border-radius: 8px;
+  .stack .place {
+    font-size: 0.9rem;
     color: var(--ink-2);
-  }
-  .shapes button:hover {
-    background: var(--paper-sunk);
   }
 
   /* Circle of fifths, with the record button under it on the right. */
@@ -527,6 +547,10 @@
     align-items: center;
     gap: 12px;
     padding: 16px calc(var(--safe-right) + 16px) calc(var(--safe-bottom) + 24px) calc(var(--safe-left) + 16px);
+  }
+  /* Taller than the screen with the shapes stacked: scroll, never squeeze the circle. */
+  .circle > :global(*) {
+    flex-shrink: 0;
   }
   .circle > :global(svg) {
     width: min(100%, 440px);

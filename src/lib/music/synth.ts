@@ -6,6 +6,7 @@
  *    and plays chords.
  *  - `renderNotesToWav` renders notes offline with the same voice, for export.
  */
+import { routeOutput } from '../audio/devices';
 import { encodeWav16 } from '../audio/wav';
 import { preparePlaybackSession } from '../audio/session';
 import type { PianoNote } from '../transcription/types';
@@ -226,7 +227,7 @@ export class NoteSynth {
   private ensureContext(): AudioContext {
     if (!this.ctx) {
       const shared = this.options.context?.();
-      this.ctx = shared ?? new (audioContextClass())({ latencyHint: 'playback' });
+      this.ctx = shared ?? routeOutput(new (audioContextClass())({ latencyHint: 'playback' }));
       this.master = createOutput(this.ctx, this.volume, this.options.destination?.());
     }
     return this.ctx;

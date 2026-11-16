@@ -151,7 +151,18 @@ side:
 - Auto-lock is disabled while recording.
 - The audio session uses `.playAndRecord` with `.videoRecording` mode by default. Settings → *Unprocessed
   microphone* switches to `.measurement` mode (no system AGC/EQ; more faithful but quieter). After recording the
-  native session returns to `.playback`.
+  native session returns to `.playback` (with no preferred input and no output override).
+- Settings → *Audio* passes `audioInput` (`auto`, `builtIn`, `bluetooth`, `wired`) and `audioOutput` (`auto`,
+  `speaker`) with the start request. A Bluetooth microphone needs `.allowBluetooth` (the hands-free profile) instead
+  of `.allowBluetoothA2DP`, and `.default` mode (`.videoRecording` keeps to the built-in microphone, as does a wired
+  one, which also uses `.default`); the port of that kind in `availableInputs` becomes the preferred input (none:
+  the current input, logged). *Speaker* calls `overrideOutputAudioPort(.speaker)`, except with a Bluetooth
+  microphone: iOS routes hands-free input and output to the same headset, and the speaker override would move the
+  input to the built-in microphone, so the headset keeps playing (logged). Built-in or wired input with Bluetooth
+  headphones (A2DP) playing is the combination iOS supports. The recording log shows the preferred input and the
+  route (`in=[…] out=[…]` in the audio session line). None of this has run on a device: check that the chosen
+  microphone is the one heard in the take, and where the canvas's sound plays while recording (WebKit plays it
+  from its own process).
 - WebKit has its own audio session: a running Web Audio context alone does not establish speaker output.
   Playback gestures now request `navigator.audioSession.type = 'playback'` when supported, including when the
   context is already running. Before capture, the app switches WebKit back to `auto` and keeps it there through
@@ -263,6 +274,14 @@ To check on an iPad with a Magic Keyboard or trackpad:
 3. Pinch on the trackpad (or ⌘ + scroll) zooms the timeline.
 4. Background the app and return; record a sketch; check that playback, recording and the camera preview behave as
    before (the scene lifecycle changes how the window is created).
+
+## Recording onto the canvas
+
+A recording started from the canvas no longer shows the full-screen recorder: it happens in a strip on the canvas.
+The plugin still attaches its camera preview behind the web view when the camera is on, but the page is not made
+transparent, so the preview is hidden and the take still has video. Check on a device that the canvas stays
+visible and responsive while recording, that the count-in and level show in the strip, and that the take has
+video when the camera is on.
 
 ## Storage location
 

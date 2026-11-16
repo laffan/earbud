@@ -9,6 +9,8 @@
  * only lets an AudioContext start during a user gesture. Without a running
  * context the count-in is still shown, just silent.
  */
+import { routeOutput } from '../audio/devices';
+
 
 export interface CountInOptions {
   beats: number;
@@ -46,7 +48,7 @@ export class Metronome {
       if (!this.ctx) {
         const Ctx = audioContextClass();
         if (!Ctx) return;
-        this.ctx = new Ctx({ latencyHint: 'interactive' });
+        this.ctx = routeOutput(new Ctx({ latencyHint: 'interactive' }));
       }
       if (this.ctx.state === 'suspended') void this.ctx.resume().catch(() => {});
     } catch {

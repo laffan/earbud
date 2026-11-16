@@ -65,6 +65,7 @@
   import Icon from './Icon.svelte';
   import ImportSheet from './ImportSheet.svelte';
   import Minimap from './Minimap.svelte';
+  import RecordingStrip from './RecordingStrip.svelte';
   import RhythmModal from './RhythmModal.svelte';
   import SettingsSheet from './SettingsSheet.svelte';
   import Sheet from './Sheet.svelte';
@@ -100,6 +101,8 @@
   let solo = $state<{ id: string; start: number; end: number; resume: number } | null>(null);
   /** Recording onto the canvas from here (seconds), while it lasts. */
   let recordingAt = $state<number | null>(null);
+  /** A recording onto this notebook's canvas is under way (shown as a strip on it). */
+  const recordingHere = $derived(recordingAt !== null && !!app.recording?.canvas);
   let repeat = $state(false);
   /** The loop range while its handles are dragged. */
   let loopDraft = $state<{ start: number; end: number } | null>(null);
@@ -276,12 +279,17 @@
 
   /** Seeking past the last sketch is allowed (the playhead just sits there). */
   let parkedAt = $state(0);
-  const engineDuration = $derived(Math.max(itemsEnd, parkedAt, recordingAt !== null ? recordingAt + 3600 : 0));
+  const engineDuration = $derived(
+    Math.max(itemsEnd, parkedAt, recordingAt !== null ? recordingAt + 3600 : 0, repeat && loopRange ? loopRange.end : 0),
+  );
   $effect(() => {
     engine.setDuration(engineDuration);
   });
 
-  /** Range and loop for what plays: a sketch alone, the canvas while recording, or the canvas with repeat. */
+  /**
+   * Range and loop for what plays: a sketch alone, the canvas while recording, or the canvas with repeat
+   * (the loop range only, so the engine keeps the playhead in it and play from elsewhere starts at its start).
+   */
   function applyRange() {
     if (recordingAt !== null) {
       engine.setRange(0, null);
@@ -290,7 +298,8 @@
       engine.setRange(solo.start, solo.end);
       engine.setLoop(false);
     } else if (repeat && loopRange) {
-      engine.setRange(0, loopRange.end);
+      // Only the loop plays: the playhead is kept inside it (play from outside starts at its start).
+      engine.setRange(loopRange.start, loopRange.end);
       engine.setLoop(true, loopRange.start);
     } else {
       engine.setRange(0, null);
@@ -513,6 +522,11 @@
     if (pointers.size > 2) return;
     let dismiss = dismissedBy === e.pointerId;
     dismissedBy = -1;
+    if (recordingHere) {
+      // Recording onto the canvas: it can be scrolled and zoomed, nothing else.
+      press = { pointer: e.pointerId, type: e.pointerType, x0: e.clientX, y0: e.clientY, target: { kind: 'empty' }, moved: false, held: false, mode: 'none', view0: view, dismiss: true };
+      return;
+    }
     if (editingNote || draftNote) {
       // Finish the note being written (saved on blur); this press does nothing else.
       (document.activeElement as HTMLElement | null)?.blur?.();
@@ -715,6 +729,7 @@
 
   function onContextMenu(e: MouseEvent) {
     e.preventDefault();
+    if (recordingHere) return;
     // Touch long presses are handled by the hold timer.
     if (lastPointerType !== 'mouse') return;
     const target = targetOf(e.target);
@@ -1081,6 +1096,34 @@
     }
   }
 
+  /** A loop edge being dragged on the ruler. */
+  let rulerDrag: { edge: 'start' | 'end'; pointer: number } | null = null;
+  const MIN_LOOP = 0.25;
+  const LOOP_EDGES = ['start', 'end'] as const;
+
+  function rulerHandleDown(e: PointerEvent, edge: 'start' | 'end') {
+    // The ruler is part of the canvas: this press is not a canvas gesture.
+    e.stopPropagation();
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    rulerDrag = { edge, pointer: e.pointerId };
+  }
+
+  function rulerHandleMove(e: PointerEvent) {
+    const d = rulerDrag;
+    if (!d || d.pointer !== e.pointerId || !loopRange) return;
+    const t = Math.max(0, localPoint(e.clientX, e.clientY).time);
+    if (d.edge === 'start') onLoopChange(Math.min(t, loopRange.end - MIN_LOOP), loopRange.end, false);
+    else onLoopChange(loopRange.start, Math.max(t, loopRange.start + MIN_LOOP), false);
+  }
+
+  function rulerHandleUp(e: PointerEvent) {
+    const d = rulerDrag;
+    if (!d || d.pointer !== e.pointerId) return;
+    rulerDrag = null;
+    if (loopRange) onLoopChange(loopRange.start, loopRange.end, true);
+  }
+
   function resetLoop() {
     if (notebook) void app.setNotebookLoop(notebook.id, null, null);
   }
@@ -1108,7 +1151,8 @@
     if ((e.target as HTMLElement).closest('input, textarea') || rhythmEditor || editingNote || draftNote) return;
     if (e.key === ' ' && !e.repeat) {
       e.preventDefault();
-      togglePlay();
+      if (recordingHere) void app.stopRecording();
+      else togglePlay();
     } else if (e.key === 'Escape') {
       slicing = null;
       closeMenus();
@@ -1265,6 +1309,18 @@
           onsubmit={(text) => submitNote(n.id, text)}
         />
       {/each}
+      {#if recordingHere && app.recording && recordingAt !== null}
+        <RecordingStrip
+          recording={app.recording}
+          left={recordingAt * view.pps}
+          top={app.recording.canvas?.y ?? 0}
+          pps={view.pps}
+          played={Math.max(0, currentTime - recordingAt)}
+          {viewLeft}
+          viewRight={viewLeft + cw}
+          {theme}
+        />
+      {/if}
       {#if draftNote}
         <CanvasNote
           id={null}
@@ -1333,13 +1389,35 @@
       {#each ticks as tick (tick.t)}
         <span class="tick tabular" style:left="{tick.x}px">{tick.label}</span>
       {/each}
+      {#if repeat && loopRange}
+        <!-- The loop's edges, dragged along the ruler (as on the minimap). -->
+        {#each LOOP_EDGES as edge (edge)}
+          {@const x = ((edge === 'start' ? loopRange.start : loopRange.end) - view.scrollX) * view.pps}
+          {#if x > -20 && x < cw + 20}
+            <div
+              class="ruler-handle {edge}"
+              style:left="{x}px"
+              role="slider"
+              tabindex="-1"
+              aria-label="Loop {edge}"
+              aria-valuenow={Math.round((edge === 'start' ? loopRange.start : loopRange.end) * 10) / 10}
+              onpointerdown={(e) => rulerHandleDown(e, edge)}
+              onpointermove={rulerHandleMove}
+              onpointerup={rulerHandleUp}
+              onpointercancel={rulerHandleUp}
+            >
+              <span></span>
+            </div>
+          {/if}
+        {/each}
+      {/if}
     </div>
 
     {#if playheadX > -2 && playheadX < cw + 2}
       <div class="playhead" class:parked={!!solo} style:left="{playheadX}px"></div>
     {/if}
 
-    {#if app.ready && items.length === 0 && !createSpot && !draftNote}
+    {#if app.ready && items.length === 0 && !createSpot && !draftNote && !recordingHere}
       <div class="empty">
         <p class="serif lead">An empty page.</p>
         <p>Press and hold anywhere to record, import or tap out a rhythm; double-tap to write a note. Left to right is time.</p>
@@ -1368,9 +1446,15 @@
       {theme}
     />
     <div class="controls">
-      <button class="play" onclick={togglePlay} disabled={sketches.length === 0} aria-label={playing && !solo ? 'Pause' : 'Play'}>
-        <Icon name={playing && !solo ? 'pause' : 'play'} size={22} />
-      </button>
+      {#if recordingHere}
+        <button class="play stop" onclick={() => app.stopRecording()} disabled={app.recording?.phase !== 'recording'} aria-label="Stop recording">
+          <span class="square" aria-hidden="true"></span>
+        </button>
+      {:else}
+        <button class="play" onclick={togglePlay} disabled={sketches.length === 0} aria-label={playing && !solo ? 'Pause' : 'Play'}>
+          <Icon name={playing && !solo ? 'pause' : 'play'} size={22} />
+        </button>
+      {/if}
       <span class="time tabular"
         >{formatClockTenths(playheadTime)}{#if buffering}<span class="dim"> loading…</span>{/if}</span
       >
@@ -1712,6 +1796,26 @@
     opacity: 0.5;
     pointer-events: none;
   }
+  .ruler-handle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: 1;
+    width: 28px;
+    margin-left: -14px;
+    display: grid;
+    place-items: center;
+    cursor: ew-resize;
+    touch-action: none;
+  }
+  .ruler-handle span {
+    width: 6px;
+    height: 70%;
+    border-radius: 3px;
+    background: var(--accent);
+    box-shadow: 0 0 0 2px var(--paper-raised);
+    pointer-events: none;
+  }
   .tick {
     position: absolute;
     top: 0;
@@ -1828,6 +1932,15 @@
     background: var(--ink);
     color: var(--paper);
     flex: none;
+  }
+  .play.stop {
+    background: var(--accent);
+  }
+  .play.stop .square {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    background: var(--accent-ink);
   }
   .time {
     font-size: 1rem;

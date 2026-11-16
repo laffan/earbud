@@ -13,6 +13,7 @@ import {
   type RecordingResult,
 } from '../capture';
 import { Metronome } from '../capture/countIn';
+import { setDeviceLog, setOutputDevice, type IosInput, type IosOutput } from '../audio/devices';
 import { beginCaptureSession, webAudioSessionSummary } from '../audio/session';
 import { CHORD_TAPS_BACKEND, CHORD_TAPS_ENGINE, importAudioSketch, importMidiSketch, notesSketch, type Placement } from '../library/importTrack';
 import { getLibrary, type Sketch, type SketchLibrary } from '../library';
@@ -40,6 +41,12 @@ export interface Settings extends CaptureSettings {
   countIn: boolean;
   /** Tempo of the count-in, in beats per minute. */
   countInBpm: number;
+  /** Browser / desktop: the microphone's and the output's device ids ('' = the system's). */
+  audioInput: string;
+  audioOutput: string;
+  /** iOS: the kind of microphone, and where sound plays while recording. */
+  iosInput: IosInput;
+  iosOutput: IosOutput;
 }
 
 /** Beats of the count-in. */
@@ -148,6 +155,7 @@ const NOTEBOOK_KEY = 'earbud.notebook.v1';
 export const EARLY_FAILURE_MS = 1500;
 /** Stop taps this soon after recording begins are ignored (double-tap guard). */
 export const STOP_GUARD_MS = 600;
+const RESTARTING = 'Restarting the recording…';
 /** Backstop if the capture engine never answers a start request. */
 export const START_TIMEOUT_MS = 15_000;
 
@@ -171,6 +179,10 @@ const DEFAULT_SETTINGS: Settings = {
   autoTranscribe: true,
   countIn: true,
   countInBpm: 90,
+  audioInput: '',
+  audioOutput: '',
+  iosInput: 'auto',
+  iosOutput: 'auto',
 };
 
 function loadSettings(): Settings {
@@ -268,6 +280,8 @@ export class AppState {
     this.options = options;
     this.library = options.library ?? getLibrary();
     this.metronome = options.metronome ?? new Metronome();
+    setDeviceLog((message) => this.logCapture(`[audio] ${message}`));
+    setOutputDevice(this.settings.audioOutput);
     this.queue = new ProcessingQueue({
       library: this.library,
       capture: () => this.captureEngine,
@@ -828,6 +842,7 @@ export class AppState {
 
   updateSettings(patch: Partial<Settings>) {
     this.settings = { ...this.settings, ...patch };
+    if (patch.audioOutput !== undefined) setOutputDevice(patch.audioOutput);
     try {
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(this.settings));
     } catch {
@@ -907,10 +922,13 @@ export class AppState {
     }
     const take = this.takeTarget;
     const canvas = this.canvasTarget;
+    const native = engine.nativePreview;
     const settings: CaptureSettings = {
       camera: this.settings.camera,
       lens: this.settings.lens,
       rawAudio: this.settings.rawAudio,
+      input: native ? this.settings.iosInput : this.settings.audioInput,
+      output: native ? this.settings.iosOutput : undefined,
     };
     const wantsVideo = settings.camera !== 'none';
     const attempt = ++this.attempt;
@@ -927,8 +945,9 @@ export class AppState {
       levelDb: -160,
       peakDb: -160,
       hasVideo: wantsVideo,
-      nativePreview: engine.nativePreview && wantsVideo,
-      warning: retry ? 'Restarting the recording…' : null,
+      // Onto a canvas, recording happens in a strip on the canvas: no full-screen camera preview.
+      nativePreview: engine.nativePreview && wantsVideo && !canvas,
+      warning: retry ? RESTARTING : null,
       countIn: null,
       downbeatMs: null,
       playFrom: null,
@@ -994,7 +1013,8 @@ export class AppState {
         armedAt: now + STOP_GUARD_MS,
         hasVideo: active.hasVideo,
         previewStream: active.previewStream,
-        warning: null,
+        // A warning raised while starting (e.g. the chosen microphone is missing) stays; "Restarting…" goes.
+        warning: this.recording.warning === RESTARTING ? null : this.recording.warning,
       };
       const early = this.pendingFinish;
       if (early) {

@@ -82,16 +82,27 @@ export class WebCaptureEngine implements CaptureEngine {
     onEvent: (event: CaptureEvent) => void,
   ): Promise<ActiveRecording> {
     const wantsVideo = settings.camera !== 'none';
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-      video: wantsVideo
-        ? {
-            facingMode: settings.camera === 'front' ? 'user' : 'environment',
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-          }
-        : false,
-    });
+    const open = (deviceId: string | undefined) =>
+      navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, ...(deviceId ? { deviceId: { exact: deviceId } } : {}) },
+        video: wantsVideo
+          ? {
+              facingMode: settings.camera === 'front' ? 'user' : 'environment',
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+            }
+          : false,
+      });
+    let stream: MediaStream;
+    try {
+      stream = await open(settings.input || undefined);
+    } catch (error) {
+      // The chosen microphone is not connected: the system's, and say so.
+      const name = error instanceof DOMException ? error.name : '';
+      if (!settings.input || (name !== 'OverconstrainedError' && name !== 'NotFoundError')) throw error;
+      stream = await open(undefined);
+      onEvent({ type: 'error', message: 'The chosen microphone is not connected; recording from the default one.' });
+    }
     const hasVideo = stream.getVideoTracks().length > 0;
     const { mime } = this.mediaFormat(settings);
     let recorder: MediaRecorder;

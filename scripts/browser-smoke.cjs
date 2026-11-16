@@ -89,6 +89,14 @@ async function findNote(page) {
   await page.waitForSelector('button[aria-label="Stop and save"]:not([disabled])', { timeout: 15000 });
   await page.waitForTimeout(7600);
   await shot(page, '02-recording');
+  // Recording happens in a strip on the canvas, which stays in view and grows as it plays.
+  if (await page.$('.recorder')) fail('recording onto the canvas should not cover the screen');
+  const strip = await page.$eval('[data-recording-strip]', (e) => e.getBoundingClientRect().toJSON()).catch(() => null);
+  if (!strip) fail('a recording onto the canvas should show its strip');
+  else {
+    console.log(`recording strip at ${Math.round(strip.x)}, ${Math.round(strip.y)}, ${Math.round(strip.width)} px wide`);
+    if (Math.abs(strip.x - held.x) > 6) fail('the recording strip is not where the canvas was held');
+  }
   await page.click('button[aria-label="Stop and save"]');
   await page.waitForSelector('[data-tile]', { timeout: 15000 });
   const tile = await page.$eval('[data-tile]', (e) => e.getBoundingClientRect().toJSON());

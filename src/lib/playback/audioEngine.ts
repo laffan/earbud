@@ -23,6 +23,7 @@
  * of a loop is scheduled just before the end, so loops are gapless.
  */
 
+import { routeOutput } from '../audio/devices';
 import { preparePlaybackSession, webAudioSessionSummary } from '../audio/session';
 
 export interface EngineTrack {
@@ -154,7 +155,7 @@ export class AudioEngine {
   /** The audio context every sound of the sketch plays in (created on first use). */
   get context(): AudioContext {
     if (!this.ctx) {
-      const ctx = this.options.createContext?.() ?? new (audioContextClass())({ latencyHint: 'playback' });
+      const ctx = this.options.createContext?.() ?? routeOutput(new (audioContextClass())({ latencyHint: 'playback' }));
       this.ctx = ctx;
       // A limiter on the sum: several loud takes plus the synth must not clip.
       const limiter = ctx.createDynamicsCompressor();

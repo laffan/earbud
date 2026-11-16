@@ -16,6 +16,7 @@
    */
   import { onDestroy, untrack } from 'svelte';
   import { DrumKit } from '../music/drums';
+  import { routeOutput } from '../audio/devices';
   import { preparePlaybackSession } from '../audio/session';
   import {
     doubled,
@@ -129,7 +130,7 @@
 
   // --------------------------------------------------------------- sound
 
-  const ctx = new (audioContextClass())({ latencyHint: 'interactive' });
+  const ctx = routeOutput(new (audioContextClass())({ latencyHint: 'interactive' }));
   const limiter = ctx.createDynamicsCompressor();
   limiter.threshold.value = -3;
   limiter.ratio.value = 12;

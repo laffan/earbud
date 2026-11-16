@@ -58,6 +58,8 @@ export class NativeCaptureEngine implements CaptureEngine {
       camera: settings.camera,
       lens: settings.lens,
       rawAudio: settings.rawAudio,
+      audioInput: settings.input ?? 'auto',
+      audioOutput: settings.output ?? 'auto',
       events,
     });
     return {

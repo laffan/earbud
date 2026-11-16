@@ -307,8 +307,20 @@ which makes the whole UI testable in Chromium.
   tracks. Holding a sketch opens its menu at once and picks it up; moving closes the menu and drags. The right-edge
   grip stretches a rhythm by bars or a recording by whole repeats, relative to where the drag began. *Copy* keeps
   the sketch's id in `app.clipboard`; *Paste* and *Duplicate* call `duplicate_sketch`. Playing a sketch alone sets the engine's
-  range to it and the others' gain to 0; repeat sets the range to [0, loop end] with the loop's next pass starting at
-  the loop start, so playing from before the range runs into it. Scroll, zoom and repeat are kept per notebook.
+  range to it and the others' gain to 0; repeat sets the range to the loop itself, [loop start, loop end], with every
+  pass starting at the loop start, so the engine keeps the playhead inside the loop (play from outside it, or a seek
+  outside it, lands on its start or edge) and nothing outside it plays; the engine's duration reaches at least the
+  loop's end. The loop's edges can be dragged on the ruler (`.ruler-handle`, which keep their pointer events from
+  the canvas) and on the minimap. Scroll, zoom and repeat are kept per notebook.
+- Recording onto the canvas happens in place: `App.svelte` neither covers the canvas nor shows `Recorder.svelte` for
+  a recording with a `canvas` target (the full-screen recorder stays for takes into a sketch), and such a recording
+  asks for no native camera preview (`nativePreview` false, so the page stays opaque). `RecordingStrip.svelte`, in
+  the canvas's world layer at the held point, shows the phase (starting, count-in with its beat and pips, the
+  time, saving), the beat dot (`pulse`) over a rhythm, warnings, and the input level: each `level` event (about
+  10 a second) adds a sample at the canvas's playhead position since the start, drawn as bars (only the visible part
+  is drawn). It is as wide as the canvas has played (at least 168 px). Its stop button, the dock's play button
+  (a stop button meanwhile) and the space bar call `app.stopRecording()`. While recording, presses on the canvas
+  can only pan or pinch.
 - Volume: each canvas track carries the sketch's `canvasVolume` as `EngineTrack.volume`, multiplied into the gain
   that mute and solo already move (a smooth change, no restart). `app.setVolume` updates the sketch at once and saves
   250 ms after the slider rests, without bumping the sketch's revision, so the canvas keeps its decoded sound.
@@ -339,6 +351,12 @@ which makes the whole UI testable in Chromium.
   corner (`data-resize`) resizes the box. `markdown.ts` renders a safe subset (everything escaped, then a fixed set
   of tags; links only to http(s) and mailto) and `isEmojiOnly` picks the notes shown at 50 px and drawn on the
   minimap as their emoji.
+- Audio devices (`src/lib/audio/devices.ts`, Settings → Audio in `AudioSettings.svelte`): the web backend opens
+  the chosen microphone with `getUserMedia({ audio: { deviceId: { exact } } })` (a missing one: the default, and a
+  warning). Every AudioContext that plays (the playback engine, the synth, the metronome, the rhythm view) is made
+  through `routeOutput`, which calls `setSinkId` with the chosen output where it exists (Chromium) and again when
+  the choice changes (`setOutputDevice`, from `app.updateSettings`). On iOS the settings are kinds, passed to the
+  native recorder as `audioInput` / `audioOutput` (see `docs/IOS.md`).
 - Text selection: `body` sets `user-select: none` (and `-webkit-touch-callout: none`), so taps, holds and drags
   never select UI text or open the iOS callout; inputs, text areas and `.selectable` (the diagnostics log) opt back in.
 - `RhythmView.svelte`: a rhythm opened full size (the app routes a sketch of kind `rhythm` here instead of the sketch
@@ -353,9 +371,11 @@ which makes the whole UI testable in Chromium.
   the playhead and, with repeat on, the loop's handles. The canvas draws the loop's edges as dashed lines
   (`.loop-edge`) from the ruler to the bottom.
 - `ReferenceView.svelte` (route `#/reference`, from the book button in the notebook's header): *Chords* lists the
-  roots in a sidebar and the root's 19 chord qualities as buttons; the chosen chord is shown with `chordInWords`,
-  `chordTones`, `PianoDiagram` or `GuitarDiagram` (`pianoVoicing`, `guitarVoicings`). *Circle of fifths* reuses
-  `CircleOfFifths.svelte` with the tapped chord as its one "used" chord (lit) and its key's wedge. Its own `NoteSynth`
+  roots in a sidebar and shows the root's 19 chord qualities on one page, each card with `chordInWords`,
+  `chordTones` and a `PianoDiagram` or every `GuitarDiagram` from `guitarVoicings` (up to four) side by side, each
+  playable. *Circle of fifths* reuses `CircleOfFifths.svelte` with the tapped chord as its one "used" chord (lit)
+  and its key's wedge; the chord's guitar shapes are stacked below it, and the shape last heard is what a
+  recording plays for that chord. Its own `NoteSynth`
   (own audio context, unlocked in each tap). Recording collects `{ time, pitches, symbol }` per tap
   (`performance.now()`), then `app.saveChordSketch` turns them into a sketch at the end of the open notebook. Spelling:
   flats for roots named flat, else the names of the chord's key.

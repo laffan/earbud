@@ -33,6 +33,11 @@ struct StartRecordingArgs: Decodable {
   let lens: String?
   /// Use AVAudioSession `.measurement` mode (minimal system processing).
   let rawAudio: Bool?
+  /// The microphone to prefer: "auto" (default), "builtIn", "bluetooth" or "wired".
+  let audioInput: String?
+  /// Where sound plays while recording: "auto" (default; headphones when
+  /// connected, else the speaker) or "speaker".
+  let audioOutput: String?
   /// Receives `level`, `interrupted`, `error`, `log` and `finished` events.
   let events: Channel?
 }
@@ -316,7 +321,8 @@ class CapturePlugin: Plugin, AVCaptureFileOutputRecordingDelegate {
     self.events = args.events
 
     do {
-      try configureRecordingAudioSession(raw: args.rawAudio ?? false)
+      try configureRecordingAudioSession(
+        raw: args.rawAudio ?? false, input: args.audioInput ?? "auto", output: args.audioOutput ?? "auto")
       log("audio session ready: \(audioSessionSummary())")
 
       let session = AVCaptureSession()
@@ -745,11 +751,37 @@ class CapturePlugin: Plugin, AVCaptureFileOutputRecordingDelegate {
     hidePreview()
     setIdleTimerDisabled(false)
     let audio = AVAudioSession.sharedInstance()
+    try? audio.overrideOutputAudioPort(.none)
+    try? audio.setPreferredInput(nil)
     try? audio.setCategory(.playback, mode: .default, options: [])
     try? audio.setActive(false, options: .notifyOthersOnDeactivation)
   }
 
-  private func configureRecordingAudioSession(raw: Bool) throws {
+  /// The available input of a kind ("builtIn", "bluetooth", "wired"), if any.
+  static func inputPort(
+    kind: String, among ports: [AVAudioSessionPortDescription]
+  ) -> AVAudioSessionPortDescription? {
+    let types: [AVAudioSession.Port]
+    switch kind {
+    case "builtIn": types = [.builtInMic]
+    case "bluetooth": types = [.bluetoothHFP]
+    case "wired": types = [.headsetMic, .usbAudio, .lineIn]
+    default: return nil
+    }
+    return ports.first { types.contains($0.portType) }
+  }
+
+  /// The recording session, with the microphone and output asked for in
+  /// Settings where iOS allows them:
+  /// - A Bluetooth microphone needs the hands-free profile (`.allowBluetooth`),
+  ///   and iOS then plays through the same headset: the speaker cannot be
+  ///   chosen with it (overriding to the speaker also moves the input to the
+  ///   built-in microphone).
+  /// - Any other microphone keeps `.allowBluetoothA2DP`, so Bluetooth
+  ///   headphones can play (A2DP has no microphone) while the built-in, wired
+  ///   or USB microphone records; "speaker" overrides the output to the
+  ///   built-in speaker.
+  private func configureRecordingAudioSession(raw: Bool, input: String, output: String) throws {
     let audio = AVAudioSession.sharedInstance()
     // `.videoRecording` picks the microphone that matches the camera and
     // behaves like the Camera app; `.measurement` disables system
@@ -759,11 +791,39 @@ class CapturePlugin: Plugin, AVCaptureFileOutputRecordingDelegate {
     // process with its own audio session. A non-mixable recording session
     // and the web view's session interrupt each other, which ends the
     // recording the moment it starts.
-    let mode: AVAudioSession.Mode = raw ? .measurement : .videoRecording
-    try audio.setCategory(
-      .playAndRecord, mode: mode,
-      options: [.defaultToSpeaker, .allowBluetoothA2DP, .mixWithOthers])
+    // `.videoRecording` picks the built-in microphone that matches the camera,
+    // so an external microphone is asked for in `.default` mode.
+    let external = input == "bluetooth" || input == "wired"
+    let mode: AVAudioSession.Mode = raw ? .measurement : (external ? .default : .videoRecording)
+    var options: AVAudioSession.CategoryOptions = [.defaultToSpeaker, .mixWithOthers]
+    options.insert(input == "bluetooth" ? .allowBluetooth : .allowBluetoothA2DP)
+    try audio.setCategory(.playAndRecord, mode: mode, options: options)
     try audio.setActive(true)
+    if input != "auto" {
+      if let port = CapturePlugin.inputPort(kind: input, among: audio.availableInputs ?? []) {
+        do {
+          try audio.setPreferredInput(port)
+          log("preferred input: \(port.portName) (\(port.portType.rawValue))")
+        } catch {
+          log("could not choose \(port.portName): \(error.localizedDescription)")
+        }
+      } else {
+        log("no \(input) microphone available; recording from the current input")
+      }
+    } else {
+      try? audio.setPreferredInput(nil)
+    }
+    if output == "speaker" && input != "bluetooth" {
+      do {
+        try audio.overrideOutputAudioPort(.speaker)
+        log("output: built-in speaker")
+      } catch {
+        log("could not send output to the speaker: \(error.localizedDescription)")
+      }
+    } else {
+      if output == "speaker" { log("speaker output is not possible with a Bluetooth microphone; the headset plays") }
+      try? audio.overrideOutputAudioPort(.none)
+    }
   }
 
   // MARK: Preview (main thread)

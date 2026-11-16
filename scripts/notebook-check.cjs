@@ -21,10 +21,10 @@
  * - Export a rhythm (audio and MIDI); copy it and paste it into another
  *   notebook.
  * - Double-tap a rhythm: its editor; a recording: the sketch view.
- * - Repeat, with the minimap's loop handles; the loop's edges run down the
- *   canvas as dashed lines.
- * - Reference: a chord by root and variant, and chords tapped on the circle of
- *   fifths recorded as a new sketch.
+ * - Repeat: only the loop plays (the playhead goes to its start); its edges
+ *   move from the ruler and the minimap and run down the canvas as dashed lines.
+ * - Reference: every chord of a root on one page (all guitar shapes), and
+ *   chords tapped on the circle of fifths recorded as a new sketch.
  * - A new notebook, the notebook menu, and back.
  * Fails on any page error or error toast.
  *
@@ -66,6 +66,10 @@ function instrument() {
   const tile = async (prefix) => (await tiles()).find((t) => t.label.startsWith(prefix));
   const sources = () => page.evaluate(() => window.__sources.slice());
   const time = async () => (await page.textContent('.controls .time')).trim().split(' ')[0];
+  const parseClock = (text) => {
+    const [m, sec] = text.split(':');
+    return Number(m) * 60 + Number(sec);
+  };
   const hold = async (x, y) => {
     await page.mouse.move(x, y);
     await page.mouse.down();
@@ -335,6 +339,9 @@ function instrument() {
   // Repeat, and a loop range from the minimap's handles.
   await page.click('button[aria-label="Repeat"]');
   await sleep(150);
+  // Only the loop plays: the playhead moves to its start (the first sketch), and taps outside stay in it.
+  const loopStartTime = await time();
+  expect(loopStartTime !== '0:00.0', `repeat should put the playhead at the loop's start (${loopStartTime})`);
   const end = await page.$eval('[data-handle=end]', (e) => e.getBoundingClientRect().toJSON());
   await page.mouse.move(end.x + end.width / 2, end.y + end.height / 2);
   await page.mouse.down();
@@ -342,6 +349,17 @@ function instrument() {
   await page.mouse.up();
   await sleep(250);
   expect(!!(await page.$('.controls .link')), 'a custom loop range should offer to loop everything again');
+  // The loop's start, dragged on the ruler.
+  const rulerStart = await page.$eval('.ruler-handle.start', (e) => e.getBoundingClientRect().toJSON());
+  const startBefore = Number(await page.getAttribute('.ruler-handle.start', 'aria-valuenow'));
+  await page.mouse.move(rulerStart.x + rulerStart.width / 2, rulerStart.y + 10);
+  await page.mouse.down();
+  await page.mouse.move(rulerStart.x + rulerStart.width / 2 + 60, rulerStart.y + 10, { steps: 5 });
+  await page.mouse.up();
+  await sleep(250);
+  const startAfter = Number(await page.getAttribute('.ruler-handle.start', 'aria-valuenow'));
+  expect(startAfter > startBefore + 0.5, `the ruler's handle should move the loop's start (${startBefore} → ${startAfter})`);
+  expect(Math.abs(parseClock(await time()) - startAfter) < 0.15, `the playhead should stay in the loop (${await time()}, loop from ${startAfter})`);
   const edges = await page.$$eval('.loop-edge', (els) => els.map((e) => e.getBoundingClientRect().height));
   expect(edges.length >= 1 && edges.every((h) => h > canvas.height * 0.8), `the loop's edges should run down the canvas (${JSON.stringify(edges)})`);
   await shot('04-repeat');
@@ -404,9 +422,13 @@ function instrument() {
   await page.waitForSelector('.reference');
   await page.click('.tabs button:has-text("Chords")');
   await page.click('.root:has-text("B♭")');
-  await page.click('.variant:has-text("B♭7")');
-  expect((await page.textContent('.card .symbol')) === 'B♭7', 'the chosen chord should be shown');
-  expect((await page.textContent('.card .tones')).includes('A♭'), `its notes (${await page.textContent('.card .tones')})`);
+  const cards = await page.$$eval('.cards .card', (els) => els.map((e) => e.getAttribute('aria-label')));
+  expect(cards.length === 19 && cards[0] === 'B♭' && cards.includes('B♭m7♭5'), `every chord of the root on one page (${cards.join(', ')})`);
+  const seventh = await page.textContent('.card[aria-label="B♭7"] .tones');
+  expect(seventh.includes('A♭'), `a chord's notes (${seventh})`);
+  await page.click('.segmented[aria-label="Instrument"] button:has-text("Guitar")');
+  const shapes = await page.$$eval('.card[aria-label="B♭"] .shape', (els) => els.length);
+  expect(shapes > 1, `every guitar shape shown (${shapes})`);
   await page.click('.tabs button:has-text("Circle of fifths")');
   await page.click('button.record');
   for (const chord of ['C', 'Am', 'F', 'G']) {
