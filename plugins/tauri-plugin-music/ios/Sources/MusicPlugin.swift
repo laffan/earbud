@@ -124,7 +124,7 @@ final class MusicPlugin: Plugin {
     queue.async {
       let desc = AudioComponentDescription(componentType:kAudioUnitType_MusicDevice,componentSubType:0,componentManufacturer:0,componentFlags:0,componentFlagsMask:0)
       self.components.removeAll()
-      let list: [JsonObject] = AVAudioUnitComponentManager.shared().components(matching:desc).filter { ($0.audioComponentDescription.componentFlags & kAudioComponentFlag_IsV3AudioUnit) != 0 }.map {
+      let list: [JsonObject] = AVAudioUnitComponentManager.shared().components(matching:desc).filter { AudioComponentFlags(rawValue: $0.audioComponentDescription.componentFlags).contains(.isV3AudioUnit) }.map {
         let d = $0.audioComponentDescription
         let id = "\(d.componentType):\(d.componentSubType):\(d.componentManufacturer)"
         self.components[id] = $0
@@ -271,7 +271,7 @@ final class MusicPlugin: Plugin {
         self.playing = true
         let timer = DispatchSource.makeTimerSource(queue:self.queue)
         timer.schedule(deadline:.now(),repeating:.milliseconds(5))
-        timer.setEventHandler { [weak self] in self?.pump(external:args.destinationId != nil) }
+        timer.setEventHandler { [weak owner = self] in owner?.pump(external:args.destinationId != nil) }
         self.playbackTimer = timer; timer.resume(); invoke.resolve()
       } catch { self.stopTransport(); invoke.reject(error.localizedDescription) }
     }
