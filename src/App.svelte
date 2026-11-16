@@ -8,6 +8,7 @@
   import ReferenceView from './lib/ui/ReferenceView.svelte';
   import RhythmView from './lib/ui/RhythmView.svelte';
   import SketchView from './lib/ui/SketchView.svelte';
+  import MidiInbox from './lib/ui/MidiInbox.svelte';
   import Toasts from './lib/ui/Toasts.svelte';
 
   onMount(() => {
@@ -46,6 +47,7 @@
   <PermissionSheet problem={app.permissionProblem} />
 {/if}
 
+<MidiInbox />
 <Toasts />
 
 <style>

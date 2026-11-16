@@ -17,7 +17,7 @@ import { renderNotesToWav } from '../music/synth';
 import { errorMessage, fileUrl } from '../platform/tauri';
 import { displayTitle, exportBaseName } from '../ui/format';
 
-export const EXPORT_KINDS: ExportKind[] = ['recording', 'audio', 'notes-audio', 'midi'];
+export const EXPORT_KINDS: ExportKind[] = ['recording', 'audio', 'notes-audio', 'midi', 'original-midi'];
 
 export interface ExportFile {
   kind: ExportKind;
@@ -44,6 +44,11 @@ export const RHYTHM_EXPORT_KINDS: ExportKind[] = ['audio', 'midi'];
 
 export function recordingExtension(mime: string | null): string {
   if (!mime || mime.includes('quicktime')) return 'mov';
+  if (mime.includes('mpeg')) return 'mp3';
+  if (mime.includes('aiff')) return 'aiff';
+  if (mime.includes('x-caf')) return 'caf';
+  if (mime.includes('aac')) return 'aac';
+  if (mime.includes('flac')) return 'flac';
   if (mime.includes('wav')) return 'wav';
   if (mime.includes('webm')) return mime.startsWith('audio') ? 'weba' : 'webm';
   if (mime.startsWith('audio/mp4')) return 'm4a';
@@ -58,6 +63,7 @@ function downloadName(base: string, kind: ExportKind, detail: SketchDetail): str
       return `${base} (audio).wav`;
     case 'notes-audio':
       return `${base} (notes).wav`;
+    case 'original-midi': return `${base} (original).mid`;
     case 'midi':
       return `${base}.mid`;
   }
@@ -100,7 +106,9 @@ interface Part {
 const MIX_RATE = 44100;
 
 function currentNotes(detail: SketchDetail): PianoNote[] {
-  return detail.transcription ? (detail.transcription.editedNotes ?? detail.transcription.originalNotes) : [];
+  const notes = detail.transcription ? (detail.transcription.editedNotes ?? detail.transcription.originalNotes) : [];
+  const offset = (detail.audioMidiOffsetMs ?? 0) / 1000;
+  return notes.filter(n => n.endTime + offset > 0).map(n => ({ ...n, startTime: Math.max(0, n.startTime + offset), endTime: n.endTime + offset }));
 }
 
 /**
@@ -220,7 +228,7 @@ export async function prepareExports(
       } else {
         if (wanted.includes('midi') && notes.length > 0) {
           progress('Writing MIDI…', 0.1);
-          await deps.library.writeFile(id, 'midi', notesToMidi(notes, { title }));
+          await deps.library.writeFile(id, 'midi', (detail.hasEdits || detail.audioMidiOffsetMs ? null : await deps.library.originalMidi?.(id)) ?? notesToMidi(notes, { title, bpm: detail.tempoBpm ?? 120 }));
         }
         if (wanted.includes('notes-audio') && notes.length > 0) {
           progress('Rendering notes…', 0.3);

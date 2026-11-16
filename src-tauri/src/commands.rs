@@ -304,3 +304,32 @@ pub async fn import_watch_inbox(
 ) -> Result<ImportReport> {
     watch.import_inbox(&library)
 }
+
+// Durable MIDI round trips use the same SQLite library as recordings.
+use crate::library::midi_sessions::*;
+#[tauri::command]
+pub async fn create_midi_session(library: State<'_, Library>, args: CreateMidiSession) -> Result<MidiSession> { library.create_midi_session(args) }
+#[tauri::command]
+pub async fn list_midi_sessions(library: State<'_, Library>) -> Result<Vec<MidiSession>> { library.midi_sessions() }
+#[tauri::command]
+pub async fn midi_session_bytes(library: State<'_, Library>, id: String) -> Result<Vec<u8>> { library.midi_session_bytes(&id) }
+#[tauri::command]
+pub async fn set_midi_session_status(library: State<'_, Library>, id: String, status: String) -> Result<MidiSession> { library.set_midi_session_status(&id, &status) }
+#[tauri::command]
+pub async fn begin_midi_import(library: State<'_, Library>, args: BeginMidiImport) -> Result<CreatedSketch> { library.begin_midi_import(args) }
+#[tauri::command]
+pub async fn complete_midi_import(library: State<'_, Library>, args: CompleteMidiImport) -> Result<SketchDetail> { library.complete_midi_import(args) }
+#[tauri::command]
+pub async fn abort_midi_import(library: State<'_, Library>, id: String) -> Result<()> { library.abort_midi_import(&id) }
+
+#[tauri::command]
+pub async fn original_midi(library: State<'_, Library>, id: String) -> Result<Option<Vec<u8>>> {
+    library.get(&id)?;
+    let path = library.sketch_dir(&id).join("original.mid");
+    if path.exists() { Ok(Some(std::fs::read(path)?)) } else { Ok(None) }
+}
+
+#[tauri::command]
+pub async fn set_midi_offset(library: State<'_, Library>, id: String, offset_ms: f64) -> Result<Sketch> {
+    library.set_midi_offset(&id, offset_ms)
+}

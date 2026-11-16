@@ -96,6 +96,7 @@
 
   const offset = $derived(take.offsetMs / 1000);
   const live = $derived(app.sketches.find((s) => s.id === take.id) ?? detail ?? take);
+  const noteOffset = $derived(offset + (live.audioMidiOffsetMs ?? 0) / 1000);
   const job = $derived(app.jobs[take.id]);
   const transcribing = $derived(!!job || live.transcriptionStatus === 'running');
   const hasTranscription = $derived(!!detail?.transcription);
@@ -260,7 +261,7 @@
 
   function playChord(chord: ChordSegment) {
     synth.playChord(chordVoicing(chord, notes));
-    if (!playing) onseek(chord.startTime + offset);
+    if (!playing) onseek(chord.startTime + noteOffset);
   }
 
   function onKey(e: KeyboardEvent) {
@@ -441,7 +442,7 @@
           {currentTime}
           {playing}
           {editing}
-          {offset}
+          offset={noteOffset}
           {view}
           bind:selection
           {onseek}
@@ -462,7 +463,7 @@
       </div>
       <ChordStrip
         {chords}
-        {offset}
+        offset={noteOffset}
         {currentTime}
         {view}
         {spell}

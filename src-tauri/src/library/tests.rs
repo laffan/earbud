@@ -56,6 +56,8 @@ fn note(pitch: u8, start: f64, end: f64) -> PianoNote {
         end_time: end,
         velocity: 80.0,
         confidence: Some(0.9),
+            channel: None,
+            track: None,
     }
 }
 

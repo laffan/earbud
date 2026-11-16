@@ -14,19 +14,19 @@ export function notesToMidi(notes: PianoNote[], options: MidiExportOptions = {})
   const midi = new Midi();
   midi.header.setTempo(options.bpm ?? 120);
   if (options.title) midi.header.name = options.title;
-  const track = midi.addTrack();
-  track.name = 'Piano';
-  track.channel = 0;
-  track.instrument.number = 0; // Acoustic Grand Piano
+  const tracks = new Map<string, ReturnType<Midi['addTrack']>>();
   for (const note of sortNotes(notes)) {
     const duration = note.endTime - note.startTime;
     if (duration <= 0) continue;
-    track.addNote({
-      midi: Math.round(note.pitch),
-      time: note.startTime,
-      duration,
-      velocity: Math.min(1, Math.max(1 / 127, note.velocity / 127)),
-    });
+    const channel = note.channel ?? 0;
+    const key = `${note.track ?? 0}:${channel}`;
+    let track = tracks.get(key);
+    if (!track) {
+      track = midi.addTrack(); track.name = 'Piano'; track.channel = channel;
+      tracks.set(key, track);
+    }
+    track.addNote({ midi: Math.round(note.pitch), time: note.startTime, duration,
+      velocity: Math.min(1, Math.max(1 / 127, note.velocity / 127)) });
   }
   return midi.toArray();
 }
@@ -103,11 +103,11 @@ const MAX_IMPORTED_NOTES = 20000;
  * General MIDI percussion (channel 10), with times in seconds as the file's
  * tempo map gives them. Throws if the bytes are not a MIDI file.
  */
-export function midiFileToNotes(bytes: Uint8Array): PianoNote[] {
+export function midiFileToNotes(bytes: Uint8Array, preserveIdentity = false, includePercussion = preserveIdentity): PianoNote[] {
   const midi = new Midi(bytes);
   const notes: PianoNote[] = [];
-  for (const track of midi.tracks) {
-    if (track.channel === 9 || track.instrument.percussion) continue;
+  for (const [index, track] of midi.tracks.entries()) {
+    if (!includePercussion && (track.channel === 9 || track.instrument.percussion)) continue;
     for (const n of track.notes) {
       if (!(n.duration > 0) || !(n.time >= 0) || n.midi < 0 || n.midi > 127) continue;
       notes.push({
@@ -116,6 +116,7 @@ export function midiFileToNotes(bytes: Uint8Array): PianoNote[] {
         endTime: n.time + n.duration,
         velocity: Math.max(1, Math.min(127, Math.round(n.velocity * 127))),
         confidence: 1,
+        ...(preserveIdentity ? { channel: track.channel, track: index } : {}),
       });
       if (notes.length >= MAX_IMPORTED_NOTES) return sortNotes(notes);
     }

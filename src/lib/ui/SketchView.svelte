@@ -28,6 +28,14 @@
   import { app } from '../state/app.svelte';
   import type { PianoNote } from '../transcription/types';
   import ChordsPanel from './ChordsPanel.svelte';
+  import InstrumentSheet from './InstrumentSheet.svelte';
+  import { invoke } from '../platform/tauri';
+  let showInstruments = $state(false);
+  let midiOffset = $state(0);
+  async function alignMidi() {
+    try { app.upsert(await invoke<Sketch>('set_midi_offset', { id, offsetMs: midiOffset })); }
+    catch (e) { app.toast(errorMessage(e), 'error'); }
+  }
   import Icon from './Icon.svelte';
   import { RollViewport } from './rollViewport.svelte';
   import Sheet from './Sheet.svelte';
@@ -233,7 +241,7 @@
     playable.flatMap(({ track, take }) => {
       if (!notesHeard(track)) return [];
       const notes = takeNotes[take.id] ?? [];
-      const offset = take.offsetMs / 1000;
+      const offset = (take.offsetMs + (take.audioMidiOffsetMs ?? 0)) / 1000;
       if (offset === 0) return notes;
       return notes
         .filter((n) => n.endTime + offset > 0)
@@ -587,6 +595,7 @@
         </button>
         {#if showMenu}
           <div class="menu" role="menu">
+            <button role="menuitem" onclick={() => { engine.pause(); showMenu = false; showInstruments = true; }}>Play with Instrument</button>
             <button role="menuitem" class="danger" onclick={deleteSketch}><Icon name="trash" size={18} /> Delete sketch</button>
           </div>
         {/if}
@@ -679,6 +688,11 @@
         {/if}
       </section>
 
+      {#if detail.captureBackend === 'midi-round-trip'}
+        <label>Audio-to-MIDI alignment (ms; positive = notes later)
+          <input type="number" value={app.sketches.find(s => s.id === id)?.audioMidiOffsetMs ?? 0} step="1" onchange={e => { midiOffset = Number(e.currentTarget.value); void alignMidi(); }} />
+        </label>
+      {/if}
       <!-- 4. Notes and details -->
       <section class="about" aria-label="Notes and details">
         <label class="notes-field">
@@ -1126,3 +1140,5 @@
     }
   }
 </style>
+
+{#if showInstruments && detail}<InstrumentSheet {detail} onclose={() => (showInstruments = false)} />{/if}

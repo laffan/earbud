@@ -30,6 +30,10 @@ import type {
 
 export class TauriLibrary implements SketchLibrary {
   readonly persistent = true;
+  async originalMidi(id: string) {
+    const bytes = await invoke<number[] | null>('original_midi', { id });
+    return bytes ? new Uint8Array(bytes) : null;
+  }
 
   recover() {
     return invoke<RecoveryReport>('recover_sketches');

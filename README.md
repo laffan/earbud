@@ -493,3 +493,9 @@ used before the Web Audio player), so both fail at that step.
 ## License
 
 MIT for Earbud's own code. Basic Pitch (model and library) is Apache-2.0, © Spotify AB.
+
+## MIDI instrument workflows
+
+The `midi-support` branch adds AUv3 hosting, Core MIDI output, durable MIDI
+round-trip sessions and returned-audio import. See [setup, limitations and device
+validation](docs/MIDI.md). Native iOS behavior still requires Xcode/device testing.

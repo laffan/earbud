@@ -22,6 +22,7 @@
 
 pub mod models;
 mod schema;
+pub mod midi_sessions;
 
 use std::fs;
 use std::io::Write;
@@ -57,6 +58,7 @@ pub enum FileKind {
     Analysis,
     /// Replace the MIDI rendering of the current notes.
     Midi,
+    OriginalMidi,
     /// Replace the synthesized rendering of the notes (WAV).
     NotesAudio,
     /// Replace the take's audio track (WAV; used where no native exporter exists).
@@ -69,6 +71,7 @@ impl FileKind {
             "media-chunk" => Ok(FileKind::MediaChunk),
             "analysis" => Ok(FileKind::Analysis),
             "midi" => Ok(FileKind::Midi),
+            "original-midi" => Ok(FileKind::OriginalMidi),
             "notes-audio" => Ok(FileKind::NotesAudio),
             "take-audio" => Ok(FileKind::TakeAudio),
             other => Err(Error::Invalid(format!("unknown file kind '{other}'"))),
@@ -551,6 +554,7 @@ impl Library {
             rhythm: rhythm_json.and_then(|s| serde_json::from_str(&s).ok()),
             canvas_repeats: row.get("canvas_repeats")?,
             canvas_volume: row.get("canvas_volume")?,
+            audio_midi_offset_ms: row.get("audio_midi_offset_ms")?,
             canvas_w: row.get("canvas_w")?,
             canvas_h: row.get("canvas_h")?,
             listen_mode: row.get("listen_mode")?,
@@ -1004,7 +1008,7 @@ impl Library {
                                        crop_start_ms, crop_end_ms, parent_id, track_id, offset_ms, count_in_ms,
                                        tempo_bpm, beat_ms, tempo_source, notebook_id, canvas_x_ms, canvas_y,
                                        kind, rhythm_json, canvas_repeats, canvas_w, canvas_h, listen_mode,
-                                       canvas_volume)
+                                       canvas_volume, audio_midi_offset_ms)
                  SELECT ?2, title, created_at, ?3, status, duration_ms, media_file,
                         media_mime, has_video, video_width, video_height, text_notes,
                         CASE transcription_status WHEN 'running' THEN 'pending' ELSE transcription_status END,
@@ -1012,7 +1016,7 @@ impl Library {
                         crop_start_ms, crop_end_ms, NULL, ?4, offset_ms, count_in_ms,
                         tempo_bpm, beat_ms, tempo_source, ?5, ?6, ?7,
                         kind, rhythm_json, canvas_repeats, canvas_w, canvas_h, listen_mode,
-                        canvas_volume
+                        canvas_volume, audio_midi_offset_ms
                    FROM sketches WHERE id = ?1",
                 params![args.id, id, now, new_track, args.notebook_id, x, y],
             )?;
@@ -1438,6 +1442,12 @@ impl Library {
             }
             FileKind::Analysis => dir.join(ANALYSIS_FILE),
             FileKind::Midi => dir.join(MIDI_FILE),
+            FileKind::OriginalMidi => {
+                let path = dir.join("original.mid");
+                let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&path)?;
+                file.write_all(bytes)?; file.sync_all()?;
+                return Ok(path);
+            },
             FileKind::NotesAudio => dir.join(NOTES_AUDIO_FILE),
             FileKind::TakeAudio => dir.join(format!("{TAKE_AUDIO_STEM}.wav")),
         };
@@ -1504,6 +1514,7 @@ impl Library {
                 }
                 ExportKind::NotesAudio => Some(dir.join(NOTES_AUDIO_FILE)),
                 ExportKind::Midi => Some(dir.join(MIDI_FILE)),
+                ExportKind::OriginalMidi => Some(dir.join("original.mid")),
             }
             .filter(|p| p.is_file());
             let Some(source) = source else {
@@ -1515,6 +1526,7 @@ impl Library {
                 ExportKind::Audio => format!("{stem} (audio).{}", extension(&source, "m4a")),
                 ExportKind::NotesAudio => format!("{stem} (notes).wav"),
                 ExportKind::Midi => format!("{stem}.mid"),
+                ExportKind::OriginalMidi => format!("{stem} (original).mid"),
             };
             let dest = exports.join(name);
             link_or_copy(&source, &dest)?;
@@ -1546,6 +1558,7 @@ impl Library {
     ///   killed recording is usually playable up to the last fragment);
     /// * transcriptions that were "running" go back to "pending".
     pub fn recover(&self) -> Result<RecoveryReport> {
+        self.recover_midi_imports()?;
         let mut report = RecoveryReport {
             recovered: vec![],
             discarded: vec![],

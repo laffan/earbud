@@ -164,7 +164,7 @@ export async function importAudioSketch(deps: ImportDeps, file: File, place: Pla
 export async function importMidiSketch(deps: ImportDeps, file: File, place: Placement): Promise<ImportedSketch> {
   let notes: PianoNote[];
   try {
-    notes = midiFileToNotes(new Uint8Array(await file.arrayBuffer()));
+    notes = midiFileToNotes(new Uint8Array(await file.arrayBuffer()), true, false);
   } catch {
     throw new Error(`${file.name} is not a MIDI file that can be read`);
   }
@@ -221,6 +221,7 @@ export async function notesSketch(
       summary: summarize(notes),
     });
     await library.writeFile(sketch.id, 'midi', source.midi ?? notesToMidi(notes));
+    if (source.midi) await library.writeFile(sketch.id, 'original-midi', source.midi);
     // The row as lists hold it, without the transcription and tracks.
     const { transcription: _transcription, tracks: _tracks, ...row } = detail;
     return row;

@@ -54,6 +54,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_capture::init())
+        .plugin(tauri_plugin_music::init())
         .plugin(tauri_plugin_watch_link::init())
         .setup(|app| {
             let root = app.path().app_data_dir()?.join("library");
@@ -72,6 +73,15 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::set_midi_offset,
+            commands::original_midi,
+            commands::create_midi_session,
+            commands::list_midi_sessions,
+            commands::midi_session_bytes,
+            commands::set_midi_session_status,
+            commands::begin_midi_import,
+            commands::complete_midi_import,
+            commands::abort_midi_import,
             commands::library_info,
             commands::recover_sketches,
             commands::list_sketches,

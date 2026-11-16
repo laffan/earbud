@@ -309,3 +309,9 @@ The folder is included in device backups. Deleting a sketch in the app removes i
 - Native Core ML transcription: the engine interface supports it (see `docs/ARCHITECTURE.md`), but Basic Pitch
   runs in the webview in this version.
 - Apple Vision hand/key tracking: interfaces only (`src/lib/vision/types.ts`).
+
+## Instruments and returned MIDI audio
+
+See [MIDI workflows and native setup](MIDI.md) for the music plugin, Share
+Extension/App Group configuration and the required iPhone/iPad test checklist.
+These new native paths have not yet been compiled or verified on Apple hardware.

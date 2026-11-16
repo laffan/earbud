@@ -65,6 +65,8 @@ export interface Sketch {
   canvasRepeats: number;
   /** How loud it plays on the canvas, 0–1 (1 = as recorded). */
   canvasVolume: number;
+  /** Shift note playback relative to unchanged audio; original MIDI stays intact. */
+  audioMidiOffsetMs?: number;
   /** A text note's box: width and minimum height in canvas pixels (null = fit the text). */
   canvasW: number | null;
   canvasH: number | null;
@@ -253,7 +255,7 @@ export interface RecoveryReport {
 }
 
 /** What can be exported from a sketch. */
-export type ExportKind = 'recording' | 'audio' | 'notes-audio' | 'midi';
+export type ExportKind = 'recording' | 'audio' | 'notes-audio' | 'midi' | 'original-midi';
 
 export interface ExportBundle {
   files: { kind: ExportKind; path: string }[];
@@ -261,11 +263,12 @@ export interface ExportBundle {
   missing: ExportKind[];
 }
 
-export type FileKind = 'media-chunk' | 'analysis' | 'midi' | 'notes-audio' | 'take-audio';
+export type FileKind = 'media-chunk' | 'analysis' | 'midi' | 'notes-audio' | 'take-audio' | 'original-midi';
 
 /** Storage backend. Implemented by Rust/SQLite in the app, in memory in dev. */
 export interface SketchLibrary {
   readonly persistent: boolean;
+  originalMidi?(id: string): Promise<Uint8Array | null>;
   recover(): Promise<RecoveryReport>;
   list(): Promise<Sketch[]>;
   get(id: string): Promise<SketchDetail>;

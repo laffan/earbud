@@ -129,6 +129,22 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE sketches ADD COLUMN canvas_volume REAL NOT NULL DEFAULT 1
         CHECK (canvas_volume >= 0 AND canvas_volume <= 1);
     "#,
+    // v10: immutable MIDI round trips and provenance, independent of source deletion.
+    r#"
+    ALTER TABLE sketches ADD COLUMN audio_midi_offset_ms REAL NOT NULL DEFAULT 0;
+    CREATE TABLE midi_sessions (
+      id TEXT PRIMARY KEY NOT NULL, source_id TEXT NOT NULL, source_title TEXT NOT NULL,
+      snapshot_json TEXT NOT NULL, midi BLOB NOT NULL, midi_hash TEXT NOT NULL,
+      destination_json TEXT NOT NULL, created_at INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('pending','importing','completed','cancelled','archived')),
+      result_id TEXT, import_id TEXT
+    );
+    CREATE TABLE midi_provenance (
+      sketch_id TEXT PRIMARY KEY NOT NULL REFERENCES sketches(id) ON DELETE CASCADE,
+      session_id TEXT NOT NULL REFERENCES midi_sessions(id), metadata_json TEXT NOT NULL,
+      offset_ms REAL NOT NULL DEFAULT 0
+    );
+    "#,
 ];
 
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {

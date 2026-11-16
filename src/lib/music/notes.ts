@@ -52,6 +52,7 @@ export function normalizeNote(note: PianoNote, maxTime = Infinity): PianoNote {
   const end = Math.min(maxTime, Math.max(start + 0.02, note.endTime));
   const velocity = Math.round(Math.min(127, Math.max(1, note.velocity)));
   const out: PianoNote = {
+    ...note,
     pitch,
     startTime: Math.round(start * 1000) / 1000,
     endTime: Math.round(end * 1000) / 1000,

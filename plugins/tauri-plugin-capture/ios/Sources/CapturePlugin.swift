@@ -321,6 +321,7 @@ class CapturePlugin: Plugin, AVCaptureFileOutputRecordingDelegate {
     self.events = args.events
 
     do {
+      NotificationCenter.default.post(name:Notification.Name("EarbudCaptureWillStart"),object:nil)
       try configureRecordingAudioSession(
         raw: args.rawAudio ?? false, input: args.audioInput ?? "auto", output: args.audioOutput ?? "auto")
       log("audio session ready: \(audioSessionSummary())")
@@ -755,6 +756,7 @@ class CapturePlugin: Plugin, AVCaptureFileOutputRecordingDelegate {
     try? audio.setPreferredInput(nil)
     try? audio.setCategory(.playback, mode: .default, options: [])
     try? audio.setActive(false, options: .notifyOthersOnDeactivation)
+    NotificationCenter.default.post(name:Notification.Name("EarbudCaptureDidStop"),object:nil)
   }
 
   /// The available input of a kind ("builtIn", "bluetooth", "wired"), if any.

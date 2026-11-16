@@ -78,7 +78,10 @@
     },
   ]);
 
-  const options = $derived(rhythms ? rhythmOptions : sketchOptions);
+  const options = $derived(rhythms ? rhythmOptions : [
+    ...sketchOptions,
+    ...(sketches.some(s => s.captureBackend === 'midi-round-trip' || s.captureBackend === 'import') ? [{ kind: 'original-midi' as const, label: 'Original MIDI', detail: 'The immutable source file, including its tracks and tempo map (.mid)', disabled: false }] : []),
+  ]);
   const effective = $derived(selected.filter((k) => options.some((o) => o.kind === k && !o.disabled)));
 
   function toggle(kind: ExportKind) {

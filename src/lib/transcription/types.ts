@@ -16,6 +16,9 @@ export interface PianoNote {
   velocity: number;
   /** Engine confidence, 0–1, when the engine provides one. */
   confidence?: number;
+  /** Original SMF identity, retained by editing and round trips. */
+  channel?: number;
+  track?: number;
 }
 
 export interface TranscribeOptions {

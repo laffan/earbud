@@ -78,10 +78,15 @@ pub struct PianoNote {
     pub velocity: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track: Option<u16>,
 }
 
 impl PianoNote {
     pub fn validate(&self) -> Result<(), String> {
+        if self.channel.is_some_and(|c| c > 15) { return Err("MIDI channel must be 0–15".into()); }
         if self.pitch > 127 {
             return Err(format!("pitch {} out of MIDI range", self.pitch));
         }
@@ -170,6 +175,7 @@ pub struct Sketch {
     pub canvas_repeats: i64,
     /// How loud the sketch plays on the canvas, 0–1 (1 = as recorded).
     pub canvas_volume: f64,
+    pub audio_midi_offset_ms: f64,
     /// A text note's box on the canvas: width and minimum height in pixels (None = fit the text).
     pub canvas_w: Option<f64>,
     pub canvas_h: Option<f64>,
@@ -449,6 +455,7 @@ pub enum ExportKind {
     NotesAudio,
     /// The transcribed notes as a Standard MIDI File.
     Midi,
+    OriginalMidi,
 }
 
 #[derive(Debug, Clone, Serialize)]

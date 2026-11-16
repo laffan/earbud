@@ -1,0 +1,3 @@
+[default]
+description = "Earbud music integration"
+permissions = ["allow-capabilities", "allow-destinations", "allow-instruments", "allow-select-instrument", "allow-set-preset", "allow-set-parameter", "allow-show-interface", "allow-play", "allow-stop", "allow-transport-status", "allow-render", "allow-render-progress", "allow-cancel-render", "allow-inbox", "allow-copy-incoming", "allow-acknowledge", "allow-close", "allow-preview-incoming", "allow-stop-preview"]

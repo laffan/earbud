@@ -708,10 +708,12 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-capture",
  "tauri-plugin-dialog",
+ "tauri-plugin-music",
  "tauri-plugin-watch-link",
  "tempfile",
  "thiserror 2.0.21",
@@ -3481,6 +3483,15 @@ dependencies = [
  "thiserror 2.0.21",
  "toml 1.2.1+spec-1.1.0",
  "url",
+]
+
+[[package]]
+name = "tauri-plugin-music"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
 ]
 
 [[package]]

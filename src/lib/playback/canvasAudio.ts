@@ -52,7 +52,7 @@ export async function loadCanvasSound(
     if (!audible) return;
     if (mode !== 'recording') {
       const source = take.id === detail.id ? detail : await library.get(take.id);
-      const current = source.transcription?.editedNotes ?? source.transcription?.originalNotes ?? [];
+      const current = (source.transcription?.editedNotes ?? source.transcription?.originalNotes ?? []).map(n => ({ ...n, startTime: n.startTime + (take.audioMidiOffsetMs ?? 0) / 1000, endTime: n.endTime + (take.audioMidiOffsetMs ?? 0) / 1000 }));
       notes.push(...current.filter((n) => n.endTime + offset > 0).map((n) => ({
         ...n, startTime: Math.max(0, n.startTime + offset), endTime: n.endTime + offset,
       })));
