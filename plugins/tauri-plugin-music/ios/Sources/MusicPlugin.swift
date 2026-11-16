@@ -1,5 +1,6 @@
 import AVFoundation
 import AudioToolbox
+import CoreAudioKit
 import CoreMIDI
 import Tauri
 import UIKit
@@ -98,11 +99,22 @@ final class MusicPlugin: Plugin {
     MIDIObjectGetIntegerProperty(endpoint, kMIDIPropertyUniqueID, &id)
     return String(id)
   }
+  private func destinationKind(_ endpoint: MIDIEndpointRef) -> String {
+    // Core MIDI has no public kMIDIPropertyTransport. Virtual endpoints have
+    // no entity; device-backed endpoints can report a model without guessing
+    // USB/Bluetooth from an application or driver name.
+    var entity = MIDIEntityRef()
+    guard MIDIEndpointGetEntity(endpoint, &entity) == noErr, entity != 0 else { return "Virtual/app" }
+    var device = MIDIDeviceRef()
+    guard MIDIEntityGetDevice(entity, &device) == noErr, device != 0 else { return "MIDI device" }
+    let model = midiString(device, kMIDIPropertyModel)
+    return model.isEmpty ? "MIDI device" : model
+  }
   @objc func destinations(_ invoke: Invoke) {
     queue.async {
       var list: [JsonObject] = self.destinationEndpoints().map {
-        let transport = self.midiString($0, kMIDIPropertyTransport)
-        return ["id":self.endpointID($0),"name":self.midiString($0,kMIDIPropertyDisplayName),"transport":transport.isEmpty ? "Virtual/app" : transport]
+        let transport = self.destinationKind($0)
+        return ["id":self.endpointID($0),"name":self.midiString($0,kMIDIPropertyDisplayName),"transport":transport]
       }
       if self.virtualSource != 0 { list.append(["id":"earbud-source","name":"Earbud MIDI Out (virtual source)","transport":"Subscribe in receiving app"]) }
       invoke.resolve(["items":list])
@@ -112,7 +124,7 @@ final class MusicPlugin: Plugin {
     queue.async {
       let desc = AudioComponentDescription(componentType:kAudioUnitType_MusicDevice,componentSubType:0,componentManufacturer:0,componentFlags:0,componentFlagsMask:0)
       self.components.removeAll()
-      let list: [JsonObject] = AVAudioUnitComponentManager.shared().components(matching:desc).filter { $0.isAudioUnitV3 }.map {
+      let list: [JsonObject] = AVAudioUnitComponentManager.shared().components(matching:desc).filter { ($0.audioComponentDescription.componentFlags & kAudioComponentFlag_IsV3AudioUnit) != 0 }.map {
         let d = $0.audioComponentDescription
         let id = "\(d.componentType):\(d.componentSubType):\(d.componentManufacturer)"
         self.components[id] = $0
