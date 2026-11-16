@@ -3,7 +3,7 @@
    * Recording and editing a rhythm sketch, in a panel that can be dragged
    * out of the way of the canvas.
    *
-   * Record: three pads (kick, snare, hat; keys 1 2 3 or J K L). Recording
+   * Record: three pads (Beat 1, 2, 3: a kick, a snare and a hat; keys 1 2 3 or J K L). Recording
    * starts with the first tap and ends with Done. The taps then become a
    * step pattern (`patternFromTaps`: tempo detected, 16th-note grid, whole
    * bars), shown as a step sequencer: tap a step to switch it, change the

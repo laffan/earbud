@@ -115,6 +115,9 @@ export class TauriLibrary implements SketchLibrary {
   setRepeats(id: string, repeats: number) {
     return invoke<Sketch>('set_sketch_repeats', { id, repeats });
   }
+  setVolume(id: string, volume: number) {
+    return invoke<Sketch>('set_sketch_volume', { id, volume });
+  }
   duplicate(args: DuplicateSketchArgs) {
     return invoke<Sketch>('duplicate_sketch', { args });
   }

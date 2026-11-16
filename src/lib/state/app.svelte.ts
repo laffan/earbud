@@ -14,9 +14,12 @@ import {
 } from '../capture';
 import { Metronome } from '../capture/countIn';
 import { beginCaptureSession, webAudioSessionSummary } from '../audio/session';
-import { importAudioSketch, importMidiSketch, type Placement } from '../library/importTrack';
+import { CHORD_TAPS_BACKEND, CHORD_TAPS_ENGINE, importAudioSketch, importMidiSketch, notesSketch, type Placement } from '../library/importTrack';
 import { getLibrary, type Sketch, type SketchLibrary } from '../library';
 import type { CreateRhythmArgs, CreateTextNoteArgs, ListenMode, Notebook, UpdateRhythmArgs, UpdateTextNoteArgs } from '../library/types';
+import type { RhythmPattern } from '../music/rhythm';
+import type { PianoNote } from '../transcription/types';
+import type { Crop } from '../ui/slice';
 import { ProcessingQueue, type JobProgress } from '../pipeline/processingQueue';
 import { errorCode, errorMessage, isIOSLike } from '../platform/tauri';
 import {
@@ -86,7 +89,12 @@ export interface CanvasTarget {
   onEnd?: (saved: Sketch | null) => void;
 }
 
-export type View = { name: 'home' } | { name: 'sketch'; id: string };
+export type View = { name: 'home' } | { name: 'sketch'; id: string } | { name: 'reference' };
+
+/** How a sketch is sliced in two (see `slice.ts`): crops of a recording, or a rhythm's two halves. */
+export type SlicePlan =
+  | { kind: 'audio'; first: Crop; second: Crop; secondTitle: string }
+  | { kind: 'rhythm'; first: RhythmPattern; second: RhythmPattern; firstMs: number; secondMs: number; secondXMs: number; secondTitle: string };
 
 export interface RecordingState {
   phase: 'starting' | 'recording' | 'saving';
@@ -184,6 +192,7 @@ function loadSettings(): Settings {
 }
 
 function viewFromHash(): View {
+  if (location.hash === '#/reference') return { name: 'reference' };
   const match = /^#\/sketch\/([0-9a-f]{32})$/.exec(location.hash);
   return match ? { name: 'sketch', id: match[1] } : { name: 'home' };
 }
@@ -476,6 +485,84 @@ export class AppState {
     }
   }
 
+  /**
+   * Slice a sketch into two that stand on their own: a copy becomes the
+   * second half, the original keeps the first. A recording's halves play
+   * complementary crops of the same (untouched) recording, once each; a
+   * rhythm's halves play their own bars. Undone if a step fails.
+   */
+  async sliceSketch(id: string, plan: SlicePlan): Promise<boolean> {
+    const source = this.sketches.find((s) => s.id === id);
+    if (!source || source.notebookId === null) return false;
+    let copyId: string | null = null;
+    try {
+      const copy = await this.library.duplicate({
+        id,
+        notebookId: source.notebookId,
+        canvasXMs: Math.round(plan.kind === 'rhythm' ? plan.secondXMs : source.canvasXMs),
+        canvasY: source.canvasY,
+      });
+      copyId = copy.id;
+      await this.library.update({ id: copy.id, title: plan.secondTitle });
+      let first: Sketch;
+      let second: Sketch;
+      if (plan.kind === 'rhythm') {
+        second = await this.library.updateRhythm({ id: copy.id, rhythm: plan.second, durationMs: plan.secondMs });
+        first = await this.library.updateRhythm({ id, rhythm: plan.first, durationMs: plan.firstMs });
+      } else {
+        await this.library.setCrop(copy.id, plan.second.startMs, plan.second.endMs);
+        await this.library.setCrop(id, plan.first.startMs, plan.first.endMs);
+        // The cut is in the part that repeats: each half plays once.
+        if (source.canvasRepeats !== 1) {
+          await this.library.setRepeats(copy.id, 1);
+          await this.library.setRepeats(id, 1);
+        }
+        second = await this.sketchRow(copy.id);
+        first = await this.sketchRow(id);
+      }
+      this.upsert(first);
+      this.upsert(second);
+      if (second.kind === 'audio' && second.transcriptionStatus === 'pending' && this.settings.autoTranscribe) this.queue.enqueue(second.id);
+      return true;
+    } catch (error) {
+      if (copyId) await this.library.remove(copyId).catch(() => {});
+      this.toast(`Could not slice the sketch: ${errorMessage(error)}`, 'error');
+      void this.refresh();
+      return false;
+    }
+  }
+
+  /** A sketch's row as the list holds it (without its transcription and tracks). */
+  private async sketchRow(id: string): Promise<Sketch> {
+    const { transcription: _transcription, tracks: _tracks, ...sketch } = await this.library.get(id);
+    return sketch;
+  }
+
+  private volumeSaves = new Map<string, number>();
+
+  /**
+   * How loud a sketch plays on its canvas (0–1). Heard at once (the slider
+   * moves it continuously) and saved once it rests. The revision is not bumped
+   * and the saved row is not taken back, so the canvas keeps its decoded sound.
+   */
+  setVolume(id: string, volume: number) {
+    const v = Math.round(Math.min(1, Math.max(0, volume)) * 100) / 100;
+    const index = this.sketches.findIndex((s) => s.id === id);
+    if (index < 0) return;
+    this.sketches[index] = { ...this.sketches[index], canvasVolume: v };
+    window.clearTimeout(this.volumeSaves.get(id));
+    this.volumeSaves.set(
+      id,
+      window.setTimeout(() => {
+        this.volumeSaves.delete(id);
+        this.library.setVolume(id, v).catch((error) => {
+          this.toast(`Could not change the volume: ${errorMessage(error)}`, 'error');
+          void this.refresh();
+        });
+      }, 250),
+    );
+  }
+
   /** Copy a sketch for pasting onto a canvas (this notebook's or another's). */
   copySketch(id: string) {
     const sketch = this.sketches.find((s) => s.id === id);
@@ -597,6 +684,40 @@ export class AppState {
   openSketch(id: string) {
     history.pushState(null, '', `#/sketch/${id}`);
     this.view = { name: 'sketch', id };
+  }
+
+  /** The Reference section: chords by root, and the circle of fifths. */
+  openReference() {
+    history.pushState(null, '', '#/reference');
+    this.view = { name: 'reference' };
+  }
+
+  /**
+   * Chords tapped on the circle of fifths (their notes, from the first tap),
+   * saved as a sketch at the end of the open notebook: the built-in piano
+   * plays them, and they are its notes (nothing to transcribe).
+   */
+  async saveChordSketch(notes: PianoNote[], title: string, chords: string[]): Promise<Sketch | null> {
+    const notebook = this.notebook;
+    if (!notebook) return null;
+    try {
+      const sketch = await notesSketch(
+        { library: this.library },
+        notes,
+        title,
+        { notebookId: notebook.id, canvasXMs: Math.round((this.canvasEnd() + 1) * 1000), canvasY: 40 },
+        { engine: CHORD_TAPS_ENGINE, params: { chords }, captureBackend: CHORD_TAPS_BACKEND },
+      );
+      this.upsert(sketch);
+      this.toast(`Saved “${title}” at the end of ${notebook.title || 'the notebook'}.`, 'info', {
+        label: 'Show',
+        run: () => this.goHome(),
+      });
+      return sketch;
+    } catch (error) {
+      this.toast(`Could not save the chords: ${errorMessage(error)}`, 'error');
+      return null;
+    }
   }
 
   goHome() {

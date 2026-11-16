@@ -63,6 +63,8 @@ export interface Sketch {
   rhythm: RhythmPattern | null;
   /** How many times a recording plays in a row on the canvas (1 = once; rhythms repeat by bars instead). */
   canvasRepeats: number;
+  /** How loud it plays on the canvas, 0–1 (1 = as recorded). */
+  canvasVolume: number;
   /** A text note's box: width and minimum height in canvas pixels (null = fit the text). */
   canvasW: number | null;
   canvasH: number | null;
@@ -304,6 +306,8 @@ export interface SketchLibrary {
   placeSketch(args: PlaceSketchArgs): Promise<Sketch>;
   /** How many times a recording plays in a row on the canvas. */
   setRepeats(id: string, repeats: number): Promise<Sketch>;
+  /** How loud a sketch plays on the canvas (0–1). */
+  setVolume(id: string, volume: number): Promise<Sketch>;
   /** A copy of a sketch (recording, notes and settings, or rhythm) on a notebook's canvas. */
   duplicate(args: DuplicateSketchArgs): Promise<Sketch>;
   createRhythm(args: CreateRhythmArgs): Promise<Sketch>;

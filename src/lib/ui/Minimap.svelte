@@ -1,7 +1,8 @@
 <script lang="ts">
   /**
    * The whole notebook in a strip: every sketch, the text notes (a note that
-   * is only emoji shows its emoji, small), the part of the canvas in view,
+   * is only emoji shows its emoji, small), the part of the canvas in view
+   * (everything outside it faded),
    * the playhead and, with repeat on, the loop range. Drag on it to
    * move the view there; drag the loop's handles to change what repeats.
    */
@@ -46,6 +47,8 @@
 
   const HEIGHT = 54;
   const MIN_LOOP = 0.25;
+  /** How much of the minimap's background is laid over the parts out of view. */
+  const FADE = 0.62;
   let width = $state(0);
   let canvas = $state<HTMLCanvasElement | null>(null);
 
@@ -105,13 +108,18 @@
         g.fillRect(mx(note.start), my(note.y), Math.max(3, mx(note.start + note.width) - mx(note.start)), Math.max(2, my(note.y + note.height) - my(note.y)));
       }
     }
+    // The view: everything outside it is faded (no outline).
+    const vx = Math.max(0, mx(view.scrollX));
+    const vy = Math.max(0, my(view.scrollY));
+    const vw = Math.max(4, Math.min(width, mx(viewEnd)) - vx);
+    const vh = Math.max(4, Math.min(HEIGHT, my(viewBottom)) - vy);
+    g.fillStyle = color('--paper-sunk', '#ede7db');
+    g.globalAlpha = FADE;
+    g.beginPath();
+    g.rect(0, 0, width, HEIGHT);
+    g.rect(vx, vy, vw, vh);
+    g.fill('evenodd');
     g.globalAlpha = 1;
-    // The view.
-    g.strokeStyle = color('--ink', '#1f1d1a');
-    g.lineWidth = 1.5;
-    const vx = mx(view.scrollX);
-    const vy = my(view.scrollY);
-    g.strokeRect(vx + 0.75, Math.max(0.75, vy), Math.max(4, mx(viewEnd) - vx - 1.5), Math.max(4, Math.min(HEIGHT - 1.5, my(viewBottom) - vy)));
     // The playhead.
     g.fillStyle = color('--accent', '#c8453a');
     g.fillRect(Math.round(mx(playhead)) - 1, 0, 2, HEIGHT);

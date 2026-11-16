@@ -4,7 +4,8 @@
    * recording) or its hits (a rhythm), as wide as it plays. Only the part
    * in view is drawn, so zooming far in costs no more than the screen.
    * A recording played several times in a row shows each repeat after the
-   * first lighter, with a mark where it starts again.
+   * first lighter, with a dashed line where it starts again; so does a
+   * rhythm where its pattern comes round again.
    * Passive: the canvas handles every gesture (it finds the tile by
    * `data-tile`, and the repeat grip on its right edge by `data-resize`).
    */
@@ -33,6 +34,8 @@
     soloing: boolean;
     progress: number | null;
     lifted: boolean;
+    /** How loud it plays on the canvas (0–1); below 1 a bar on its left shows how much. */
+    volume?: number;
     /** Shown while its length is dragged, e.g. "6 bars". */
     badge?: string | null;
     note?: string | null;
@@ -55,6 +58,7 @@
     soloing,
     progress,
     lifted,
+    volume = 1,
     badge = null,
     note = null,
     theme,
@@ -102,11 +106,26 @@
       g.fillRect(rect.x, rect.y, rect.width, rect.height);
     }
     g.globalAlpha = 1;
-    g.fillStyle = color('--ink-3', '#8c8478');
-    for (let k = 1; k < span.repeats; k++) {
-      const x = Math.round(k * span.cycle * pps) - from;
-      if (x >= 0 && x <= to - from) g.fillRect(x, 0, 1, WAVE_H);
+    repeatMarks(g, span.cycle, span.repeats, from, to);
+  }
+
+  /** A subtle dashed line where each repeat after the first begins (`cycle` seconds apart). */
+  function repeatMarks(g: CanvasRenderingContext2D, cycle: number, repeats: number, from: number, to: number) {
+    if (repeats < 2 || !(cycle > 0)) return;
+    g.save();
+    g.strokeStyle = color('--ink-3', '#8c8478');
+    g.globalAlpha = 0.7;
+    g.lineWidth = 1;
+    g.setLineDash([3, 3]);
+    g.beginPath();
+    for (let k = 1; k < repeats; k++) {
+      const x = Math.round(k * cycle * pps) - from;
+      if (x < 0 || x > to - from) continue;
+      g.moveTo(x + 0.5, 0);
+      g.lineTo(x + 0.5, WAVE_H);
     }
+    g.stroke();
+    g.restore();
   }
 
   function drawWave(g: CanvasRenderingContext2D, from: number, to: number) {
@@ -138,11 +157,7 @@
     }
     g.globalAlpha = 1;
     // Where each repeat starts again.
-    g.fillStyle = color('--ink-3', '#8c8478');
-    for (let k = 1; k < span.repeats; k++) {
-      const x = Math.round(k * cycle * pps) - from;
-      if (x >= 0 && x <= to - from) g.fillRect(x, 0, 1, WAVE_H);
-    }
+    repeatMarks(g, cycle, span.repeats, from, to);
   }
 
   function drawRhythm(g: CanvasRenderingContext2D, p: RhythmPattern, from: number, to: number) {
@@ -152,16 +167,18 @@
     const bar = barSeconds(p);
     const cycle = patternSteps(p) * step;
     const colors = [color('--ink-2', '#5b554c'), color('--accent', '#c8453a'), color('--chord', '#6d5226')];
-    // Bars faint, each repeat of the pattern stronger.
+    // Bars faint; where the pattern repeats, a dashed line instead.
     g.fillStyle = color('--rule', '#dcd3c3');
+    g.globalAlpha = 0.5;
     for (let t = 0; t <= span.to + 1e-6; t += bar) {
       const x = t * pps - from;
       if (x < -1 || x > to - from + 1) continue;
-      const repeat = Math.abs(t / cycle - Math.round(t / cycle)) < 1e-6;
-      g.globalAlpha = repeat ? 1 : 0.5;
-      g.fillRect(Math.round(x), 0, 1, WAVE_H);
+      const repeat = t > 1e-6 && Math.abs(t / cycle - Math.round(t / cycle)) < 1e-6;
+      if (!repeat) g.fillRect(Math.round(x), 0, 1, WAVE_H);
     }
     g.globalAlpha = 1;
+    // The last repeat may be cut short: a mark at every whole pattern that starts before the end.
+    repeatMarks(g, cycle, Math.ceil(span.to / cycle - 1e-6), from, to);
     const cell = Math.max(1.5, Math.min(step * pps - 1, 10));
     for (const hit of rhythmHits(p)) {
       const x = hit.time * pps - from;
@@ -173,6 +190,20 @@
     g.globalAlpha = 1;
   }
 </script>
+
+{#if Math.round(volume * 100) < 100}
+  <!-- Its volume, attached to the left of the strip: the filled part is how loud it plays. -->
+  <div
+    class="volume"
+    class:lifted
+    style:transform="translate({left - 8}px, {top + RULER_H}px)"
+    style:height="{TILE_H}px"
+    title="Volume {Math.round(volume * 100)}%"
+    aria-hidden="true"
+  >
+    <span style:height="{Math.round(volume * 100)}%"></span>
+  </div>
+{/if}
 
 <div
   class="tile"
@@ -233,6 +264,31 @@
     z-index: 3;
     box-shadow: 0 10px 28px rgb(40 30 10 / 22%);
     opacity: 0.92;
+  }
+  .volume {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 5px;
+    padding: 6px 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    border-radius: 3px;
+    background: var(--rule);
+    background-clip: content-box;
+    pointer-events: none;
+    will-change: transform;
+  }
+  .volume span {
+    display: block;
+    width: 100%;
+    max-height: 100%;
+    border-radius: 3px;
+    background: var(--note);
+  }
+  .volume.lifted {
+    opacity: 0.6;
   }
   .head {
     display: flex;

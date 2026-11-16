@@ -5,7 +5,7 @@ platform code and AI models can be replaced independently.
 
 ```
 ┌──────────────────────────── UI (Svelte) ────────────────────────────┐
-│ Notebook canvas · Recorder · Rhythm pads · Sketch view · Settings   │
+│ Notebook canvas · Recorder · Rhythm pads · Sketch view · Reference  │
 └──────┬───────────────────────┬──────────────────────┬───────────────┘
        │ app state / capture flow (src/lib/state)     │
 ┌──────▼──────────┐  ┌─────────▼─────────┐  ┌─────────▼────────────────┐
@@ -168,6 +168,8 @@ Pure TypeScript, no UI or platform dependencies, unit tested.
   pattern is whole 4/4 bars; a last bar holding only its downbeat is dropped (the loop coming round). A
   `RhythmPattern` is `{ bpm, stepsPerBeat, beatsPerBar, bars, lengthBars, pads[pad][step] }`: `lengthBars` is how
   long it plays on the canvas, the pattern repeating (and the last repeat cut) to fill it (`rhythmHits`).
+- `chordTaps.ts`: chords tapped on the circle of fifths (Reference) as notes: each tap's pitches from its tap to the
+  next, the last until recording stops (at most 8 s), from the first tap at 0; and a title from the chords in order.
 - `rhythmPlayer.ts`: plays a pattern in a loop on any audio context with a 25 ms look-ahead scheduler that reads the
   pattern on every tick (edits, tempo and swing are heard at the next step); it keeps when each step was scheduled,
   for the step sounding now and for `nearestStep()`, where a pad struck while recording belongs (output latency
@@ -224,6 +226,8 @@ Tables:
 - `canvas_w`, `canvas_h` (schema v7): the box of a text note (kind `text`, its markdown in `text_notes`), in canvas
   pixels; NULL fits the text. `create_text_note` / `update_text_note` (text, size, or back to fitting); notes have no
   recording, nothing to transcribe, and are copied by `duplicate_sketch` like any canvas item.
+- `canvas_volume` (schema v9, on the sketch row): how loud a sketch plays on the canvas, 0–1 (`set_sketch_volume`;
+  a CHECK keeps it in range). Copied by `duplicate_sketch`.
 - `canvas_repeats` (schema v6, on the sketch row): how many times a recording's playing part plays in a row on the
   canvas (`set_sketch_repeats`, 1–128). Rhythms repeat by bars in their pattern instead.
 - `duplicate_sketch(id, notebook, position)`: a copy of a saved sketch on a canvas. The files in its folder are
@@ -248,6 +252,11 @@ latest other take and removes a track left empty; `delete_track` removes a track
 recording and the track holding it cannot be deleted on their own (that is deleting the sketch), which keeps every
 sketch row backed by a recording. `list_sketches` returns takes too (the queue needs them); the home list shows
 rows without a parent. Migration v3 gives every existing sketch one track named *Track 1*.
+
+**Sketches from notes** (`notesSketch` in `importTrack.ts`): a MIDI import and the Reference section's chord
+recordings (capture backend and engine `chord-taps`) both go through it: the synth renders the notes as the
+recording (44.1 kHz) and analysis audio (22.05 kHz), the notes are saved as the transcription, and a MIDI file is
+written (the imported file, or `notesToMidi`). A failure removes the half-made sketch.
 
 **Imported tracks** (`src/lib/library/importTrack.ts`) use the same calls as a recording: a take reserved on a new
 track (capture backend `import`), the file uploaded in 4 MB `media-chunk`s, finalize, then the track renamed after
@@ -300,6 +309,18 @@ which makes the whole UI testable in Chromium.
   the sketch's id in `app.clipboard`; *Paste* and *Duplicate* call `duplicate_sketch`. Playing a sketch alone sets the engine's
   range to it and the others' gain to 0; repeat sets the range to [0, loop end] with the loop's next pass starting at
   the loop start, so playing from before the range runs into it. Scroll, zoom and repeat are kept per notebook.
+- Volume: each canvas track carries the sketch's `canvasVolume` as `EngineTrack.volume`, multiplied into the gain
+  that mute and solo already move (a smooth change, no restart). `app.setVolume` updates the sketch at once and saves
+  250 ms after the slider rests, without bumping the sketch's revision, so the canvas keeps its decoded sound.
+  `CanvasTile` draws a bar on the sketch's left below 100 %.
+- Slice (`slice.ts`, unit tested): `sliceRange` / `snapSlice` say where a sketch can be cut (a recording inside its
+  first pass, 0.15 s from either end; a rhythm on a bar line, a bar from either end). While slicing, a press on the
+  sketch moves the cut (press mode `slice`); the bar with *Cancel* / *Slice* stops its own pointer events from
+  reaching the canvas. `app.sliceSketch` duplicates the sketch (the copy is the second half, titled "… (2)") and
+  then, for a recording, sets complementary crops (`sliceCrops`: the first half's crop end and the second half's crop
+  start are the cut, in the recording's own time; repeats go back to 1), or, for a rhythm, sets each half's
+  `lengthBars` and turns the second half's pattern by whole bars (`rotatePattern`) and places it where the first
+  ends. If a step fails, the copy is removed.
 - Each sketch's `listen_mode` (schema v8, default `recording`) stores Take / Notes / Both. The sketch view and
   canvas share this setting; duplicates preserve it. `canvasAudio.ts` loads the active, audible takes and current
   edited notes, renders the notes with the same synth voice as the sketch view, and mixes Both through Web Audio
@@ -318,6 +339,8 @@ which makes the whole UI testable in Chromium.
   corner (`data-resize`) resizes the box. `markdown.ts` renders a safe subset (everything escaped, then a fixed set
   of tags; links only to http(s) and mailto) and `isEmojiOnly` picks the notes shown at 50 px and drawn on the
   minimap as their emoji.
+- Text selection: `body` sets `user-select: none` (and `-webkit-touch-callout: none`), so taps, holds and drags
+  never select UI text or open the iOS callout; inputs, text areas and `.selectable` (the diagnostics log) opt back in.
 - `RhythmView.svelte`: a rhythm opened full size (the app routes a sketch of kind `rhythm` here instead of the sketch
   view). Its own audio context and `DrumKit` through a limiter, a `RhythmPlayer`; edits go through an undo stack
   and are saved 0.5 s after the last one (`update_rhythm`). The step grid shows one pad and one bar; a press on a
@@ -326,7 +349,16 @@ which makes the whole UI testable in Chromium.
 - `CanvasTile.svelte`: a sketch on the canvas, its title over its waveform (Take/Both), a miniature piano roll
   (Notes), or its rhythm hits. The waveform uses recording-only peaks, 100 per second. Notes reflect edits, crop,
   count-in and repeats; repeats after the first are lighter. Only the part in view is drawn.
-- `Minimap.svelte`: the whole notebook, the view, the playhead and, with repeat on, the loop's handles.
+- `Minimap.svelte`: the whole notebook, the view (the rest faded by laying the background over it, even-odd fill),
+  the playhead and, with repeat on, the loop's handles. The canvas draws the loop's edges as dashed lines
+  (`.loop-edge`) from the ruler to the bottom.
+- `ReferenceView.svelte` (route `#/reference`, from the book button in the notebook's header): *Chords* lists the
+  roots in a sidebar and the root's 19 chord qualities as buttons; the chosen chord is shown with `chordInWords`,
+  `chordTones`, `PianoDiagram` or `GuitarDiagram` (`pianoVoicing`, `guitarVoicings`). *Circle of fifths* reuses
+  `CircleOfFifths.svelte` with the tapped chord as its one "used" chord (lit) and its key's wedge. Its own `NoteSynth`
+  (own audio context, unlocked in each tap). Recording collects `{ time, pitches, symbol }` per tap
+  (`performance.now()`), then `app.saveChordSketch` turns them into a sketch at the end of the open notebook. Spelling:
+  flats for roots named flat, else the names of the chord's key.
 - `RhythmModal.svelte`: the draggable rhythm panel: pads (pointer-down strikes, so taps are timed by the event's
   timestamp), then the step sequencer, previewed with a 25 ms look-ahead scheduler that reads the pattern on every
   tick (edits play at once).

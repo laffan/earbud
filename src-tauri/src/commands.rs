@@ -116,6 +116,11 @@ pub async fn place_sketch(library: State<'_, Library>, args: PlaceSketchArgs) ->
 }
 
 #[tauri::command]
+pub async fn set_sketch_volume(library: State<'_, Library>, id: String, volume: f64) -> Result<Sketch> {
+    library.set_sketch_volume(&id, volume)
+}
+
+#[tauri::command]
 pub async fn set_sketch_repeats(library: State<'_, Library>, id: String, repeats: i64) -> Result<Sketch> {
     library.set_sketch_repeats(&id, repeats)
 }

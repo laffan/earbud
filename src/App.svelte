@@ -5,6 +5,7 @@
   import NotebookView from './lib/ui/NotebookView.svelte';
   import PermissionSheet from './lib/ui/PermissionSheet.svelte';
   import Recorder from './lib/ui/Recorder.svelte';
+  import ReferenceView from './lib/ui/ReferenceView.svelte';
   import RhythmView from './lib/ui/RhythmView.svelte';
   import SketchView from './lib/ui/SketchView.svelte';
   import Toasts from './lib/ui/Toasts.svelte';
@@ -25,6 +26,8 @@
         <SketchView {id} />
       {/if}
     {/key}
+  {:else if app.view.name === 'reference'}
+    <ReferenceView />
   {:else}
     <NotebookView />
   {/if}

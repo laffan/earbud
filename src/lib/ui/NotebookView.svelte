@@ -60,6 +60,7 @@
   import CanvasTile from './CanvasTile.svelte';
   import { clampView, fitView, NOTE_W, RULER_H, rulerStep, sketchSpan, TILE_H, zoomAround, type Span } from './canvasGeometry';
   import { isEmojiOnly } from './markdown';
+  import { sliceCrops, sliceRange, sliceRhythm, snapSlice } from './slice';
   import { displayTitle, formatClock, formatClockTenths } from './format';
   import Icon from './Icon.svelte';
   import ImportSheet from './ImportSheet.svelte';
@@ -258,6 +259,7 @@
         start: rhythm ? undefined : span.from,
         end: rhythm ? undefined : span.to,
         audible: !solo || solo.id === s.id,
+        volume: s.canvasVolume ?? 1,
       };
       // Each repeat of a recording is one more track on the same buffer, a part's length later: all on one clock.
       return Array.from({ length: span.repeats }, (_, k) => ({
@@ -440,7 +442,7 @@
     target: Target;
     moved: boolean;
     held: boolean;
-    mode: 'none' | 'pan' | 'drag' | 'resize';
+    mode: 'none' | 'pan' | 'drag' | 'resize' | 'slice';
     view0: CanvasView;
     /** A menu was open: this press only closes it. */
     dismiss: boolean;
@@ -517,6 +519,12 @@
       dismiss = true;
     }
     const target = targetOf(e.target);
+    if (slicing && target.kind !== 'empty' && target.id === slicing.id) {
+      // Slicing: a press on the sketch puts the cut there, and dragging moves it.
+      press = { pointer: e.pointerId, type: e.pointerType, x0: e.clientX, y0: e.clientY, target, moved: false, held: false, mode: 'slice', view0: view, dismiss };
+      moveSlice(e.clientX, e.clientY);
+      return;
+    }
     noteBox0 = null;
     if (target.kind === 'resize' && textNotes.some((n) => n.id === target.id)) {
       const el = canvasEl.querySelector<HTMLElement>(`[data-tile="${target.id}"]`);
@@ -573,6 +581,10 @@
     }
     const p = press;
     if (!p || e.pointerId !== p.pointer) return;
+    if (p.mode === 'slice') {
+      moveSlice(e.clientX, e.clientY);
+      return;
+    }
     const dx = e.clientX - p.x0;
     const dy = e.clientY - p.y0;
     if (!p.moved && Math.hypot(dx, dy) > SLOP) {
@@ -630,6 +642,7 @@
     if (!p || e.pointerId !== p.pointer) return;
     press = null;
     window.clearTimeout(holdTimer);
+    if (p.mode === 'slice') return;
     if (p.mode === 'drag' && dragging) {
       const d = dragging;
       dragging = null;
@@ -888,6 +901,61 @@
     return line.replace(/[#>*_~`[\]()-]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40) || 'Note';
   }
 
+  // -------------------------------------------------------------- slice
+
+  /** Slicing a sketch: where the cut is (timeline seconds), until it is confirmed or cancelled. */
+  let slicing = $state<{ id: string; at: number } | null>(null);
+  let sliceBarW = $state(280);
+  const sliceSketch = $derived(slicing ? (sketches.find((s) => s.id === slicing!.id) ?? null) : null);
+
+  function canSlice(s: Sketch): boolean {
+    return s.kind !== 'text' && !!spans[s.id] && sliceRange(spans[s.id], patternOf(s)) !== null;
+  }
+
+  /** From the sketch menu: the cut starts where the sketch was held. */
+  function startSlice(id: string, clientX: number, clientY: number) {
+    tileMenu = null;
+    const s = sketches.find((x) => x.id === id);
+    if (!s) return;
+    const at = snapSlice(spans[id], patternOf(s), localPoint(clientX, clientY).time);
+    if (at === null) return;
+    if (solo) endSolo();
+    slicing = { id, at };
+  }
+
+  function moveSlice(clientX: number, clientY: number) {
+    const s = sliceSketch;
+    if (!slicing || !s) return;
+    const at = snapSlice(spans[s.id], patternOf(s), localPoint(clientX, clientY).time);
+    if (at !== null) slicing = { id: s.id, at };
+  }
+
+  async function confirmSlice() {
+    const cut = slicing;
+    const s = sliceSketch;
+    slicing = null;
+    if (!cut || !s) return;
+    const span = spans[s.id];
+    const pattern = patternOf(s);
+    const secondTitle = `${titleOf(s)} (2)`.slice(0, 120);
+    if (pattern) {
+      const bars = Math.round((cut.at - span.start) / barSeconds(pattern));
+      const [first, second] = sliceRhythm(pattern, bars);
+      await app.sliceSketch(s.id, {
+        kind: 'rhythm',
+        first,
+        second,
+        firstMs: Math.round(playSeconds(first) * 1000),
+        secondMs: Math.round(playSeconds(second) * 1000),
+        secondXMs: Math.round((span.start + first.lengthBars * barSeconds(pattern)) * 1000),
+        secondTitle,
+      });
+    } else {
+      const crops = sliceCrops({ startMs: s.cropStartMs, endMs: s.cropEndMs }, span, cut.at);
+      await app.sliceSketch(s.id, { kind: 'audio', ...crops, secondTitle });
+    }
+  }
+
   // ------------------------------------------- copy, duplicate, export
 
   function copy(id: string) {
@@ -958,13 +1026,27 @@
     }
   }
 
+  /**
+   * From the sketch menu. The id is read before the menu closes: closing it
+   * empties the menu's `{@const}` sketch, so reading it afterwards threw and
+   * the confirmation never opened.
+   */
+  function askDelete(id: string) {
+    tileMenu = null;
+    confirming = { kind: 'sketch', id };
+  }
+
   async function confirmDelete() {
     const c = confirming;
     confirming = null;
     if (!c) return;
     if (c.kind === 'sketch') {
       if (solo?.id === c.id) endSolo();
-      await app.deleteSketch(c.id);
+      try {
+        await app.deleteSketch(c.id);
+      } catch (error) {
+        app.toast(`Could not delete: ${errorMessage(error)}`, 'error');
+      }
     } else {
       await app.deleteNotebook(c.id);
     }
@@ -1028,6 +1110,7 @@
       e.preventDefault();
       togglePlay();
     } else if (e.key === 'Escape') {
+      slicing = null;
       closeMenus();
       if (solo) endSolo();
     }
@@ -1110,6 +1193,9 @@
       {/if}
     </div>
     <span class="spacer"></span>
+    <button class="icon-button" onclick={() => app.openReference()} aria-label="Reference: chords and the circle of fifths" title="Reference">
+      <Icon name="book" />
+    </button>
     <button class="icon-button" onclick={() => (showSettings = true)} aria-label="Settings">
       <Icon name="settings" />
     </button>
@@ -1155,6 +1241,7 @@
           pattern={stretched}
           viewLeft={viewLeft}
           viewRight={viewLeft + cw}
+          volume={s.canvasVolume ?? 1}
           soloing={solo?.id === s.id}
           progress={solo?.id === s.id ? currentTime : null}
           lifted={!!moving}
@@ -1200,6 +1287,39 @@
         style:top="{createSpot.canvasY - view.scrollY + RULER_H}px"
         style:height="{TILE_H}px"
       ></div>
+    {/if}
+
+    {#if repeat && loopRange}
+      <!-- What repeats: its edges, down the whole canvas. -->
+      {#each [loopRange.start, loopRange.end] as edge, i (i)}
+        {@const x = (edge - view.scrollX) * view.pps}
+        {#if x > -2 && x < cw + 2}
+          <div class="loop-edge" data-loop-edge={i === 0 ? 'start' : 'end'} style:left="{x}px" style:top="{RULER_H}px"></div>
+        {/if}
+      {/each}
+    {/if}
+
+    {#if slicing && sliceSketch}
+      {@const x = (slicing.at - view.scrollX) * view.pps}
+      {@const top = sliceSketch.canvasY - view.scrollY + RULER_H}
+      {@const barTop = top - 60 > RULER_H + 4 ? top - 60 : top + TILE_H + 14}
+      <div class="slice-line" style:left="{x}px" style:top="{top - 8}px" style:height="{TILE_H + 16}px" aria-hidden="true">
+        <span class="slice-knob"></span>
+      </div>
+      <div
+        class="slice-bar"
+        role="toolbar"
+        tabindex="-1"
+        aria-label="Slice {titleOf(sliceSketch)}"
+        bind:clientWidth={sliceBarW}
+        style:left="{Math.max(8, Math.min(x - sliceBarW / 2, cw - sliceBarW - 8))}px"
+        style:top="{barTop}px"
+        onpointerdown={(e) => e.stopPropagation()}
+      >
+        <span class="slice-at tabular">Cut at {formatClockTenths(slicing.at - spans[sliceSketch.id].start)}</span>
+        <button class="pill-button" onclick={() => (slicing = null)}>Cancel</button>
+        <button class="pill-button primary" onclick={confirmSlice}><Icon name="slice" size={16} /> Slice</button>
+      </div>
     {/if}
 
     <div class="ruler" style:height="{RULER_H}px">
@@ -1297,25 +1417,37 @@
 {#if tileMenu && tileMenuSketch}
   {@const m = tileMenu}
   {@const s = tileMenuSketch}
-  {@const at = placeMenu(m.x, m.y, 220, 212)}
+  {@const sounds = s.kind !== 'text'}
+  {@const at = placeMenu(m.x, m.y, 232, sounds ? 362 : 212)}
+  {@const volume = Math.round((s.canvasVolume ?? 1) * 100)}
   <div class="popover" role="menu" style:left="{at.left}px" style:top="{at.top}px" aria-label={titleOf(s)}>
     <div class="menu-label">{titleOf(s)}</div>
+    {#if sounds}
+      <label class="volume-row">
+        <Icon name="volume" size={18} />
+        <input
+          type="range"
+          min="0"
+          max="100"
+          step="1"
+          value={volume}
+          oninput={(e) => app.setVolume(s.id, Number(e.currentTarget.value) / 100)}
+          aria-label="Volume of {titleOf(s)}"
+        />
+        <span class="tabular vol-value">{volume}%</span>
+      </label>
+      <div class="menu-sep"></div>
+    {/if}
     {#if s.kind === 'text'}
       <button role="menuitem" onclick={() => openSketch(s.id)}><Icon name="edit" size={18} /> Edit</button>
     {/if}
     <button role="menuitem" onclick={() => copy(s.id)}><Icon name="copy" size={18} /> Copy</button>
     <button role="menuitem" onclick={() => duplicate(s.id)}><Icon name="duplicate" size={18} /> Duplicate</button>
     {#if s.kind !== 'text'}
+      <button role="menuitem" onclick={() => startSlice(s.id, m.x, m.y)} disabled={!canSlice(s)}><Icon name="slice" size={18} /> Slice</button>
       <button role="menuitem" onclick={() => exportSketch(s.id)}><Icon name="share" size={18} /> Export</button>
     {/if}
-    <button
-      role="menuitem"
-      class="danger"
-      onclick={() => {
-        tileMenu = null;
-        confirming = { kind: 'sketch', id: s.id };
-      }}><Icon name="trash" size={18} /> Delete</button
-    >
+    <button role="menuitem" class="danger" onclick={() => askDelete(s.id)}><Icon name="trash" size={18} /> Delete</button>
   </div>
 {/if}
 
@@ -1483,6 +1615,25 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .volume-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 10px 8px;
+    color: var(--ink-2);
+  }
+  .volume-row input {
+    flex: 1;
+    min-width: 0;
+    accent-color: var(--ink-2);
+    touch-action: pan-x;
+  }
+  .vol-value {
+    width: 3.2em;
+    text-align: right;
+    font-size: 0.85rem;
+    color: var(--ink-2);
+  }
   .menu-sep {
     height: 1px;
     margin: 4px 6px;
@@ -1551,6 +1702,16 @@
     border-left: 2px solid var(--accent);
     border-right: 2px solid var(--accent);
   }
+  .loop-edge {
+    position: absolute;
+    bottom: 0;
+    z-index: 3;
+    width: 0;
+    margin-left: -1px;
+    border-left: 1.5px dashed var(--accent);
+    opacity: 0.5;
+    pointer-events: none;
+  }
   .tick {
     position: absolute;
     top: 0;
@@ -1590,6 +1751,42 @@
     border: 2px dashed var(--accent);
     background: var(--accent-soft);
     pointer-events: none;
+  }
+  .slice-line {
+    position: absolute;
+    z-index: 5;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--accent);
+    pointer-events: none;
+  }
+  .slice-knob {
+    position: absolute;
+    left: -5px;
+    top: -6px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 2px var(--paper-raised);
+  }
+  .slice-bar {
+    position: absolute;
+    z-index: 7;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 6px 6px 12px;
+    border-radius: 999px;
+    background: var(--paper-raised);
+    border: 1px solid var(--rule);
+    box-shadow: var(--shadow);
+    white-space: nowrap;
+  }
+  .slice-at {
+    font-size: 0.85rem;
+    color: var(--ink-2);
+    margin-right: 2px;
   }
   .empty {
     position: absolute;

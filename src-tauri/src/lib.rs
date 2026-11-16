@@ -88,6 +88,7 @@ pub fn run() {
             commands::delete_notebook,
             commands::place_sketch,
             commands::set_sketch_repeats,
+            commands::set_sketch_volume,
             commands::duplicate_sketch,
             commands::create_text_note,
             commands::update_text_note,

@@ -4,7 +4,7 @@
     | 'back' | 'more' | 'play' | 'pause' | 'settings' | 'share' | 'trash' | 'undo' | 'redo'
     | 'plus' | 'edit' | 'zoom-in' | 'zoom-out' | 'refresh' | 'close' | 'up' | 'down'
     | 'left' | 'right' | 'check' | 'mic' | 'camera' | 'shorter' | 'longer' | 'import' | 'loop' | 'minus'
-    | 'fit' | 'pads' | 'open' | 'copy' | 'duplicate' | 'paste';
+    | 'fit' | 'pads' | 'open' | 'copy' | 'duplicate' | 'paste' | 'volume' | 'slice' | 'book' | 'record';
 
   let { name, size = 20, label }: { name: Name; size?: number; label?: string } = $props();
 </script>
@@ -54,6 +54,10 @@
   {:else if name === 'copy'}<rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
   {:else if name === 'duplicate'}<rect x="3" y="7" width="8" height="10" rx="1.5" /><rect x="13" y="7" width="8" height="10" rx="1.5" stroke-dasharray="2.5 2" />
   {:else if name === 'paste'}<rect x="5" y="5" width="14" height="16" rx="2" /><path d="M9 5V3.5h6V5M9 11h6M9 15h4" />
+  {:else if name === 'volume'}<path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" /><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11" />
+  {:else if name === 'slice'}<circle cx="6" cy="7" r="2.5" /><circle cx="6" cy="17" r="2.5" /><path d="M8.2 8.3L20 17M8.2 15.7L20 7" />
+  {:else if name === 'book'}<path d="M12 6.5C10 5 7 4.6 3.5 5v13.2c3.5-.4 6.5.1 8.5 1.6 2-1.5 5-2 8.5-1.6V5C17 4.6 14 5 12 6.5z" /><path d="M12 6.5v13.3" />
+  {:else if name === 'record'}<circle cx="12" cy="12" r="6.5" fill="currentColor" stroke="none" />
   {:else if name === 'import'}<path d="M12 15V3M7 10l5 5 5-5" /><path d="M5 15v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" />
   {/if}
 </svg>

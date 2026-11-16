@@ -70,7 +70,9 @@
   }
 
   // Editing: the box fits what is typed (an emoji-only note is shown as it will look).
-  const boxWidth = $derived(width ?? (emoji ? null : NOTE_W));
+  // An emoji-only note ignores a size it was given before it became one.
+  const boxWidth = $derived(emoji ? null : (width ?? NOTE_W));
+  const boxHeight = $derived(emoji ? null : height);
 </script>
 
 <div
@@ -81,7 +83,7 @@
   data-tile={id ?? undefined}
   style:transform="translate({left}px, {top + RULER_H}px)"
   style:width={boxWidth !== null ? `${boxWidth}px` : undefined}
-  style:min-height={height !== null ? `${height}px` : undefined}
+  style:min-height={boxHeight !== null ? `${boxHeight}px` : undefined}
   role="note"
   aria-label={text ? `Note: ${text.slice(0, 60)}` : 'New note'}
 >
@@ -101,7 +103,8 @@
   {:else}
     <!-- Escaped and limited to a fixed set of tags by renderMarkdown. -->
     <div class="md">{@html html}</div>
-    {#if id}<div class="corner" data-resize={id} aria-hidden="true"></div>{/if}
+    <!-- An emoji-only note has no box to size: it is always shown at 50 px. -->
+    {#if id && !emoji}<div class="corner" data-resize={id} aria-hidden="true"></div>{/if}
   {/if}
 </div>
 

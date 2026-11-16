@@ -31,6 +31,9 @@ Built with Tauri 2, Svelte 5 + TypeScript, Rust + SQLite, Swift + AVFoundation (
 | Sketch menu on the canvas (this branch): copy and paste (also into another notebook), duplicate, export, delete; recordings repeat by dragging their right edge | Done, unit tested (Rust and TS); checked in Chromium |
 | Rhythm view (this branch): full-size step sequencer, velocity by dragging, record pads into the loop, swing, tap tempo, undo | Done, unit tested (player, swing, bars); checked in Chromium |
 | Text notes on the canvas (this branch): double-tap to write, markdown, move and resize, emoji-only notes large and on the minimap | Done, unit tested (markdown, storage); checked in Chromium |
+| Sketch volume and Slice (this branch): a volume slider in the sketch menu, shown as a bar on the sketch's left; Slice cuts a recording or a rhythm into two sketches | Done, unit tested (Rust storage, slice geometry); checked in Chromium |
+| Reference section (this branch): chords by root and variant with piano and guitar diagrams; circle of fifths that records tapped chords as a sketch | Done, unit tested (chord taps); checked in Chromium at phone and iPad sizes |
+| iPad trackpad scrolling on the canvas | Info.plist fix from Snorkle applied (native indirect input, single-window scene); not yet confirmed on an iPad |
 | Home screen, one-tap record, chronological library | Replaced on this branch by the notebook canvas |
 | iOS synchronized audio/video capture (AVFoundation) | Builds and runs on iPhone; start-up reliability fix pending confirmation on a device (see [docs/IOS.md](docs/IOS.md)) |
 | Desktop / browser capture (MediaRecorder) | Done, tested in Chromium |
@@ -108,10 +111,11 @@ vertically. Everything below works with a finger, a mouse or a trackpad.
 | Tap a sketch | Plays it on its own (the canvas playhead waits, dimmed). Tap again to stop. |
 | Double-tap a sketch | Opens it: a recording in the sketch view, a rhythm in the rhythm view, a text note to edit. |
 | Double-tap empty canvas | Writes a text note there (markdown). Tap elsewhere, Esc or ⌘/Ctrl+Enter to finish; a note left empty goes. |
-| Hold a sketch | Its menu: **Copy**, **Duplicate**, **Export**, **Delete**. Keep holding and drag instead to move the sketch (time and height); the menu closes. |
+| Hold a sketch | Its menu: a **volume** slider, **Copy**, **Duplicate**, **Slice**, **Export**, **Delete**. Keep holding and drag instead to move the sketch (time and height); the menu closes. |
 | Drag a sketch's right edge | Repeats it: a recording plays its playing part again, whole times in a row (×2, ×3…); a rhythm repeats its pattern over more (or fewer) bars. |
 | Drag; pinch, or ctrl/⌘ + scroll | Scrolls the canvas; zooms the timeline. |
 
+- **Reference.** The book button next to Settings opens the Reference section: see [Reference](#reference).
 - **Notebooks.** The title at the top opens the list of notebooks, with *New notebook*, *Rename* and *Delete*
   (which deletes its sketches). The first launch creates *Notebook 1*. Each notebook remembers its scroll, zoom and
   repeat setting.
@@ -122,8 +126,8 @@ vertically. Everything below works with a finger, a mouse or a trackpad.
   beat. The sketch appears where you held: its title over its waveform. Its count-in is not shown or played.
 - **Import audio** opens the import sheet used before: an audio file (transcribed like a recording) or a MIDI file
   (its notes, played by the built-in piano). It is placed where you held.
-- **Record rhythm** opens a panel you can drag by its top. Tap the three pads (*Kick*, *Snare*, *Hat*; keys 1 2 3
-  or J K L); recording starts with the first tap. *Done* turns the taps into a pattern: the tempo is detected,
+- **Record rhythm** opens a panel you can drag by its top. Tap the three pads (*Beat 1*, *Beat 2*, *Beat 3*, which
+  sound as a kick, a snare and a hat; keys 1 2 3 or J K L); recording starts with the first tap. *Done* turns the taps into a pattern: the tempo is detected,
   the beat nearest the first tap becomes bar 1, every tap moves to the nearest 16th note, and the pattern is as many
   whole 4/4 bars as you played (a lone downbeat at the end is taken as the loop coming round and dropped). The step
   sequencer then shows it: tap steps on or off, change the tempo or the number of bars, play it in a loop, or
@@ -141,7 +145,16 @@ vertically. Everything below works with a finger, a mouse or a trackpad.
   rules, and `[links](https://…)`; a single line break stays a line break. A note sits at a point of the timeline
   (zooming moves it, it does not stretch). Hold it to move it or for its menu (*Edit*, *Copy*, *Duplicate*,
   *Delete*), drag its corner to resize it, double-tap to edit. A note that is only emoji is shown at 50 px without a
-  box, and its emoji appears, small, on the minimap. Notes do not play.
+  box or a resize corner, and its emoji appears, small, on the minimap. Notes do not play.
+- **Volume.** The slider at the top of a sketch's menu sets how loud it plays on the canvas (0–100 %, saved with the
+  sketch and kept by copies). Below 100 % a short vertical bar on the sketch's left shows how much. The recording is
+  not changed, and the sketch view plays it as recorded.
+- **Slice.** *Slice* in a sketch's menu puts a red cut line on the sketch where you held it: tap or drag along the
+  sketch to move it, then *Slice* (or *Cancel*, or Esc). The sketch becomes two sketches that stand on their own, side
+  by side, the second titled "… (2)". A recording is not cut: both halves keep the whole recording and play the parts
+  before and after the cut (as crops, which the sketch view can widen again). A recording that repeats is cut in its
+  first pass, and both halves then play once. A rhythm is cut on a bar line (at least one bar each side); the second
+  half carries on from where the first stops in its pattern.
 - **The sketch menu.** *Copy* keeps the sketch for pasting: press and hold the canvas, in this notebook or another,
   and the menu there has *Paste*, which puts a copy where you held. *Duplicate* puts a copy right after the sketch
   (after its repeats), at the same height. A copy has the recording, the notes with your edits, the crop, tempo,
@@ -150,7 +163,8 @@ vertically. Everything below works with a finger, a mouse or a trackpad.
   recorded audio, notes audio, MIDI), for a rhythm its **audio** as it plays on the canvas (repeats included) and
   **MIDI** (General MIDI drums on channel 10: kick 36, snare 38, closed hi-hat 42, at the rhythm's tempo).
 - **Repeats.** A recording's repeats play back to back on the same audio clock, each one more track in the playback
-  engine; on the tile, the repeats after the first are drawn lighter, with a mark where each starts. To loop a
+  engine; on the tile, the repeats after the first are drawn lighter, with a dashed line where each starts (a rhythm
+  that is longer than its pattern has one where the pattern comes round). To loop a
   phrase, crop it in the sketch view, then drag its right edge on the canvas.
 - **Playing.** The control bar at the bottom has play, the playhead's time, **repeat** and *show the whole
   notebook*. The playhead plays every sketch it crosses, together, on one audio clock; the view follows it.
@@ -158,16 +172,34 @@ vertically. Everything below works with a finger, a mouse or a trackpad.
   recording, after the app was in the background, and after a play that got no sound within 2 s, the next tap
   starts the canvas's sound with a fresh audio context (see Known limitations). Each play writes the audio state to
   Settings → Diagnostics.
-- **Minimap.** Above the control bar: the whole notebook, the part in view (outlined), the playhead. Drag on it
-  to move the view. With repeat on, two red handles mark what repeats (by default from the first sketch to the end
-  of the last); drag them to set a range, saved with the notebook. *Loop everything* clears it. Playing from before
-  the range runs into it.
+- **Minimap.** Above the control bar: the whole notebook, the part in view (everything outside it is faded), the
+  playhead. Drag on it to move the view. With repeat on, two red handles mark what repeats (by default from the first
+  sketch to the end of the last); drag them to set a range, saved with the notebook. *Loop everything* clears it.
+  Playing from before the range runs into it. On the canvas, the range's two edges are dashed red lines down its
+  whole height.
 - **A sketch** (double-tap) is the sketch view from before without tracks: piano roll, chord strip and waveform,
   the Chords section, the video, notes, tempo, crop, loop, *Take / Notes / Both*, note editing, transcribing again
   and sharing. The *Take / Notes / Both* choice is saved per sketch across app launches and also controls its
   canvas playback. *Notes* plays the current edited transcription and shows a miniature piano roll on the canvas;
   *Take* and *Both* show the waveform. Crops and repeats apply to the selected sound. *Back* returns to the canvas.
 - **Apple Watch** recordings are placed at the end of the open notebook.
+
+### Reference
+
+The book button next to Settings. Two tabs (the one last used opens):
+
+- **Chords.** The roots down the side (A, A♭, B, B♭, C, D, D♭, E, E♭, F, G, G♭, with the sharp each flat also is).
+  Choosing one puts its chords across the top: major, minor, 7, maj7, m7, dim, aug, sus2, sus4, 6, m6, add9, 9, maj9,
+  m9, m7♭5, dim7, m(maj7), 7sus4 (the chords the transcription recognises). Tapping one plays it and shows it below:
+  its name in words, its notes, and how to play it with the *Piano | Guitar* choice (the same choice as the sketch
+  view's Chords section; guitar has alternative shapes). The play button plays it again.
+- **Circle of fifths.** The same circle as in a sketch's Chords section. Tap a chord to hear it; its key's wedge is
+  shaded and how to play it appears below the circle (piano or guitar). The small record button under the circle,
+  on the right, records chords: tap it, then tap chords on the circle (recording starts with the first one), then
+  tap it again. The chords become a new sketch at the end of the open notebook, titled after them (e.g.
+  *C – Am – F – G*): each chord's notes as you heard them (piano voicing or guitar shape) from its tap until the
+  next, the last until you stopped (at most 8 s). Like an imported MIDI file, it is played by the built-in piano and
+  its notes are the transcription (nothing to transcribe). *Discard* drops a recording.
 
 On this branch Settings, transcription, chords, editing, tempo, export and the Watch link work as described
 below; where the steps below mention the list of sketches, tracks or *Record track*, the canvas replaces them.
@@ -316,7 +348,7 @@ See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for module boundaries, data
 ```bash
 npm test                             # Vitest: WAV/resampling, chords, MIDI, capture flow, real Basic Pitch inference
 npm run check                        # svelte-check / TypeScript
-(cd src-tauri && cargo test)         # Sketch Library and Watch receiver (pairing, transfers over TCP, import)
+(cd src-tauri && cargo test)         # Sketch Library, Watch receiver (pairing, transfers over TCP, import), iOS plist keys
 ```
 
 End-to-end smoke tests (optional, need Playwright's Chromium or `tauri-driver`):
@@ -338,7 +370,7 @@ npm run smoke:edit       # drag-select, move, transpose, delete, join and undo n
 ```
 
 ```bash
-npm run smoke:notebook   # the canvas: sketches on one clock, gestures, the sketch menu, repeats, export, copy/paste, the rhythm view, text notes, notebooks
+npm run smoke:notebook   # the canvas: sketches on one clock, gestures, the sketch menu (volume, slice, delete), repeats, export, copy/paste, the rhythm view, text notes, notebooks, the Reference section
 ```
 
 ```bash
@@ -410,6 +442,13 @@ used before the Web Audio player), so both fail at that step.
   context stays alive while the native recorder takes the audio session; the canvas now starts a fresh one in the
   next tap after a recording or a return from the background. Not yet confirmed on a device; if it is still silent,
   the `[canvas]` lines in Settings → Diagnostics say what the audio context was doing.
+- **iPad trackpad**: two-finger scrolling on the canvas went along the wrong axis on an iPad in landscape (the
+  problem found in Snorkle). `src-tauri/Info.ios.plist` now has the fix used there: UIKit's native indirect input
+  (`UIApplicationSupportsIndirectInputEvents`) and a single-window scene with Tao's scene delegate
+  (`UIApplicationSceneManifest`, Tao 0.37.2 here as in Snorkle). It only takes effect in a new iOS build, and has not
+  been tried on an iPad with Earbud; see [docs/IOS.md](docs/IOS.md#ipad-trackpad).
+- **Slice and volume** work on the canvas only: a sliced recording's halves are crops (the sketch view shows the
+  whole take with the crop handles), and the sketch view plays at full volume.
 - **Text notes**: links in notes are shown but not followed (a tap on the canvas is a canvas gesture). Notes are not
   exported with sketches.
 - **Rhythm sketches**: tempo detection from taps needs about eight taps on a

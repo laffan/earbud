@@ -550,6 +550,7 @@ impl Library {
             kind: row.get("kind")?,
             rhythm: rhythm_json.and_then(|s| serde_json::from_str(&s).ok()),
             canvas_repeats: row.get("canvas_repeats")?,
+            canvas_volume: row.get("canvas_volume")?,
             canvas_w: row.get("canvas_w")?,
             canvas_h: row.get("canvas_h")?,
             listen_mode: row.get("listen_mode")?,
@@ -931,10 +932,26 @@ impl Library {
         Ok(self.get(id)?.sketch)
     }
 
+    /// How loud a sketch plays on the canvas (0–1).
+    pub fn set_sketch_volume(&self, id: &str, volume: f64) -> Result<Sketch> {
+        validate_id(id)?;
+        if !(0.0..=1.0).contains(&volume) {
+            return Err(Error::Invalid(format!("volume {volume} is out of range")));
+        }
+        let changed = self.conn().execute(
+            "UPDATE sketches SET canvas_volume = ?2, updated_at = ?3 WHERE id = ?1 AND parent_id IS NULL",
+            params![id, volume, now_ms()],
+        )?;
+        if changed == 0 {
+            return Err(Error::NotFound(id.to_string()));
+        }
+        Ok(self.get(id)?.sketch)
+    }
+
     /// Copy a sketch onto a notebook's canvas: its recording and derived files
     /// (hard links where the file system allows: recordings never change, and
     /// derived files are only ever replaced, never written in place), its
-    /// transcription with your edits, notes, crop, tempo and repeats, or its
+    /// transcription with your edits, notes, crop, tempo, repeats and volume, or its
     /// rhythm. Only the sketch's own recording is copied, not takes of other
     /// tracks. The copy keeps the date it was recorded.
     pub fn duplicate_sketch(&self, args: DuplicateSketchArgs) -> Result<Sketch> {
@@ -986,14 +1003,16 @@ impl Library {
                                        transcription_status, transcription_error, capture_backend, recovered,
                                        crop_start_ms, crop_end_ms, parent_id, track_id, offset_ms, count_in_ms,
                                        tempo_bpm, beat_ms, tempo_source, notebook_id, canvas_x_ms, canvas_y,
-                                       kind, rhythm_json, canvas_repeats, canvas_w, canvas_h, listen_mode)
+                                       kind, rhythm_json, canvas_repeats, canvas_w, canvas_h, listen_mode,
+                                       canvas_volume)
                  SELECT ?2, title, created_at, ?3, status, duration_ms, media_file,
                         media_mime, has_video, video_width, video_height, text_notes,
                         CASE transcription_status WHEN 'running' THEN 'pending' ELSE transcription_status END,
                         transcription_error, capture_backend, 0,
                         crop_start_ms, crop_end_ms, NULL, ?4, offset_ms, count_in_ms,
                         tempo_bpm, beat_ms, tempo_source, ?5, ?6, ?7,
-                        kind, rhythm_json, canvas_repeats, canvas_w, canvas_h, listen_mode
+                        kind, rhythm_json, canvas_repeats, canvas_w, canvas_h, listen_mode,
+                        canvas_volume
                    FROM sketches WHERE id = ?1",
                 params![args.id, id, now, new_track, args.notebook_id, x, y],
             )?;

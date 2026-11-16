@@ -124,6 +124,11 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE sketches ADD COLUMN listen_mode TEXT NOT NULL DEFAULT 'recording'
         CHECK (listen_mode IN ('recording', 'notes', 'both'));
     "#,
+    // v9: how loud a sketch plays on the canvas (0–1; 1 = as recorded).
+    r#"
+    ALTER TABLE sketches ADD COLUMN canvas_volume REAL NOT NULL DEFAULT 1
+        CHECK (canvas_volume >= 0 AND canvas_volume <= 1);
+    "#,
 ];
 
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {

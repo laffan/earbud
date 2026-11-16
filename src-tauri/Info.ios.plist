@@ -29,5 +29,31 @@
   </array>
   <key>ITSAppUsesNonExemptEncryption</key>
   <false/>
+  <!-- iPad trackpad and mouse: UIKit's native indirect input instead of touch
+       compatibility events, for the canvas's wheel scrolling (the fix used in
+       Snorkle, laffan/snorkle commits 9cb5dd3 and 8c7eb87). -->
+  <key>UIApplicationSupportsIndirectInputEvents</key>
+  <true/>
+  <!-- Tao's scene lifecycle, so the window is created with its scene's
+       orientation. Without it a landscape iPad reported trackpad scrolls on
+       the wrong axis (sideways for up and down). One window only; Tao (0.37.2
+       and later) supplies TaoSceneDelegate. -->
+  <key>UIApplicationSceneManifest</key>
+  <dict>
+    <key>UIApplicationSupportsMultipleScenes</key>
+    <false/>
+    <key>UISceneConfigurations</key>
+    <dict>
+      <key>UIWindowSceneSessionRoleApplication</key>
+      <array>
+        <dict>
+          <key>UISceneConfigurationName</key>
+          <string>Default Configuration</string>
+          <key>UISceneDelegateClassName</key>
+          <string>TaoSceneDelegate</string>
+        </dict>
+      </array>
+    </dict>
+  </dict>
 </dict>
 </plist>

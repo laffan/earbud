@@ -35,9 +35,18 @@ export interface EngineTrack {
   offset: number;
   /** Its recording is heard (mute, solo, listen mode). */
   audible: boolean;
+  /** Its level when heard, 0–1 (default 1). Changing it only moves the track's gain. */
+  volume?: number;
   /** Only this part of the recording plays (seconds of its own time; default: all of it). */
   start?: number;
   end?: number;
+}
+
+/** A track's gain: silent when not heard, else its volume. */
+function trackGain(track: EngineTrack): number {
+  if (!track.audible) return 0;
+  const v = track.volume ?? 1;
+  return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 1;
 }
 
 /** Timeline position `position` sounds at audio-clock time `time`; the timeline moves `rate` s per second. */
@@ -235,11 +244,11 @@ export class AudioEngine {
       let gain = this.gains.get(track.id);
       if (!gain) {
         gain = ctx.createGain();
-        gain.gain.value = track.audible ? 1 : 0;
+        gain.gain.value = trackGain(track);
         gain.connect(this.bus!);
         this.gains.set(track.id, gain);
       } else {
-        gain.gain.setTargetAtTime(track.audible ? 1 : 0, ctx.currentTime, 0.012);
+        gain.gain.setTargetAtTime(trackGain(track), ctx.currentTime, 0.012);
       }
     }
     for (const [id, gain] of this.gains) {

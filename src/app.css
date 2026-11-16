@@ -96,6 +96,20 @@ body {
   min-height: 100dvh;
   /* Nothing should ever scroll the page sideways (clip keeps sticky headers working). */
   overflow-x: clip;
+  /* The app is controls, not a document: taps, holds and drags must never select its text or open the
+     iOS callout. Only fields where text is typed (and `.selectable`) can be selected. */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+input,
+textarea,
+[contenteditable='true'],
+.selectable {
+  user-select: text;
+  -webkit-user-select: text;
+  -webkit-touch-callout: default;
 }
 
 /* While the native camera preview is shown behind the webview. */

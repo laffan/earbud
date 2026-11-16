@@ -108,6 +108,8 @@ The app asks for **Microphone** and **Camera** the first time you tap Record. Th
 | `UISupportedInterfaceOrientations` | Portrait and both landscape orientations, so the phone can be propped up either way |
 
 | `NSBluetoothAlwaysUsageDescription` | Receiving recordings from the Apple Watch app over Bluetooth |
+| `UIApplicationSupportsIndirectInputEvents` | iPad trackpad and mouse as native indirect input (see [iPad trackpad](#ipad-trackpad)) |
+| `UIApplicationSceneManifest` | One window, created through Tao's scene delegate, so its orientation matches the scene (see [iPad trackpad](#ipad-trackpad)) |
 
 If access was denied, Earbud shows an **Open Settings** button that takes you to the app's page in Settings.
 If only the camera is denied, you can record audio-only sketches.
@@ -242,6 +244,25 @@ Settings → Diagnostics. The log now distinguishes:
 On an iPad, check playback with Silent Mode both on and off, record immediately after playback, then play the
 saved take. Also repeat after backgrounding and returning to Earbud. Browser tests on Linux cannot validate
 these iPad audio-session and speaker-routing behaviors.
+
+## iPad trackpad
+
+Two-finger trackpad scrolling on the canvas is read from `wheel` events (`deltaX` / `deltaY`). In Snorkle
+(laffan/snorkle), an iPad in landscape delivered trackpad scrolls on the wrong axis (up and down arrived as sideways
+movement) until the app declared native indirect input and a single-window scene with Tao's scene delegate.
+`src-tauri/Info.ios.plist` declares the same two keys here (Tao is 0.37.2 in both apps, which provides
+`TaoSceneDelegate`); `src-tauri/tests/ios_plist.rs` checks that they stay. Both are Info.plist settings, so they apply
+only to a new build, not to a reload of the web content. The capture plugin already reads the interface orientation
+from the window's scene, which the scene lifecycle keeps working.
+
+To check on an iPad with a Magic Keyboard or trackpad:
+
+1. Launch in landscape (without rotating first), open a notebook with sketches, and scroll the canvas with two
+   fingers up and down, then left and right. The canvas should move the same way as the fingers.
+2. Rotate to portrait and back to landscape, and repeat. Repeat in the other landscape orientation.
+3. Pinch on the trackpad (or ⌘ + scroll) zooms the timeline.
+4. Background the app and return; record a sketch; check that playback, recording and the camera preview behave as
+   before (the scene lifecycle changes how the window is created).
 
 ## Storage location
 

@@ -51,9 +51,10 @@ export interface PadInfo {
 }
 
 export const PADS: PadInfo[] = [
-  { name: 'Kick', keys: ['1', 'j'] },
-  { name: 'Snare', keys: ['2', 'k'] },
-  { name: 'Hat', keys: ['3', 'l'] },
+  // Labelled by number, not by drum: the sounds are a kick, a snare and a closed hi-hat (drums.ts, MIDI 36/38/42).
+  { name: 'Beat 1', keys: ['1', 'j'] },
+  { name: 'Beat 2', keys: ['2', 'k'] },
+  { name: 'Beat 3', keys: ['3', 'l'] },
 ];
 
 export const STEPS_PER_BEAT = 4;

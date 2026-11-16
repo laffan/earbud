@@ -168,6 +168,8 @@ pub struct Sketch {
     pub rhythm: Option<serde_json::Value>,
     /// How many times a recording plays in a row on the canvas (1 = once).
     pub canvas_repeats: i64,
+    /// How loud the sketch plays on the canvas, 0–1 (1 = as recorded).
+    pub canvas_volume: f64,
     /// A text note's box on the canvas: width and minimum height in pixels (None = fit the text).
     pub canvas_w: Option<f64>,
     pub canvas_h: Option<f64>,

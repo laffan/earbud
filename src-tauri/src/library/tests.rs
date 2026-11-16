@@ -725,6 +725,23 @@ fn a_recording_repeats_on_the_canvas() {
 }
 
 #[test]
+fn a_sketch_has_a_canvas_volume_from_zero_to_one() {
+    let (_dir, lib) = lib();
+    let notebook = lib.create_notebook("N").unwrap();
+    let created = create_on(&lib, &notebook.id, 0, 0.0);
+    fs::write(&created.media_path, b"sound").unwrap();
+    lib.finalize_sketch(FinalizeSketchArgs { id: created.id.clone(), duration_ms: Some(4_000), ..Default::default() })
+        .unwrap();
+    assert_eq!(lib.get(&created.id).unwrap().sketch.canvas_volume, 1.0);
+    assert_eq!(lib.set_sketch_volume(&created.id, 0.4).unwrap().canvas_volume, 0.4);
+    assert_eq!(lib.set_sketch_volume(&created.id, 0.0).unwrap().canvas_volume, 0.0);
+    assert!(lib.set_sketch_volume(&created.id, -0.1).is_err());
+    assert!(lib.set_sketch_volume(&created.id, 1.5).is_err());
+    assert!(lib.set_sketch_volume(&created.id, f64::NAN).is_err());
+    assert_eq!(lib.list().unwrap()[0].canvas_volume, 0.0);
+}
+
+#[test]
 fn duplicating_a_recording_copies_its_files_notes_and_settings() {
     let (_dir, lib) = lib();
     let first = lib.create_notebook("A").unwrap();
@@ -753,6 +770,7 @@ fn duplicating_a_recording_copies_its_files_notes_and_settings() {
         .unwrap();
     lib.set_crop(&created.id, Some(2_000), Some(5_000)).unwrap();
     lib.set_sketch_repeats(&created.id, 3).unwrap();
+    lib.set_sketch_volume(&created.id, 0.25).unwrap();
     // A half-written export and an exports folder are not copied.
     lib.prepare_export(&created.id, "Riff", &[ExportKind::Recording]).unwrap();
 
@@ -767,6 +785,7 @@ fn duplicating_a_recording_copies_its_files_notes_and_settings() {
     assert_eq!(copy.listen_mode, "both");
     assert_eq!((copy.crop_start_ms, copy.crop_end_ms, copy.count_in_ms), (Some(2_000), Some(5_000), Some(1_500)));
     assert_eq!(copy.canvas_repeats, 3);
+    assert_eq!(copy.canvas_volume, 0.25);
     assert!(copy.has_edits);
     assert_eq!(fs::read(copy.media_path.as_ref().unwrap()).unwrap(), b"the take");
     assert!(copy.analysis_path.is_some());

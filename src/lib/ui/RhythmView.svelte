@@ -355,7 +355,7 @@
       {#if showMenu}
         <div class="menu" role="menu">
           <button role="menuitem" onclick={() => ((showMenu = false), commit(withCleared(pattern, lane, 0, pattern.pads[lane].length)))}>
-            <Icon name="close" size={18} /> Clear {PADS[lane].name.toLowerCase()} in every bar
+            <Icon name="close" size={18} /> Clear {PADS[lane].name} in every bar
           </button>
           <button role="menuitem" class="danger" onclick={() => ((showMenu = false), (confirmDelete = true))}>
             <Icon name="trash" size={18} /> Delete rhythm
@@ -417,7 +417,7 @@
             onpointerdown={(e) => stepDown(e, step)}
             onkeydown={(e) => stepKey(e, step)}
             aria-pressed={level > 0}
-            aria-label="Beat {Math.floor(i / pattern.stepsPerBeat) + 1}, step {(i % pattern.stepsPerBeat) + 1}{level > 0 ? `, velocity ${Math.round(level * 100)}%` : ''}"
+            aria-label="Step {Math.floor(i / pattern.stepsPerBeat) + 1}.{(i % pattern.stepsPerBeat) + 1}{level > 0 ? `, velocity ${Math.round(level * 100)}%` : ''}"
           >
             <span class="fill" style:height="{level * 100}%"></span>
             <span class="num tabular">{Math.floor(i / pattern.stepsPerBeat) + 1}.{(i % pattern.stepsPerBeat) + 1}</span>

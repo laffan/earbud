@@ -158,6 +158,7 @@ export class MemoryLibrary implements SketchLibrary {
         kind: 'audio',
         rhythm: null,
         canvasRepeats: 1,
+        canvasVolume: 1,
         canvasW: null,
         canvasH: null,
       },
@@ -456,6 +457,15 @@ export class MemoryLibrary implements SketchLibrary {
     return this.snapshot(entry);
   }
 
+  async setVolume(id: string, volume: number): Promise<Sketch> {
+    const entry = this.entry(id);
+    if (entry.sketch.parentId !== null) throw new Error(`sketch not found: ${id}`);
+    if (!(volume >= 0 && volume <= 1)) throw new Error(`volume ${volume} is out of range`);
+    entry.sketch.canvasVolume = volume;
+    entry.sketch.updatedAt = Date.now();
+    return this.snapshot(entry);
+  }
+
   async duplicate(args: DuplicateSketchArgs): Promise<Sketch> {
     const source = this.entry(args.id);
     this.notebook(args.notebookId);
@@ -539,6 +549,7 @@ export class MemoryLibrary implements SketchLibrary {
         kind: 'rhythm',
         rhythm: clone(args.rhythm),
         canvasRepeats: 1,
+        canvasVolume: 1,
         canvasW: null,
         canvasH: null,
       },
@@ -591,6 +602,7 @@ export class MemoryLibrary implements SketchLibrary {
         kind: 'text',
         rhythm: null,
         canvasRepeats: 1,
+        canvasVolume: 1,
         canvasW: validBox(args.canvasW ?? null),
         canvasH: validBox(args.canvasH ?? null),
       },

@@ -11,14 +11,20 @@
  * - Record rhythm: keys 1 2 3 tapped as a two-bar rock beat at 100 BPM become
  *   that pattern at that tempo; it is saved as a sketch where the canvas was
  *   held.
- * - Hold a sketch: its menu (Copy, Duplicate, Export, Delete) while held;
- *   moving closes it and drags the sketch. Duplicate puts a copy after it.
+ * - Hold a sketch: its menu (volume, Copy, Duplicate, Slice, Export, Delete)
+ *   while held; moving closes it and drags the sketch. Duplicate puts a copy
+ *   after it. Volume below 100 % shows a bar on the sketch's left and lowers
+ *   its gain. Slice cuts a recording in two halves that play on, back to back;
+ *   Delete removes a sketch after asking.
  * - Drag a rhythm's right edge: it repeats over more bars; a recording's:
  *   it plays several times in a row, each pass on the same clock.
  * - Export a rhythm (audio and MIDI); copy it and paste it into another
  *   notebook.
  * - Double-tap a rhythm: its editor; a recording: the sketch view.
- * - Repeat, with the minimap's loop handles.
+ * - Repeat, with the minimap's loop handles; the loop's edges run down the
+ *   canvas as dashed lines.
+ * - Reference: a chord by root and variant, and chords tapped on the circle of
+ *   fifths recorded as a new sketch.
  * - A new notebook, the notebook menu, and back.
  * Fails on any page error or error toast.
  *
@@ -191,7 +197,7 @@ function instrument() {
   await page.mouse.down();
   await sleep(600);
   const whileHeld = await menuItems();
-  expect(whileHeld.join('|') === 'Copy|Duplicate|Export|Delete', `sketch menu while held: ${whileHeld.join('|')}`);
+  expect(whileHeld.join('|') === 'Copy|Duplicate|Slice|Export|Delete', `sketch menu while held: ${whileHeld.join('|')}`);
   await page.mouse.move(bass.r.x + 80, bass.r.y + 110, { steps: 8 });
   expect((await menuItems()).length === 0, 'dragging should close the menu');
   await page.mouse.up();
@@ -201,7 +207,7 @@ function instrument() {
 
   // Hold it and let go: the menu stays. Duplicate: a copy right after it, at the same height.
   await hold(moved.r.x + 30, moved.r.y + 30);
-  expect((await menuItems()).join('|') === 'Copy|Duplicate|Export|Delete', 'the menu should stay after letting go');
+  expect((await menuItems()).join('|') === 'Copy|Duplicate|Slice|Export|Delete', 'the menu should stay after letting go');
   await page.click('.popover [role=menuitem]:has-text("Duplicate")');
   await sleep(500);
   const basses = (await tiles()).filter((t) => t.label === 'Bass and tenor').sort((a, b) => a.r.x - b.r.x);
@@ -211,6 +217,50 @@ function instrument() {
       Math.abs(basses[1].r.x - (basses[0].r.x + basses[0].r.width)) < 1.5 && basses[1].r.y === basses[0].r.y,
       'the copy should follow the original at its height',
     );
+  }
+
+  // Volume: the slider in the menu; under 100 % a bar on the sketch's left, and its gain follows.
+  const copyBass = basses[1];
+  await hold(copyBass.r.x + 30, copyBass.r.y + 30);
+  await page.$eval('.popover input[type=range]', (el) => {
+    el.value = '35';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(400);
+  expect((await page.textContent('.popover .vol-value')).trim() === '35%', 'the menu should show the volume');
+  const bars = await page.$$eval('.volume', (els) => els.map((e) => e.getAttribute('title')));
+  expect(bars.length === 1 && bars[0] === 'Volume 35%', `a quieter sketch should show its volume (${JSON.stringify(bars)})`);
+  await page.keyboard.press('Escape');
+
+  // Slice the copy: two sketches, back to back, together as long as it was.
+  await hold(copyBass.r.x + copyBass.r.width * 0.4, copyBass.r.y + 30);
+  await page.click('.popover [role=menuitem]:has-text("Slice")');
+  await page.waitForSelector('.slice-bar');
+  await page.mouse.move(copyBass.r.x + copyBass.r.width * 0.4, copyBass.r.y + 40);
+  await page.mouse.down();
+  await page.mouse.move(copyBass.r.x + copyBass.r.width * 0.5, copyBass.r.y + 40, { steps: 4 });
+  await page.mouse.up();
+  await page.click('.slice-bar button:has-text("Slice")');
+  await sleep(800);
+  // (The original sits just before the copy, at the same height.)
+  const halves = (await tiles())
+    .filter((t) => t.label.startsWith('Bass and tenor') && Math.abs(t.r.y - copyBass.r.y) < 1 && t.r.x > copyBass.r.x - 1)
+    .sort((a, b) => a.r.x - b.r.x);
+  expect(halves.length === 2, `slicing should make two sketches (${halves.length})`);
+  if (halves.length === 2) {
+    expect(halves[1].label === 'Bass and tenor (2)', `the second half's title (${halves[1].label})`);
+    expect(Math.abs(halves[0].r.x + halves[0].r.width - halves[1].r.x) < 1.5, 'the halves should sit back to back');
+    expect(Math.abs(halves[1].r.x + halves[1].r.width - (copyBass.r.x + copyBass.r.width)) < 1.5, 'the halves should end where the sketch did');
+    expect(Math.abs(halves[0].r.width - copyBass.r.width / 2) < 3, `the cut should be where it was dragged (${halves[0].r.width} of ${copyBass.r.width})`);
+  }
+  // Delete the second half from its menu (after asking).
+  if (halves.length === 2) {
+    await hold(halves[1].r.x + 20, halves[1].r.y + 30);
+    await page.click('.popover [role=menuitem]:has-text("Delete")');
+    await page.waitForSelector('.sheet');
+    await page.click('.sheet .pill-button.danger');
+    await sleep(500);
+    expect(!(await tiles()).some((t) => t.label === 'Bass and tenor (2)'), 'Delete in the menu should delete the sketch');
   }
 
   // Stretch the demo rhythm by its right edge.
@@ -292,6 +342,8 @@ function instrument() {
   await page.mouse.up();
   await sleep(250);
   expect(!!(await page.$('.controls .link')), 'a custom loop range should offer to loop everything again');
+  const edges = await page.$$eval('.loop-edge', (els) => els.map((e) => e.getBoundingClientRect().height));
+  expect(edges.length >= 1 && edges.every((h) => h > canvas.height * 0.8), `the loop's edges should run down the canvas (${JSON.stringify(edges)})`);
   await shot('04-repeat');
 
   // A new notebook, then back.
@@ -336,6 +388,7 @@ function instrument() {
   await sleep(300);
   const fire = (await notes()).find((n) => n.html === '<p>🔥</p>');
   expect(fire && fire.font === '50px', `an emoji-only note should be 50 px (${fire?.font})`);
+  expect(fire && !(await page.$(`[data-resize="${fire.id}"]`)), 'an emoji-only note should have no resize corner');
   // Emptied, a note goes.
   await page.mouse.dblclick(fire.r.x + 20, fire.r.y + 30);
   await page.waitForSelector('.note textarea');
@@ -344,6 +397,29 @@ function instrument() {
   await page.keyboard.press('Escape');
   await sleep(300);
   expect((await notes()).length === 1, 'an emptied note should be removed');
+
+  // Reference: a chord by root and variant; chords tapped on the circle, recorded as a sketch.
+  const count = (await tiles()).length;
+  await page.click('button[aria-label^="Reference"]');
+  await page.waitForSelector('.reference');
+  await page.click('.tabs button:has-text("Chords")');
+  await page.click('.root:has-text("B♭")');
+  await page.click('.variant:has-text("B♭7")');
+  expect((await page.textContent('.card .symbol')) === 'B♭7', 'the chosen chord should be shown');
+  expect((await page.textContent('.card .tones')).includes('A♭'), `its notes (${await page.textContent('.card .tones')})`);
+  await page.click('.tabs button:has-text("Circle of fifths")');
+  await page.click('button.record');
+  for (const chord of ['C', 'Am', 'F', 'G']) {
+    await page.click(`.cell[aria-label^="${chord}."]`);
+    await sleep(250);
+  }
+  await page.click('button.record');
+  await sleep(1500);
+  await page.click('button[aria-label="Back to the notebook"]');
+  await page.waitForSelector('[data-tile]');
+  await sleep(500);
+  const after = await tiles();
+  expect(after.length === count + 1 && after.some((t) => t.label === 'C – Am – F – G'), `chords tapped on the circle should be a new sketch (${after.map((t) => t.label).join(', ')})`);
 
   const toasts = await page.$$eval('.toast', (els) => els.map((e) => e.textContent)).catch(() => []);
   if (toasts.some((t) => /could not/i.test(t))) problems.push(`toasts: ${toasts.join(' | ')}`);

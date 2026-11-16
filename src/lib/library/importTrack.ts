@@ -12,7 +12,7 @@
  * then chunks, then finalize), so a failed import leaves nothing behind.
  */
 import { ANALYSIS_SAMPLE_RATE } from '../audio/analysisAudio';
-import { midiFileToNotes } from '../music/midi';
+import { midiFileToNotes, notesToMidi } from '../music/midi';
 import { notesEndTime } from '../music/notes';
 import { summarize } from '../music/summary';
 import { renderNotesToWav } from '../music/synth';
@@ -21,6 +21,9 @@ import type { Sketch, SketchLibrary } from './types';
 
 export const IMPORT_CAPTURE_BACKEND = 'import';
 export const MIDI_IMPORT_ENGINE = 'midi-import';
+/** Chords tapped on the circle of fifths in the Reference section. */
+export const CHORD_TAPS_BACKEND = 'chord-taps';
+export const CHORD_TAPS_ENGINE = 'chord-taps';
 
 /** File types offered by the pickers. */
 export const AUDIO_ACCEPT = 'audio/*,video/*,.wav,.mp3,.m4a,.aac,.aif,.aiff,.flac,.caf,.ogg,.opus,.webm,.mp4,.mov';
@@ -121,11 +124,12 @@ async function newSketch(
   place: Placement,
   media: { extension: string; mime: string },
   fill: (id: string) => Promise<Parameters<SketchLibrary['finalize']>[0]>,
+  captureBackend = IMPORT_CAPTURE_BACKEND,
 ): Promise<Sketch> {
   const created = await library.create({
     mediaExtension: media.extension,
     mediaMime: media.mime,
-    captureBackend: IMPORT_CAPTURE_BACKEND,
+    captureBackend,
     title: name,
     notebookId: place.notebookId,
     canvasXMs: Math.round(place.canvasXMs),
@@ -165,34 +169,63 @@ export async function importMidiSketch(deps: ImportDeps, file: File, place: Plac
     throw new Error(`${file.name} is not a MIDI file that can be read`);
   }
   if (notes.length === 0) throw new Error(`${file.name} has no notes to import`);
-  const render = deps.render ?? ((n, sampleRate) => renderNotesToWav(n, { sampleRate }));
-  const name = fileStem(file.name);
-  const { library } = deps;
-  const sketch = await newSketch(library, name, place, { extension: 'wav', mime: 'audio/wav' }, async (id) => {
-    await upload(library, id, await render(notes, 44100));
-    return {
-      id,
-      durationMs: Math.round((notesEndTime(notes) + 1.5) * 1000),
-      hasVideo: false,
-      videoWidth: null,
-      videoHeight: null,
-    };
+  const sketch = await notesSketch(deps, notes, fileStem(file.name), place, {
+    engine: MIDI_IMPORT_ENGINE,
+    params: { file: file.name },
+    midi: new Uint8Array(await file.arrayBuffer()),
   });
+  return { sketch, transcribe: false };
+}
+
+/**
+ * A new sketch on a canvas from notes (no recording, nothing to transcribe):
+ * the built-in piano renders them as its "recording" and its analysis audio
+ * (which its waveform is drawn from), and they are saved as its notes.
+ */
+export async function notesSketch(
+  deps: ImportDeps,
+  notes: PianoNote[],
+  name: string,
+  place: Placement,
+  source: { engine: string; params: Record<string, unknown>; midi?: Uint8Array; captureBackend?: string },
+): Promise<Sketch> {
+  if (notes.length === 0) throw new Error('there are no notes');
+  const render = deps.render ?? ((n, sampleRate) => renderNotesToWav(n, { sampleRate }));
+  const { library } = deps;
+  const sketch = await newSketch(
+    library,
+    name,
+    place,
+    { extension: 'wav', mime: 'audio/wav' },
+    async (id) => {
+      await upload(library, id, await render(notes, 44100));
+      return {
+        id,
+        durationMs: Math.round((notesEndTime(notes) + 1.5) * 1000),
+        hasVideo: false,
+        videoWidth: null,
+        videoHeight: null,
+      };
+    },
+    source.captureBackend,
+  );
   try {
-    // The waveform is drawn from the analysis audio; the notes are the file's.
+    // The waveform is drawn from the analysis audio; the notes are the source's.
     await library.writeFile(sketch.id, 'analysis', await render(notes, ANALYSIS_SAMPLE_RATE));
     const detail = await library.saveTranscription({
       id: sketch.id,
-      engine: MIDI_IMPORT_ENGINE,
+      engine: source.engine,
       engineVersion: '1',
-      params: { file: file.name },
+      params: source.params,
       notes,
       summary: summarize(notes),
     });
-    await library.writeFile(sketch.id, 'midi', new Uint8Array(await file.arrayBuffer()));
-    return { sketch: detail, transcribe: false };
+    await library.writeFile(sketch.id, 'midi', source.midi ?? notesToMidi(notes));
+    // The row as lists hold it, without the transcription and tracks.
+    const { transcription: _transcription, tracks: _tracks, ...row } = detail;
+    return row;
   } catch (error) {
-    // The sketch is saved by now: remove it rather than leave half an import.
+    // The sketch is saved by now: remove it rather than leave half of it.
     await library.remove(sketch.id).catch(() => {});
     throw error;
   }

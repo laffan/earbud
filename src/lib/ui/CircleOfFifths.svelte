@@ -145,6 +145,7 @@
   .cell:focus-visible .sector {
     stroke: var(--ink-3);
   }
+  .cell:focus,
   .cell:focus-visible {
     outline: none;
   }
