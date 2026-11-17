@@ -58,6 +58,21 @@ Built with Tauri 2, Svelte 5 + TypeScript, Rust + SQLite, Swift + AVFoundation (
 be compiled here (no macOS/Xcode in the build environment), so the first build may need small fixes.
 [docs/IOS.md](docs/IOS.md) lists what to check on a device.
 
+## Installation
+
+Download the installer for your system from the
+[Releases](../../releases) page: `.dmg` (macOS), `.msi` or `.exe` (Windows),
+`.AppImage` or `.deb` (Linux).
+
+The builds are not code-signed. On macOS, if the app is blocked on first
+launch, move it to Applications and run:
+
+```sh
+xattr -cr "/Applications/Earbud.app"
+```
+
+On Windows, choose "More info" then "Run anyway" when SmartScreen warns.
+
 ## Quick start
 
 Prerequisites: Node.js 20+ and Rust (stable). For desktop builds, the
