@@ -644,12 +644,20 @@
     height: clamp(240px, 44vh, 560px);
   }
 
+  /* Always shown now (the roll is always editing): one row, scrolled sideways on a narrow phone. */
   .edit-toolbar {
     display: flex;
     align-items: center;
-    gap: 2px;
+    gap: 0;
     min-width: 0;
-    flex-wrap: wrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .edit-toolbar::-webkit-scrollbar {
+    display: none;
+  }
+  .edit-toolbar > * {
+    flex: none;
   }
   .sep {
     width: 1px;

@@ -132,7 +132,25 @@ export async function renderSampleData(audio: MonoAudio, settings: SampleSetting
 }
 
 const rendered = new Map<string, Promise<Float32Array<ArrayBuffer>>>();
-const RENDER_CACHE = 64;
+const renderedSizes = new Map<string, number>();
+/**
+ * Renderings kept, in samples (4 bytes each): about 40 MB. A sample can be a
+ * minute long, and an iOS web view is ended when it uses too much memory;
+ * rendering again is quick.
+ */
+const RENDER_BUDGET = 10_000_000;
+
+function evictRenderings(keep: string) {
+  let total = 0;
+  for (const size of renderedSizes.values()) total += size;
+  for (const key of rendered.keys()) {
+    if (total <= RENDER_BUDGET) break;
+    if (key === keep || !renderedSizes.has(key)) continue;
+    total -= renderedSizes.get(key)!;
+    renderedSizes.delete(key);
+    rendered.delete(key);
+  }
+}
 
 function renderKey(sample: Pick<Sample, 'id' | 'updatedAt'>, sampleRate: number) {
   return `${sample.id}|${sample.updatedAt}|${sampleRate}`;
@@ -148,9 +166,24 @@ export function renderedSample(sample: Sample, sampleRate: number): Promise<Floa
     return pending;
   }
   pending = loadSampleAudio(sample).then((audio) => renderSampleData(audio, normalizeSampleSettings(sample.settings), sampleRate));
-  pending.catch(() => rendered.delete(key));
   rendered.set(key, pending);
-  while (rendered.size > RENDER_CACHE) rendered.delete(rendered.keys().next().value!);
+  pending.then(
+    (data) => {
+      renderedSizes.set(key, data.length);
+      // Older renderings of the same sample (before its settings changed) are never asked for again.
+      for (const other of [...rendered.keys()]) {
+        if (other !== key && other.startsWith(`${sample.id}|`) && other.endsWith(`|${sampleRate}`)) {
+          rendered.delete(other);
+          renderedSizes.delete(other);
+        }
+      }
+      evictRenderings(key);
+    },
+    () => {
+      rendered.delete(key);
+      renderedSizes.delete(key);
+    },
+  );
   return pending;
 }
 
@@ -169,7 +202,11 @@ export async function pitchedSample(ctx: BaseAudioContext, sample: Sample): Prom
 
 /** Forget the renderings of a sample (it was deleted). */
 export function forgetSample(id: string) {
-  for (const key of [...rendered.keys()]) if (key.startsWith(`${id}|`)) rendered.delete(key);
+  for (const key of [...rendered.keys()]) {
+    if (!key.startsWith(`${id}|`)) continue;
+    rendered.delete(key);
+    renderedSizes.delete(key);
+  }
   for (const key of [...audioCache.keys()]) if (key.startsWith(`${id}|`)) audioCache.delete(key);
 }
 
