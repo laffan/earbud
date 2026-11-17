@@ -1024,3 +1024,57 @@ fn duplicates_keep_the_note_sample() {
         .unwrap();
     assert_eq!(copy.note_sample_id.as_deref(), Some(sample.id.as_str()));
 }
+
+/// A database already at version 10 from another build (the `midi-support`
+/// branch numbers its own MIDI tables as v10): this build's v10 never ran.
+/// Opening it adds the sample library's table and column, keeps the other
+/// build's, and the library works.
+#[test]
+fn opens_a_database_numbered_by_another_build() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().join("library");
+    fs::create_dir_all(root.join("sketches")).unwrap();
+    {
+        let mut conn = rusqlite::Connection::open(root.join("earbud.sqlite3")).unwrap();
+        // Versions 1–9, as every build has them.
+        for sql in &super::schema::MIGRATIONS[..9] {
+            let tx = conn.transaction().unwrap();
+            tx.execute_batch(sql).unwrap();
+            tx.commit().unwrap();
+        }
+        // The other build's version 10 (from midi-support's schema.rs).
+        conn.execute_batch(
+            "ALTER TABLE sketches ADD COLUMN audio_midi_offset_ms REAL NOT NULL DEFAULT 0;
+             CREATE TABLE midi_sessions (id TEXT PRIMARY KEY NOT NULL, source_id TEXT NOT NULL,
+               source_title TEXT NOT NULL, snapshot_json TEXT NOT NULL, midi BLOB NOT NULL, midi_hash TEXT NOT NULL,
+               destination_json TEXT NOT NULL, created_at INTEGER NOT NULL, status TEXT NOT NULL, result_id TEXT,
+               import_id TEXT);
+             INSERT INTO sketches (id, title, created_at, updated_at, status, media_file)
+               VALUES ('0123456789abcdef0123456789abcdef', 'From the other build', 1, 1, 'saved', 'recording.mov');
+             PRAGMA user_version = 10;",
+        )
+        .unwrap();
+    }
+    let lib = Library::open(&root).unwrap();
+    let sketches = lib.list().unwrap();
+    assert_eq!(sketches.len(), 1);
+    assert_eq!(sketches[0].note_sample_id, None);
+    let sample = lib.create_sample(CreateSampleArgs::default()).unwrap();
+    lib.write_sample_audio(&sample.id, &wav_bytes()).unwrap();
+    let sketch = lib.set_note_sample("0123456789abcdef0123456789abcdef", Some(&sample.id)).unwrap();
+    assert_eq!(sketch.note_sample_id.as_deref(), Some(sample.id.as_str()));
+    // The other build's table and column are left as they were.
+    let conn = rusqlite::Connection::open(root.join("earbud.sqlite3")).unwrap();
+    let midi: i64 = conn.query_row("SELECT count(*) FROM midi_sessions", [], |r| r.get(0)).unwrap();
+    assert_eq!(midi, 0);
+    let offset: f64 = conn
+        .query_row("SELECT audio_midi_offset_ms FROM sketches", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(offset, 0.0);
+    drop(conn);
+    drop(lib);
+    // Opening again changes nothing.
+    let again = Library::open(&root).unwrap();
+    assert_eq!(again.list_samples().unwrap().len(), 1);
+}
+

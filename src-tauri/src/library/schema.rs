@@ -2,8 +2,35 @@
 
 use rusqlite::Connection;
 
+/// The sample library's table (v10). `IF NOT EXISTS`: it is also ensured on every open (see `ENSURED_COLUMNS`).
+const SAMPLES_SCHEMA: &str = r#"
+    CREATE TABLE IF NOT EXISTS samples (
+        id               TEXT PRIMARY KEY NOT NULL,
+        title            TEXT NOT NULL DEFAULT '',
+        created_at       INTEGER NOT NULL,
+        updated_at       INTEGER NOT NULL,
+        duration_ms      INTEGER,
+        source_sketch_id TEXT,
+        source_start_ms  INTEGER,
+        source_end_ms    INTEGER,
+        settings_json    TEXT NOT NULL DEFAULT '{}'
+    );
+    CREATE INDEX IF NOT EXISTS samples_created_at ON samples(created_at);
+"#;
+
+/// Columns this build reads, added on every open when they are missing,
+/// whatever `user_version` says (table, column, type).
+///
+/// Builds of Earbud developed side by side (branches) share one database
+/// file and number their migrations independently: a database can be at
+/// version 10 from another build's own version 10 (e.g. `midi-support`'s MIDI
+/// sessions), so this build's version 10 never ran and its columns were
+/// missing ("Invalid column name: note_sample_id"). Tables are ensured the
+/// same way (`SAMPLES_SCHEMA` is idempotent).
+const ENSURED_COLUMNS: &[(&str, &str, &str)] = &[("sketches", "note_sample_id", "TEXT")];
+
 /// Each entry upgrades the schema from version `index` to `index + 1`.
-const MIGRATIONS: &[&str] = &[
+pub(super) const MIGRATIONS: &[&str] = &[
     // v1: sketches + transcriptions
     r#"
     CREATE TABLE sketches (
@@ -132,23 +159,9 @@ const MIGRATIONS: &[&str] = &[
     // v10: the sample library. A sample is a short sound cut from a recording
     // (`samples/<id>/sample.wav`, written once) with its playback settings
     // (trim, envelope, effects, root note) as JSON, rendered when played. A
-    // sketch can play its notes with one (`note_sample_id`); rhythms name the
-    // samples their pads play inside their pattern.
-    r#"
-    CREATE TABLE samples (
-        id               TEXT PRIMARY KEY NOT NULL,
-        title            TEXT NOT NULL DEFAULT '',
-        created_at       INTEGER NOT NULL,
-        updated_at       INTEGER NOT NULL,
-        duration_ms      INTEGER,
-        source_sketch_id TEXT,
-        source_start_ms  INTEGER,
-        source_end_ms    INTEGER,
-        settings_json    TEXT NOT NULL DEFAULT '{}'
-    );
-    CREATE INDEX samples_created_at ON samples(created_at);
-    ALTER TABLE sketches ADD COLUMN note_sample_id TEXT;
-    "#,
+    // sketch can play its notes with one (`sketches.note_sample_id`, added by
+    // `ensure`); rhythms name the samples their pads play inside their pattern.
+    SAMPLES_SCHEMA,
 ];
 
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
@@ -164,5 +177,23 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         tx.pragma_update(None, "user_version", (index + 1) as i64)?;
         tx.commit()?;
     }
-    Ok(())
+    ensure(conn)
+}
+
+/// Add what this build needs and another build's numbering skipped (see `ENSURED_COLUMNS`).
+fn ensure(conn: &mut Connection) -> rusqlite::Result<()> {
+    let tx = conn.transaction()?;
+    tx.execute_batch(SAMPLES_SCHEMA)?;
+    for (table, column, kind) in ENSURED_COLUMNS {
+        if !has_column(&tx, table, column)? {
+            tx.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"))?;
+        }
+    }
+    tx.commit()
+}
+
+fn has_column(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let names = stmt.query_map([], |row| row.get::<_, String>(1))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(names.iter().any(|name| name == column))
 }

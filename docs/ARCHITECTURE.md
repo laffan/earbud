@@ -278,7 +278,9 @@ Tables:
   asset protocol's scope includes `$APPDATA/library/samples/**`. `note_sample_id` on the sketch row is the sample its
   notes play with (`set_note_sample`; copied by `duplicate_sketch`); `delete_sample` clears it on every sketch and
   removes the folder. Rhythm patterns name their pads' samples inside `rhythm_json`. `MemoryLibrary` mirrors all of it
-  with blob URLs.
+  with blob URLs. The `samples` table and `note_sample_id` are also ensured on every open (`schema::ensure`), whatever
+  `user_version` says: builds developed side by side share the database file and number their migrations on their
+  own (`midi-support` has a different v10), so a database could be at 10 without this build's v10.
 - Tempo (schema v4, on the sketch row): `tempo_bpm`, `beat_ms` (where one beat falls on the timeline) and
   `tempo_source`: `count-in` (set when a new sketch is recorded with a count-in: its tempo, a beat on the
   downbeat), `detected` (by `tempo.ts` from the first recording's notes after each transcription of it, replacing
