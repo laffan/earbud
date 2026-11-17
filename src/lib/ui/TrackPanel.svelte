@@ -438,17 +438,15 @@
           {#if saveState === 'saving'}Saving…{:else if saveState === 'saved'}Saved{:else if saveState === 'error'}Not saved{/if}
         </span>
       </div>
-      <p class="edit-help">
+      <!-- The selection, and selecting all or none (one line kept, so the roll does not move when notes are selected). -->
+      <p class="selection-line">
         {#if hasSelection}
           <span class="selection-count" aria-live="polite"
             >{selectedIndices.length} {selectedIndices.length === 1 ? 'note' : 'notes'} selected</span
           >
           <button class="link" onclick={() => (selection = [])}>Deselect</button>
-          {#if selectedIndices.length < notes.length}<button class="link" onclick={selectAll}>Select all</button>{/if}
-        {:else}
-          Tap a note to select it; hold, then drag, to select several. Drag a selection to move it (you hear it at
-          the playhead), drag an end to resize, double-tap to add.
         {/if}
+        {#if notes.length > 0 && selectedIndices.length < notes.length}<button class="link" onclick={selectAll}>Select all</button>{/if}
       </p>
     {/if}
 
@@ -670,7 +668,7 @@
     color: var(--ink-3);
     padding-right: 6px;
   }
-  .edit-help {
+  .selection-line {
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
