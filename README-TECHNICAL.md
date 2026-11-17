@@ -11,12 +11,6 @@ and a MIDI file.
 
 It is meant to feel like a notebook, not a digital audio workstation.
 
-> **This branch (`claude/funny-hawking-vvop92`) is an experimental interface.** The list of sketches, the main
-> record button and tracks are gone. A **notebook** is an endless canvas whose horizontal axis is one timeline:
-> press and hold anywhere to record audio, import audio or tap out a rhythm at that point; the playhead plays
-> every sketch it crosses, together. See [The notebook canvas](#the-notebook-canvas-this-branch). Libraries from
-> `main` are not carried over: sketches made before this branch are kept in the database but are on no canvas.
-
 - **Capture first**: one tap, no setup screens. Permission prompts appear only the first time.
 - **Offline**: recording, storage, transcription (Basic Pitch, bundled) and playback need no network.
 - **Non-destructive**: the original recording is never modified. Engine output and your edits are stored separately.
