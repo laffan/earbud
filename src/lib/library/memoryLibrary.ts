@@ -20,6 +20,9 @@ import type {
   Notebook,
   PlaceSketchArgs,
   RecoveryReport,
+  Sample,
+  CreateSampleArgs,
+  UpdateSampleArgs,
   SaveEditsArgs,
   SaveTranscriptionArgs,
   Sketch,
@@ -53,6 +56,7 @@ export class MemoryLibrary implements SketchLibrary {
   private entries = new Map<string, Entry>();
   private tracks = new Map<string, TrackRow>();
   private notebooks = new Map<string, Notebook>();
+  private samples = new Map<string, { sample: Sample; url: string }>();
 
   private entry(id: string): Entry {
     const entry = this.entries.get(id);
@@ -159,6 +163,7 @@ export class MemoryLibrary implements SketchLibrary {
         rhythm: null,
         canvasRepeats: 1,
         canvasVolume: 1,
+        noteSampleId: null,
         canvasW: null,
         canvasH: null,
       },
@@ -550,6 +555,7 @@ export class MemoryLibrary implements SketchLibrary {
         rhythm: clone(args.rhythm),
         canvasRepeats: 1,
         canvasVolume: 1,
+        noteSampleId: null,
         canvasW: null,
         canvasH: null,
       },
@@ -603,6 +609,7 @@ export class MemoryLibrary implements SketchLibrary {
         rhythm: null,
         canvasRepeats: 1,
         canvasVolume: 1,
+        noteSampleId: null,
         canvasW: validBox(args.canvasW ?? null),
         canvasH: validBox(args.canvasH ?? null),
       },
@@ -637,6 +644,64 @@ export class MemoryLibrary implements SketchLibrary {
     entry.sketch.rhythm = clone(args.rhythm);
     entry.sketch.durationMs = Math.round(args.durationMs);
     entry.sketch.updatedAt = Date.now();
+    return this.snapshot(entry);
+  }
+
+  // -------------------------------------------------------------- samples
+
+  async listSamples(): Promise<Sample[]> {
+    return [...this.samples.values()].map((e) => clone(e.sample)).sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+  }
+
+  async createSample(args: CreateSampleArgs, wav: Uint8Array): Promise<Sample> {
+    if (wav.length < 44 || String.fromCharCode(...wav.slice(0, 4)) !== 'RIFF') throw new Error('a sample must be a WAV file');
+    if (args.durationMs != null && !(args.durationMs >= 1 && args.durationMs <= 60_000)) throw new Error(`a sample of ${args.durationMs} ms is out of range`);
+    const id = newId();
+    const now = Date.now();
+    const url = URL.createObjectURL(new Blob([wav.slice()], { type: 'audio/wav' }));
+    const sample: Sample = {
+      id,
+      title: (args.title ?? '').trim().slice(0, 120),
+      createdAt: now,
+      updatedAt: now,
+      durationMs: args.durationMs ?? null,
+      audioPath: url,
+      sourceSketchId: args.sourceSketchId ?? null,
+      sourceStartMs: args.sourceStartMs ?? null,
+      sourceEndMs: args.sourceEndMs ?? null,
+      settings: clone(args.settings ?? {}),
+    };
+    this.samples.set(id, { sample, url });
+    return clone(sample);
+  }
+
+  async updateSample(args: UpdateSampleArgs): Promise<Sample> {
+    const entry = this.samples.get(args.id);
+    if (!entry) throw new Error(`sample not found: ${args.id}`);
+    if (args.settings !== undefined && (typeof args.settings !== 'object' || args.settings === null)) throw new Error('sample settings must be an object');
+    entry.sample = {
+      ...entry.sample,
+      title: args.title !== undefined ? args.title.trim().slice(0, 120) : entry.sample.title,
+      settings: args.settings !== undefined ? clone(args.settings) : entry.sample.settings,
+      updatedAt: Math.max(Date.now(), entry.sample.updatedAt + 1),
+    };
+    return clone(entry.sample);
+  }
+
+  async removeSample(id: string): Promise<void> {
+    const entry = this.samples.get(id);
+    if (!entry) return;
+    URL.revokeObjectURL(entry.url);
+    this.samples.delete(id);
+    for (const e of this.entries.values()) if (e.sketch.noteSampleId === id) e.sketch.noteSampleId = null;
+  }
+
+  async setNoteSample(id: string, sampleId: string | null): Promise<Sketch> {
+    const entry = this.entry(id);
+    if (entry.sketch.parentId !== null) throw new Error(`sketch not found: ${id}`);
+    if (sampleId !== null && !this.samples.has(sampleId)) throw new Error(`sample not found: ${sampleId}`);
+    entry.sketch.noteSampleId = sampleId;
+    entry.sketch.updatedAt = Math.max(Date.now(), entry.sketch.updatedAt + 1);
     return this.snapshot(entry);
   }
 }

@@ -1,12 +1,18 @@
 /**
- * The rhythm pads' sounds: kick, snare and hi-hat, synthesized once per
- * sample rate into short one-shot samples. Striking a pad plays its sample
- * (no synthesis on the hit, so it sounds at once), and a rhythm sketch is
- * rendered by mixing the samples at its hits, so what was heard while
- * tapping is what the canvas plays.
+ * The rhythm pads' sounds: kick, snare, hi-hat and clap, synthesized once
+ * per sample rate into short one-shot samples, or a library sample chosen
+ * for a pad. Striking a pad plays its sound (no synthesis on the hit, so it
+ * sounds at once), and a rhythm sketch is rendered by mixing the sounds at
+ * its hits, so what was heard while tapping is what the canvas plays.
  */
 import { encodeWav16 } from '../audio/wav';
-import { playSeconds, rhythmHits, type RhythmPattern } from './rhythm';
+import { padSample, PADS, playSeconds, rhythmHits, type RhythmPattern } from './rhythm';
+
+/**
+ * A library sample's sound (rendered with its settings) at a sample rate, or
+ * null when it is gone: the pad then plays its own sound.
+ */
+export type PadSampleSource = (id: string, sampleRate: number) => Promise<Float32Array | null>;
 
 /** Length of each one-shot (seconds). */
 const SAMPLE_SECONDS = 0.6;
@@ -91,6 +97,25 @@ function voice(ctx: BaseAudioContext, out: AudioNode, pad: number, when: number)
     tone.connect(tg).connect(out);
     tone.start(when);
     tone.stop(when + 0.3);
+  } else if (pad === 3) {
+    // Clap: three quick bursts of band-passed noise, then a short tail.
+    const noise = ctx.createBufferSource();
+    noise.buffer = noiseBuffer(ctx, 0.4);
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = 1300;
+    bp.Q.value = 1.1;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, when);
+    for (const [k, at] of [0, 0.011, 0.022].entries()) {
+      g.gain.setValueAtTime(0, when + at);
+      g.gain.linearRampToValueAtTime(k === 2 ? 0.9 : 0.7, when + at + 0.001);
+      g.gain.setTargetAtTime(0.05, when + at + 0.002, 0.003);
+    }
+    g.gain.setValueAtTime(0.8, when + 0.034);
+    g.gain.setTargetAtTime(0, when + 0.035, 0.05);
+    noise.connect(bp).connect(g).connect(out);
+    noise.start(when);
   } else {
     // Hi-hat: high-passed noise, short.
     const noise = ctx.createBufferSource();
@@ -109,7 +134,7 @@ function voice(ctx: BaseAudioContext, out: AudioNode, pad: number, when: number)
 
 const samples = new Map<number, Promise<Float32Array<ArrayBuffer>[]>>();
 
-/** The three pads' one-shots at `sampleRate` (rendered once, then cached). */
+/** The pads' own one-shots at `sampleRate` (rendered once, then cached). */
 export function drumSamples(sampleRate: number): Promise<Float32Array<ArrayBuffer>[]> {
   let pending = samples.get(sampleRate);
   if (!pending) {
@@ -117,7 +142,7 @@ export function drumSamples(sampleRate: number): Promise<Float32Array<ArrayBuffe
       const Offline = offlineClass();
       if (!Offline) throw new Error('Offline audio rendering is not available here');
       const out: Float32Array<ArrayBuffer>[] = [];
-      for (let pad = 0; pad < 3; pad++) {
+      for (let pad = 0; pad < PADS.length; pad++) {
         const ctx = new Offline(1, Math.ceil(SAMPLE_SECONDS * sampleRate), sampleRate);
         voice(ctx, ctx.destination, pad, 0);
         out.push((await render(ctx)).getChannelData(0).slice());
@@ -150,9 +175,25 @@ export function mixRhythm(pattern: RhythmPattern, pads: Float32Array[], sampleRa
   return out;
 }
 
+/** What each pad of `pattern` sounds like at `sampleRate`: its sample from the library, or its own sound. */
+export async function padSounds(pattern: RhythmPattern, sampleRate: number, samples?: PadSampleSource): Promise<Float32Array[]> {
+  const own = await drumSamples(sampleRate);
+  return Promise.all(
+    own.map(async (sound, pad) => {
+      const id = padSample(pattern, pad);
+      if (!id || !samples) return sound;
+      try {
+        return (await samples(id, sampleRate)) ?? sound;
+      } catch {
+        return sound;
+      }
+    }),
+  );
+}
+
 /** A rhythm as it plays on the canvas, as a 16-bit WAV (scaled down only if it would clip). */
-export async function rhythmToWav(pattern: RhythmPattern, sampleRate = 44100): Promise<Uint8Array> {
-  const mixed = mixRhythm(pattern, await drumSamples(sampleRate), sampleRate);
+export async function rhythmToWav(pattern: RhythmPattern, sampleRate = 44100, samples?: PadSampleSource): Promise<Uint8Array> {
+  const mixed = mixRhythm(pattern, await padSounds(pattern, sampleRate, samples), sampleRate);
   let peak = 0;
   for (const v of mixed) peak = Math.max(peak, Math.abs(v));
   if (peak > 0.98) for (let i = 0; i < mixed.length; i++) mixed[i] *= 0.98 / peak;
@@ -160,8 +201,8 @@ export async function rhythmToWav(pattern: RhythmPattern, sampleRate = 44100): P
 }
 
 /** A rhythm rendered into a buffer for `ctx` (what the canvas plays). */
-export async function renderRhythm(ctx: BaseAudioContext, pattern: RhythmPattern): Promise<AudioBuffer> {
-  const pads = await drumSamples(ctx.sampleRate);
+export async function renderRhythm(ctx: BaseAudioContext, pattern: RhythmPattern, samples?: PadSampleSource): Promise<AudioBuffer> {
+  const pads = await padSounds(pattern, ctx.sampleRate, samples);
   const mixed = mixRhythm(pattern, pads, ctx.sampleRate);
   const buffer = ctx.createBuffer(1, Math.max(1, mixed.length), ctx.sampleRate);
   buffer.copyToChannel(mixed, 0);
@@ -171,6 +212,8 @@ export async function renderRhythm(ctx: BaseAudioContext, pattern: RhythmPattern
 /** Live pads on a running context: strike them while tapping, and preview patterns. */
 export class DrumKit {
   private buffers: AudioBuffer[] | null = null;
+  /** Library samples played instead of pads' own sounds. */
+  private overrides: (AudioBuffer | null)[] = [];
   private readonly out: GainNode;
   readonly ready: Promise<void>;
 
@@ -190,9 +233,20 @@ export class DrumKit {
     });
   }
 
+  /** Pad `pad` plays this sound instead of its own (null: its own again). */
+  setPadSound(pad: number, sound: Float32Array | null) {
+    if (!sound || sound.length === 0) {
+      this.overrides[pad] = null;
+      return;
+    }
+    const b = this.ctx.createBuffer(1, sound.length, this.ctx.sampleRate);
+    b.copyToChannel(sound as Float32Array<ArrayBuffer>, 0);
+    this.overrides[pad] = b;
+  }
+
   /** Strike `pad` at `when` (audio-clock time; default now). */
   hit(pad: number, when = 0, level = 1): AudioBufferSourceNode | null {
-    const buffer = this.buffers?.[pad];
+    const buffer = this.overrides[pad] ?? this.buffers?.[pad];
     if (!buffer) {
       // Not rendered yet (the first moment after opening): synthesize this one.
       voice(this.ctx, this.out, pad, Math.max(when, this.ctx.currentTime));

@@ -138,9 +138,14 @@ export class AudioEngine {
   private frame = 0;
   private timer: ReturnType<typeof setInterval> | null = null;
   private disposed = false;
+  /** The context has run at least once (a later 'suspended' means the system stopped it). */
+  private ran = false;
+  /** Marked for a fresh context at the next gesture (the page was hidden, or the recorder had the session). */
+  private stale = false;
   private readonly requestFrame: (callback: () => void) => number;
   private readonly cancelFrame: (id: number) => void;
   private readonly onStateChange = () => {
+    if (this.ctx?.state === 'running') this.ran = true;
     if (this.wantPlaying && !this.mapping) this.tryStart();
     this.emit();
   };
@@ -174,6 +179,7 @@ export class AudioEngine {
         limiter.connect(this.analyser);
       }
       this.bus = bus;
+      if (ctx.state === 'running') this.ran = true;
       (ctx as EventTarget).addEventListener?.('statechange', this.onStateChange);
     }
     return this.ctx;
@@ -196,6 +202,26 @@ export class AudioEngine {
   /** The audio context's state ('none' before it is created; WebKit can also report 'interrupted'). */
   get contextState(): string {
     return this.ctx ? (this.ctx.state as string) : 'none';
+  }
+
+  /**
+   * This engine's context may be stuck: WebKit can leave a context that the
+   * system suspended or interrupted (the app was in the background, a call,
+   * the native recorder took the audio session) unable to resume, silently.
+   * The views then make a new engine inside the tap that plays (decoded
+   * buffers belong to no context and are handed over).
+   */
+  get needsRenewal(): boolean {
+    const ctx = this.ctx;
+    if (this.disposed) return true;
+    if (!ctx) return false;
+    const state = ctx.state as string;
+    return this.stale || state === 'closed' || state === 'interrupted' || (state === 'suspended' && this.ran);
+  }
+
+  /** Use a fresh context at the next gesture (see `needsRenewal`). */
+  markStale() {
+    this.stale = true;
   }
 
   /** The mapping in force while playing. */

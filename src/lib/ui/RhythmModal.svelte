@@ -3,13 +3,14 @@
    * Recording and editing a rhythm sketch, in a panel that can be dragged
    * out of the way of the canvas.
    *
-   * Record: three pads (Beat 1, 2, 3: a kick, a snare and a hat; keys 1 2 3 or J K L). Recording
+   * Record: four pads (Beat 1–4: a kick, a snare, a hat and a clap; keys 1 2 3 4 or J K L ;). Recording
    * starts with the first tap and ends with Done. The taps then become a
    * step pattern (`patternFromTaps`: tempo detected, 16th-note grid, whole
    * bars), shown as a step sequencer: tap a step to switch it, change the
    * tempo or the number of bars, play it in a loop, or record again.
    */
-  import { onDestroy } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
+  import { LiveContext } from '../audio/liveContext';
   import { DrumKit } from '../music/drums';
   import { RhythmPlayer } from '../music/rhythmPlayer';
   import {
@@ -25,14 +26,11 @@
     type RhythmPattern,
     type Tap,
   } from '../music/rhythm';
+  import { app } from '../state/app.svelte';
   import Icon from './Icon.svelte';
+  import { registerTransport } from './transport';
 
   interface Props {
-    /** The audio context and the mix input the pads sound through (the canvas's). */
-    context: () => AudioContext;
-    destination: () => AudioNode;
-    /** Wake the audio inside a tap (WebKit). */
-    unlock: () => void;
     /** Editing an existing rhythm (null: record a new one). */
     initial: RhythmPattern | null;
     initialTitle?: string;
@@ -40,7 +38,7 @@
     onclose: () => void;
   }
 
-  let { context, destination, unlock, initial, initialTitle = '', onsave, onclose }: Props = $props();
+  let { initial, initialTitle = '', onsave, onclose }: Props = $props();
 
   // svelte-ignore state_referenced_locally
   let phase = $state<'record' | 'edit'>(initial ? 'edit' : 'record');
@@ -52,12 +50,38 @@
   let tapCount = $state(0);
   let recordingSince = $state<number | null>(null);
   let now = $state(performance.now());
-  let lit = $state<number[]>([0, 0, 0]);
+  let lit = $state<number[]>(PADS.map(() => 0));
   let detected = $state<boolean | null>(null);
   let saving = $state(false);
 
-  // svelte-ignore state_referenced_locally
-  const kit = new DrumKit(context(), destination());
+  // The panel's own audio context, renewed in a tap when it may be stuck (see LiveContext).
+  let kit: DrumKit;
+  let player: RhythmPlayer;
+  function build(ctx: AudioContext) {
+    kit?.dispose();
+    const limiter = ctx.createDynamicsCompressor();
+    limiter.threshold.value = -3;
+    limiter.ratio.value = 12;
+    limiter.connect(ctx.destination);
+    kit = new DrumKit(ctx, limiter);
+    player = new RhythmPlayer(ctx, kit, () => pattern);
+  }
+  const live = new LiveContext({
+    latencyHint: 'interactive',
+    onRenew: (ctx) => {
+      const was = previewing;
+      player?.stop();
+      build(ctx);
+      if (was) player.start();
+    },
+    onHidden: () => stopPreview(),
+    log: (message) => app.logCapture(`[rhythm panel] ${message}`),
+  });
+  build(live.context);
+
+  function unlock() {
+    live.wake();
+  }
 
   // ------------------------------------------------------------ the pads
 
@@ -87,11 +111,14 @@
     if (pad >= 0) {
       e.preventDefault();
       strike(pad, e.timeStamp || performance.now());
-    } else if (e.key === ' ' && phase === 'edit') {
-      e.preventDefault();
-      togglePreview();
     }
   }
+
+  /** The space bar (see transport.ts): play the pattern, once there is one. */
+  function onSpace() {
+    if (phase === 'edit') togglePreview();
+  }
+  onMount(() => registerTransport(onSpace));
 
   const clock = window.setInterval(() => (now = performance.now()), 200);
 
@@ -139,8 +166,6 @@
   let previewing = $state(false);
   let currentStep = $state(-1);
   let frame = 0;
-  // svelte-ignore state_referenced_locally
-  const player = new RhythmPlayer(context(), kit, () => pattern);
 
   function togglePreview() {
     if (previewing) stopPreview();
@@ -181,6 +206,7 @@
     stopPreview();
     window.clearInterval(clock);
     kit.dispose();
+    live.dispose();
   });
 
   // ------------------------------------------------------------ dragging
@@ -404,7 +430,7 @@
   }
   .pads {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     gap: 10px;
     touch-action: none;
     user-select: none;
@@ -460,6 +486,10 @@
   .pad-2 .flash,
   .step.pad-2.on {
     background: var(--chord);
+  }
+  .pad-3 .flash,
+  .step.pad-3.on {
+    background: var(--note);
   }
   @keyframes flash {
     from {

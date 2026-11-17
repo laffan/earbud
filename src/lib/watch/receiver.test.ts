@@ -54,6 +54,7 @@ function sketch(id: string, createdAt: number): Sketch {
     rhythm: null,
     canvasRepeats: 1,
     canvasVolume: 1,
+    noteSampleId: null,
     canvasW: null,
     canvasH: null,
   };

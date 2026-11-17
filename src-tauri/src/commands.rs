@@ -233,6 +233,50 @@ pub async fn write_sketch_file(
     Ok(path.display().to_string())
 }
 
+// ---------------------------------------------------------- sample library
+
+#[tauri::command]
+pub async fn list_samples(library: State<'_, Library>) -> Result<Vec<Sample>> {
+    library.list_samples()
+}
+
+#[tauri::command]
+pub async fn create_sample(library: State<'_, Library>, args: CreateSampleArgs) -> Result<Sample> {
+    library.create_sample(args)
+}
+
+#[tauri::command]
+pub async fn update_sample(library: State<'_, Library>, args: UpdateSampleArgs) -> Result<Sample> {
+    library.update_sample(args)
+}
+
+#[tauri::command]
+pub async fn delete_sample(library: State<'_, Library>, id: String) -> Result<()> {
+    library.delete_sample(&id)
+}
+
+#[tauri::command]
+pub async fn set_note_sample(library: State<'_, Library>, id: String, sample_id: Option<String>) -> Result<Sketch> {
+    library.set_note_sample(&id, sample_id.as_deref())
+}
+
+/// A sample's audio (a WAV file) as the raw body; the sample in the `x-sample-id` header.
+#[tauri::command]
+pub async fn write_sample_audio(library: State<'_, Library>, request: Request<'_>) -> Result<Sample> {
+    let id = request
+        .headers()
+        .get("x-sample-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
+        .ok_or_else(|| Error::Invalid("missing header x-sample-id".into()))?;
+    let bytes = match request.body() {
+        InvokeBody::Raw(bytes) => bytes,
+        InvokeBody::Json(_) => return Err(Error::Invalid("expected a raw binary body".into())),
+    };
+    library.write_sample_audio(&id, bytes)?;
+    library.get_sample(&id)
+}
+
 #[tauri::command]
 pub async fn prepare_export(
     library: State<'_, Library>,

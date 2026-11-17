@@ -173,6 +173,55 @@ pub struct Sketch {
     /// A text note's box on the canvas: width and minimum height in pixels (None = fit the text).
     pub canvas_w: Option<f64>,
     pub canvas_h: Option<f64>,
+    /// The library sample its notes play with (None: the built-in piano).
+    pub note_sample_id: Option<String>,
+}
+
+/// A sound in the sample library: cut from a recording, played with its settings.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Sample {
+    pub id: String,
+    pub title: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    /// Length of the stored audio (before the settings trim it).
+    pub duration_ms: Option<i64>,
+    /// The stored audio (`samples/<id>/sample.wav`), once written.
+    pub audio_path: Option<String>,
+    /// Where it was cut from (the sketch may since have been deleted).
+    pub source_sketch_id: Option<String>,
+    pub source_start_ms: Option<i64>,
+    pub source_end_ms: Option<i64>,
+    /// Trim, envelope, effects and root note (opaque to the library).
+    pub settings: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateSampleArgs {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub duration_ms: Option<i64>,
+    #[serde(default)]
+    pub source_sketch_id: Option<String>,
+    #[serde(default)]
+    pub source_start_ms: Option<i64>,
+    #[serde(default)]
+    pub source_end_ms: Option<i64>,
+    #[serde(default)]
+    pub settings: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateSampleArgs {
+    pub id: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub settings: Option<serde_json::Value>,
 }
 
 /// A text note on a notebook's canvas (markdown).

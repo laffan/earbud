@@ -56,8 +56,8 @@ export function tracksToMidi(parts: { name: string; notes: PianoNote[] }[], opti
   return midi.toArray();
 }
 
-/** General MIDI drum notes for the rhythm pads: kick, snare, closed hi-hat. */
-export const PAD_DRUM_NOTES = [36, 38, 42];
+/** General MIDI drum notes for the rhythm pads: kick, snare, closed hi-hat, hand clap (a pad playing a sample keeps its note). */
+export const PAD_DRUM_NOTES = [36, 38, 42, 39];
 
 /**
  * A rhythm as it plays on the canvas (its pattern repeated over its length),

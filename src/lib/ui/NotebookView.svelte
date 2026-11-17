@@ -53,6 +53,7 @@
   import { MAX_CANVAS_REPEATS } from '../library/types';
   import { AudioEngine, type EngineTrack } from '../playback/audioEngine';
   import { loadCanvasSound } from '../playback/canvasAudio';
+  import { pitchedSample } from '../samples/render';
   import type { PianoNote } from '../transcription/types';
   import { errorMessage } from '../platform/tauri';
   import { app } from '../state/app.svelte';
@@ -63,6 +64,7 @@
   import { sliceCrops, sliceRange, sliceRhythm, snapSlice } from './slice';
   import { displayTitle, formatClock, formatClockTenths } from './format';
   import Icon from './Icon.svelte';
+  import { registerTransport } from './transport';
   import ImportSheet from './ImportSheet.svelte';
   import Minimap from './Minimap.svelte';
   import RecordingStrip from './RecordingStrip.svelte';
@@ -134,8 +136,6 @@
    * fresh context (inside the tap, so WebKit lets it start). Decoded buffers
    * belong to no context and are reused.
    */
-  let audioStale = false;
-
   function renewAudio(reason: string) {
     const old = engine;
     const at = solo ? solo.resume : currentTime;
@@ -143,7 +143,6 @@
     old.pause();
     engine = makeEngine();
     old.dispose();
-    audioStale = false;
     app.logCapture(`[canvas] new audio context (${reason}; the last one was ${old.contextState})`);
     engine.setTracks(engineTracks);
     engine.setDuration(engineDuration);
@@ -153,8 +152,7 @@
 
   /** In a tap that leads to sound: a fresh context if the last one may be stuck, then wake it. */
   function wakeAudio() {
-    const state = engine.contextState;
-    if (audioStale || state === 'closed' || state === 'interrupted') renewAudio(audioStale ? 'after a recording or a pause in the background' : `context ${state}`);
+    if (engine.needsRenewal) renewAudio(`context ${engine.contextState}, after a recording, a pause in the background or a silent start`);
     engine.unlock();
   }
 
@@ -171,7 +169,7 @@
     watchdog = window.setTimeout(() => {
       if (!playing || !buffering) return;
       app.logCapture(`[canvas] still no sound after 2 s (context ${engine.contextState}); a fresh context on the next tap`);
-      audioStale = true;
+      engine.markStale();
       engine.pause();
       app.toast('The sound did not start. Tap play again.', 'error');
     }, 2000);
@@ -186,8 +184,9 @@
   $effect(() => {
     const wanted = sketches.map((s) => ({
       s,
-      key: s.kind === 'rhythm' ? JSON.stringify(s.rhythm) :
-        JSON.stringify([s.listenMode, s.analysisPath, s.transcriptionStatus, s.updatedAt, app.revision[s.id] ?? 0]),
+      // The revision also moves when a library sample it plays (its pads', or its notes') changes.
+      key: s.kind === 'rhythm' ? JSON.stringify([s.rhythm, app.revision[s.id] ?? 0]) :
+        JSON.stringify([s.listenMode, s.analysisPath, s.transcriptionStatus, s.updatedAt, s.noteSampleId, app.revision[s.id] ?? 0]),
     }));
     untrack(() => {
       const capture = app.exportDeps().capture;
@@ -200,10 +199,14 @@
         previewNotes = { ...previewNotes, [id]: [] };
         const pattern = patternOf(s);
         const pending = pattern
-          ? renderRhythm(engine.context, pattern).then((buffer) => ({ buffer, recording: null, notes: [], duration: playSeconds(pattern) }))
+          ? renderRhythm(engine.context, pattern, app.sampleSound).then((buffer) => ({ buffer, recording: null, notes: [], duration: playSeconds(pattern) }))
           : loadCanvasSound(engine.context, s, app.library, {
               exportAudio: capture?.exportAudio ? (media, out) => capture.exportAudio!(media, out) : undefined,
               log: (message) => app.logCapture(`[canvas] ${message}`),
+              noteSample: async (sampleId) => {
+                const sample = app.sample(sampleId);
+                return sample ? pitchedSample(engine.context, sample) : null;
+              },
             });
         pending.then(
           (sound) => {
@@ -836,7 +839,7 @@
           applyRange();
           engine.seek(from);
           // The recorder had the audio session: start the canvas's sound afresh on the next tap.
-          audioStale = true;
+          engine.markStale();
         },
       },
     });
@@ -1147,13 +1150,15 @@
     return null;
   }
 
+  /** The space bar (see transport.ts): stop a recording here, or play and pause the canvas. */
+  function onSpace() {
+    if (recordingHere) void app.stopRecording();
+    else togglePlay();
+  }
+
   function onKey(e: KeyboardEvent) {
     if ((e.target as HTMLElement).closest('input, textarea') || rhythmEditor || editingNote || draftNote) return;
-    if (e.key === ' ' && !e.repeat) {
-      e.preventDefault();
-      if (recordingHere) void app.stopRecording();
-      else togglePlay();
-    } else if (e.key === 'Escape') {
+    if (e.key === 'Escape') {
       slicing = null;
       closeMenus();
       if (solo) endSolo();
@@ -1165,13 +1170,15 @@
   /** Back from the background (iOS suspends audio there): a fresh context on the next tap. */
   const onVisibility = () => {
     if (document.visibilityState === 'hidden') {
+      if (solo) endSolo();
       engine.pause();
-      audioStale = true;
+      engine.markStale();
     }
   };
   onMount(() => {
     media?.addEventListener?.('change', onTheme);
     document.addEventListener('visibilitychange', onVisibility);
+    return registerTransport(onSpace);
   });
 
   onDestroy(() => {
@@ -1239,6 +1246,9 @@
     <span class="spacer"></span>
     <button class="icon-button" onclick={() => app.openReference()} aria-label="Reference: chords and the circle of fifths" title="Reference">
       <Icon name="book" />
+    </button>
+    <button class="icon-button" onclick={() => app.openSamples()} aria-label="Sample library" title="Samples">
+      <Icon name="samples" />
     </button>
     <button class="icon-button" onclick={() => (showSettings = true)} aria-label="Settings">
       <Icon name="settings" />
@@ -1541,9 +1551,6 @@
 
 {#if rhythmEditor}
   <RhythmModal
-    context={() => engine.context}
-    destination={() => engine.input}
-    unlock={() => engine.unlock()}
     initial={null}
     onsave={saveRhythm}
     onclose={() => (rhythmEditor = null)}

@@ -36,7 +36,8 @@
     /** 'pending': nothing transcribed yet; 'ready': notes to analyse (chords or not). */
     status: 'pending' | 'ready' | 'empty';
     /** Play these pitches together (spread: seconds between them, bass first). */
-    onplay: (pitches: number[], spread: number) => void;
+    /** Play a chord's notes, rolled by `spread` seconds, on the piano or the guitar. */
+    onplay: (pitches: number[], spread: number, instrument: 'piano' | 'guitar') => void;
     onseek: (time: number) => void;
   }
 
@@ -165,8 +166,8 @@
   function playEntry(entry: Entry) {
     if (instrument === 'guitar' && entry.guitar.length) {
       const shape = entry.guitar[shapeIndex[entry.symbol] ?? 0] ?? entry.guitar[0];
-      onplay(guitarPitches(shape), 0.035);
-    } else onplay([...entry.piano.left, ...entry.piano.right], 0.012);
+      onplay(guitarPitches(shape), 0.035, 'guitar');
+    } else onplay([...entry.piano.left, ...entry.piano.right], 0.012, 'piano');
   }
 
   function guitarPitches(shape: GuitarVoicing): number[] {
@@ -176,13 +177,13 @@
   function goTo(step: (typeof progression)[number]) {
     onseek(step.start);
     const v = pianoVoicing(step.chord.root, step.chord.quality, step.chord.bass);
-    onplay([...v.left, ...v.right], 0.012);
+    onplay([...v.left, ...v.right], 0.012, 'piano');
   }
 
   function playOnCircle(root: number, family: CircleChord['family']) {
     const quality = family === 'major' ? 'M' : family === 'minor' ? 'm' : 'dim';
     const v = pianoVoicing(root, quality);
-    onplay([...v.left, ...v.right], 0.012);
+    onplay([...v.left, ...v.right], 0.012, 'piano');
   }
 
   function cycleShape(entry: Entry, step: number) {

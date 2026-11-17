@@ -24,7 +24,7 @@
       "devCsp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["$APPDATA/library/sketches/**"]
+        "scope": ["$APPDATA/library/sketches/**", "$APPDATA/library/samples/**"]
       }
     }
   },

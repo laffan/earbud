@@ -1,6 +1,7 @@
 import type { Sketch, SketchLibrary } from '../library/types';
 import { notesEndTime } from '../music/notes';
 import { renderNotesBuffer } from '../music/synth';
+import type { PitchedSample } from '../samples/render';
 import type { PianoNote } from '../transcription/types';
 import { loadTakeBuffer, type DecodeDeps, type TakeAudioSource } from './takeBuffers';
 
@@ -22,6 +23,8 @@ interface Dependencies extends DecodeDeps {
   load?: (ctx: BaseAudioContext, take: TakeAudioSource, deps: DecodeDeps) => Promise<AudioBuffer>;
   renderNotes?: typeof renderNotesBuffer;
   mix?: typeof mixAudioLayers;
+  /** The library sample a sketch plays its notes with (`Sketch.noteSampleId`), ready to play, or null. */
+  noteSample?: (id: string) => Promise<PitchedSample | null>;
 }
 
 /** Prepare exactly the selected sound, sharing the sketch view's active takes, mute/solo and edits. */
@@ -77,7 +80,9 @@ export async function loadCanvasSound(
   const recording = recordings.length ? await mix(recordings, duration, ctx.sampleRate) : null;
   const layers: AudioLayer[] = recording ? [{ buffer: recording, offset: 0 }] : [];
   if (mode !== 'recording' && notes.length) {
-    layers.push({ buffer: await (deps.renderNotes ?? renderNotesBuffer)(notes, { sampleRate: ctx.sampleRate }), offset: 0 });
+    // The notes play with the sketch's sample when it has one (the piano if it is gone).
+    const sampler = sketch.noteSampleId && deps.noteSample ? await deps.noteSample(sketch.noteSampleId).catch(() => null) : null;
+    layers.push({ buffer: await (deps.renderNotes ?? renderNotesBuffer)(notes, { sampleRate: ctx.sampleRate, sampler }), offset: 0 });
   }
   return { buffer: await mix(layers, duration, ctx.sampleRate), recording, notes, duration };
 }

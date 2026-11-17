@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PianoNote } from '../transcription/types';
-import { canJoin, joinNotes, mergeSelection, notesInBox, shiftNotes } from './selection';
+import { auditionKey, auditionNotes, canJoin, joinNotes, mergeSelection, notesInBox, shiftNotes } from './selection';
 
 const n = (pitch: number, startTime: number, endTime: number, confidence?: number): PianoNote => ({
   pitch,
@@ -75,5 +75,34 @@ describe('joinNotes', () => {
     const notes = [n(48, 0, 1), n(60, 0.5, 1), n(48, 2, 3)];
     expect(canJoin(notes, [0, 1])).toBe(false);
     expect(joinNotes(notes, [0, 1])).toBeNull();
+  });
+});
+
+describe('auditionNotes', () => {
+  const n = (pitch: number, startTime: number, endTime: number): PianoNote => ({ pitch, startTime, endTime, velocity: 80 });
+
+  it('plays the selected notes that sound at the playhead', () => {
+    const selected = [n(60, 0, 1), n(64, 0.5, 2), n(67, 1.5, 3)];
+    expect(auditionNotes(selected, 0.75).map((x) => x.pitch)).toEqual([60, 64]);
+    expect(auditionNotes(selected, 1.8).map((x) => x.pitch)).toEqual([64, 67]);
+  });
+
+  it('plays the start of the selection when none crosses the playhead', () => {
+    const selected = [n(67, 2.03, 3), n(60, 2, 2.5), n(72, 2.5, 3)];
+    expect(auditionNotes(selected, 10).map((x) => x.pitch)).toEqual([60, 67]);
+    expect(auditionNotes(selected, 0).map((x) => x.pitch)).toEqual([60, 67]);
+  });
+
+  it('plays each pitch once, and nothing for no selection', () => {
+    expect(auditionNotes([n(60, 0, 1), n(60, 0.02, 0.5)], 0.3).map((x) => x.pitch)).toEqual([60]);
+    expect(auditionNotes([], 0)).toEqual([]);
+  });
+
+  it('changes key when what it plays changes', () => {
+    const before = auditionNotes([n(60, 0, 1), n(64, 2, 3)], 0.5);
+    const moved = auditionNotes([n(60, 1, 2), n(64, 3, 4)], 0.5);
+    expect(auditionKey(before)).toBe('60');
+    expect(auditionKey(moved)).toBe('60');
+    expect(auditionKey(auditionNotes([n(61, 0, 1)], 0.5))).toBe('61');
   });
 });

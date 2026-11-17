@@ -3,9 +3,11 @@
    * Interactive piano roll (canvas).
    *  - Review: tap to seek, drag to scroll, pinch / ctrl+wheel to zoom; the
    *    view follows the playhead and lights up sounding notes and keys.
-   *  - Edit: tap a note to select it. Dragging a selected note moves the
-   *    whole selection (time + pitch), dragging an edge resizes it,
-   *    double-tap empty space adds a note, Delete/arrow keys on desktop.
+   *  - Edit (the sketch view's roll is always editing): tap a note to select
+   *    it, tap empty space to deselect and move the playhead there. Dragging
+   *    a selected note moves the whole selection (time + pitch), dragging an
+   *    edge resizes it, double-tap empty space adds a note, Delete/arrow keys
+   *    on desktop. Every change plays the moved notes (`onaudition`).
    *    With a finger, a drag scrolls as in review; press and hold first to
    *    draw a selection rectangle (or, on a note, to pick it up). With a
    *    mouse, dragging across empty space selects (Shift adds).
@@ -20,7 +22,7 @@
    */
   import { onMount, untrack } from 'svelte';
   import { isBlackKey, noteName, normalizeNote, pitchClass, PIANO_MAX, PIANO_MIN } from '../music/notes';
-  import { mergeSelection, notesInBox, shiftNotes, type NoteShift } from '../music/selection';
+  import { auditionKey, auditionNotes, mergeSelection, notesInBox, shiftNotes, type NoteShift } from '../music/selection';
   import type { PianoNote } from '../transcription/types';
   import { formatClock } from './format';
   import { ROLL_GUTTER, RollViewport } from './rollViewport.svelte';
@@ -37,6 +39,11 @@
     /** The notes changed; `focus` are the notes that should be selected afterwards. */
     onchange?: (notes: PianoNote[], focus: PianoNote[]) => void;
     onpreview?: (pitch: number) => void;
+    /**
+     * Selected notes were moved or resized: the ones to hear (those at the
+     * playhead, else those at the selection's start; see `auditionNotes`).
+     */
+    onaudition?: (notes: PianoNote[]) => void;
     /** Playback crop range (seconds); outside it is dimmed. */
     cropStart?: number | null;
     cropEnd?: number | null;
@@ -58,6 +65,7 @@
     onseek,
     onchange,
     onpreview,
+    onaudition,
     cropStart = null,
     cropEnd = null,
     offset = 0,
@@ -481,6 +489,9 @@
     lastX: number;
     lastY: number;
     moved: boolean;
+    /** What the moved notes sound like now (see `auditionNotes`), and whether it was played during the drag. */
+    audition: string;
+    auditioned: boolean;
   }
   const pointers = new Map<number, { x: number; y: number }>();
   let drag: Drag | null = null;
@@ -504,6 +515,7 @@
       const hit = d.held;
       selection = [hit.index];
       drag = { ...d, mode: hit.mode, index: hit.index, indices: [hit.index], originals: [notes[hit.index]], held: null };
+      drag.audition = auditionKey(auditionNotes(drag.originals, now));
       onpreview?.(notes[hit.index].pitch);
       return;
     }
@@ -627,6 +639,8 @@
       lastX: p.x,
       lastY: p.y,
       moved: false,
+      audition: '',
+      auditioned: false,
     };
     if (editing && !compact) {
       const hit = hitNote(p.x, p.y);
@@ -656,6 +670,7 @@
           originals: indices.map((i) => notes[i]),
           inGroup,
         };
+        drag.audition = auditionKey(auditionNotes(drag.originals, now));
         onpreview?.(notes[hit.index].pitch);
         return;
       }
@@ -717,11 +732,15 @@
     const moved = shiftNotes(d.originals, shift, totalSeconds + 30);
     const preview = new Map<number, PianoNote>();
     d.indices.forEach((index, k) => preview.set(index, moved[k]));
-    const lead = d.index!;
-    const previousPitch = (dragPreview?.get(lead) ?? notes[lead]).pitch;
     dragPreview = preview;
-    const pitch = preview.get(lead)?.pitch;
-    if (pitch !== undefined && pitch !== previousPitch) onpreview?.(pitch);
+    // Heard whenever what they sound like changes: a new pitch, or other notes now at the playhead.
+    const heard = auditionNotes(moved, now);
+    const key = auditionKey(heard);
+    if (key !== d.audition) {
+      d.audition = key;
+      d.auditioned = true;
+      onaudition?.(heard);
+    }
   }
 
   function onPointerUp(e: PointerEvent) {
@@ -744,6 +763,8 @@
         const next = notes.slice();
         for (const [index, note] of preview) next[index] = note;
         onchange?.(next, [...preview.values()]);
+        // Moved in time only, away from the playhead: heard once, where they landed.
+        if (!d.auditioned) onaudition?.(auditionNotes([...preview.values()], now));
       } else if (d.inGroup && d.index !== null) {
         // A tap on one of several selected notes narrows the selection to it.
         selection = [d.index];
@@ -776,9 +797,11 @@
         const added = normalizeNote({ pitch, startTime: start, endTime: start + 0.4, velocity: 80, confidence: 1 });
         onchange?.([...notes, added], [added]);
         onpreview?.(pitch);
-      } else if (d.base.length === 0) {
-        selection = [];
+        return;
       }
+      if (d.base.length === 0) selection = [];
+      // A tap on empty space also moves the playhead there (the roll is always editing).
+      if (d.startX >= GUTTER) onseek?.(Math.max(0, Math.min(totalSeconds, sOf(d.startX))));
       return;
     }
     if (d.startX >= GUTTER) onseek?.(Math.max(0, Math.min(totalSeconds, sOf(d.startX))));
@@ -853,7 +876,7 @@
     const updated = notes.slice();
     indices.forEach((index, k) => (updated[index] = moved[k]));
     onchange?.(updated, moved);
-    if (indices.length === 1 && moved[0].pitch !== originals[0].pitch) onpreview?.(moved[0].pitch);
+    onaudition?.(auditionNotes(moved, now));
   }
 
   onMount(() => {

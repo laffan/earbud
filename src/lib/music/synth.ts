@@ -10,14 +10,23 @@ import { routeOutput } from '../audio/devices';
 import { encodeWav16 } from '../audio/wav';
 import { preparePlaybackSession } from '../audio/session';
 import type { PianoNote } from '../transcription/types';
+import { scheduleSampleNote, type PitchedSample } from '../samples/render';
+import { guitarZones, loadGuitar, strumGuitar } from './guitar';
 import { notesEndTime, sortNotes } from './notes';
 
 interface Voice {
-  oscillators: OscillatorNode[];
+  /** Oscillators or buffer sources: stopped to cut the voice. */
+  sources: AudioScheduledSourceNode[];
   gain: GainNode;
   start: number;
   end: number;
 }
+
+/**
+ * What a chord or note is played with: the sketch's note voice (its sample,
+ * if it plays its notes with one, else the piano), the piano, or the guitar.
+ */
+export type Instrument = 'notes' | 'piano' | 'guitar';
 
 /** Seconds of timeline scheduled ahead of the clock. */
 const LOOKAHEAD = 0.25;
@@ -93,7 +102,22 @@ export function scheduleVoice(
     osc.stop(end + 0.05);
     return osc;
   });
-  return { oscillators, gain, start: when, end };
+  return { sources: oscillators, gain, start: when, end };
+}
+
+/** One note with the note voice: the sample (resampled to the note) if there is one, else the piano. */
+function scheduleNote(
+  ctx: Ctx,
+  destination: AudioNode,
+  sampler: PitchedSample | null,
+  pitch: number,
+  velocity: number,
+  when: number,
+  length: number,
+): Voice {
+  return sampler
+    ? scheduleSampleNote(ctx, destination, sampler, pitch, velocity, when, length)
+    : scheduleVoice(ctx, destination, pitch, velocity, when, length);
 }
 
 function createOutput(ctx: Ctx, volume: number, destination: AudioNode = ctx.destination): GainNode {
@@ -113,8 +137,32 @@ export class NoteSynth {
   private voices: Voice[] = [];
   /** The clock being followed while playing; null when stopped. */
   private clock: SynthClock | null = null;
+  /** Notes are played with this sample instead of the piano (null: the piano). */
+  private sampler: PitchedSample | null = null;
 
   constructor(private readonly options: NoteSynthOptions = {}) {}
+
+  /** Play notes with a sample (resampled from its root to each note), or with the piano again (null). */
+  setSampler(sampler: PitchedSample | null) {
+    if (sampler === this.sampler) return;
+    this.sampler = sampler;
+    const clock = this.clock;
+    if (clock && this.ctx) {
+      // What plays from now on uses the new voice.
+      this.stopVoices(0.03);
+      this.nextIndex = this.firstIndexAtOrAfter(this.positionAt(Math.max(this.ctx.currentTime, clock.time)));
+      this.pump();
+    }
+  }
+
+  get usesSample(): boolean {
+    return this.sampler !== null;
+  }
+
+  /** Start loading the guitar recordings, so the first guitar chord is not played on the piano. */
+  preloadGuitar() {
+    void loadGuitar(this.ensureContext()).catch(() => {});
+  }
 
   setNotes(notes: PianoNote[]) {
     this.notes = sortNotes(notes);
@@ -196,15 +244,41 @@ export class NoteSynth {
     this.stopVoices(0.05);
   }
 
-  /** Play a single note immediately (editor feedback). */
+  /** Play a single note immediately (editor feedback), with the note voice. */
   preview(pitch: number, velocity = 90) {
     this.playNow([pitch], velocity, 0.6);
   }
 
-  /** Play several notes together, e.g. a chord from the chord strip. */
-  playChord(pitches: number[], velocity = 80, length = 1.4, spread = 0.012) {
+  /**
+   * Play several notes together, e.g. a chord from the chord strip: with
+   * the note voice (default), the piano, or the guitar (strummed; the piano
+   * until its recordings have loaded).
+   */
+  playChord(pitches: number[], velocity = 80, length = 1.4, spread = 0.012, instrument: Instrument = 'notes') {
+    if (instrument === 'guitar') {
+      const ctx = this.ensureContext();
+      const zones = guitarZones();
+      if (zones) {
+        if (ctx.state !== 'running') void ctx.resume().catch(() => {});
+        for (const voice of strumGuitar(ctx, this.master!, zones, pitches, ctx.currentTime + 0.01, { velocity: velocity + 10, length: Math.max(length, 2), spread: Math.max(spread, 0.02) })) {
+          this.addVoice(voice);
+        }
+        return;
+      }
+      this.preloadGuitar();
+    }
     // Slight roll from the bass up, like a pianist's hand.
-    this.playNow([...pitches].sort((a, b) => a - b), velocity, length, spread);
+    this.playNow([...pitches].sort((a, b) => a - b), velocity, length, spread, instrument === 'notes');
+  }
+
+  /**
+   * The shared context was replaced (the playback engine made a new one):
+   * forget the old one, so the next sound uses the new context.
+   */
+  rebind() {
+    this.stop();
+    this.ctx = null;
+    this.master = null;
   }
 
   dispose() {
@@ -215,12 +289,13 @@ export class NoteSynth {
     this.master = null;
   }
 
-  private playNow(pitches: number[], velocity: number, length: number, spread = 0) {
+  private playNow(pitches: number[], velocity: number, length: number, spread = 0, noteVoice = true) {
     const ctx = this.ensureContext();
     if (ctx.state !== 'running') void ctx.resume().catch(() => {});
     const at = ctx.currentTime + 0.01;
+    const sampler = noteVoice ? this.sampler : null;
     pitches.forEach((pitch, i) => {
-      this.addVoice(scheduleVoice(ctx, this.master!, pitch, velocity, at + i * spread, length));
+      this.addVoice(scheduleNote(ctx, this.master!, sampler, pitch, velocity, at + i * spread, length));
     });
   }
 
@@ -262,7 +337,7 @@ export class NoteSynth {
       if (when < ctx.currentTime - 0.05 || when >= latest) continue;
       // A note is cut at the end of the pass (crop end).
       const length = Math.min(note.endTime - note.startTime, Math.max(0.02, (endTime - when) * clock.rate)) / clock.rate;
-      this.addVoice(scheduleVoice(ctx, this.master!, note.pitch, note.velocity, Math.max(when, ctx.currentTime), length));
+      this.addVoice(scheduleNote(ctx, this.master!, this.sampler, note.pitch, note.velocity, Math.max(when, ctx.currentTime), length));
     }
   }
 
@@ -292,7 +367,7 @@ export class NoteSynth {
   private fadeVoice(v: Voice, at: number, fade: number) {
     if (v.start >= at) {
       // Not started yet: it never sounds. (Cancelling its envelope instead would leave the gain at 1.)
-      for (const osc of v.oscillators) {
+      for (const osc of v.sources) {
         try {
           osc.stop(v.start);
         } catch {
@@ -303,7 +378,7 @@ export class NoteSynth {
     }
     v.gain.gain.cancelScheduledValues(at);
     v.gain.gain.setTargetAtTime(0, at, fade / 3);
-    for (const osc of v.oscillators) {
+    for (const osc of v.sources) {
       try {
         osc.stop(at + fade * 2);
       } catch {
@@ -320,20 +395,22 @@ export class NoteSynth {
   }
 }
 
-/** Render notes offline with the synth voice and return a 16-bit WAV. */
-export async function renderNotesToWav(
-  notes: PianoNote[],
-  options: { sampleRate?: number; tail?: number; volume?: number } = {},
-): Promise<Uint8Array> {
+export interface RenderNotesOptions {
+  sampleRate?: number;
+  tail?: number;
+  volume?: number;
+  /** Play the notes with this sample instead of the piano (its buffer at any rate). */
+  sampler?: PitchedSample | null;
+}
+
+/** Render notes offline with the synth voice (or a sample) and return a 16-bit WAV. */
+export async function renderNotesToWav(notes: PianoNote[], options: RenderNotesOptions = {}): Promise<Uint8Array> {
   const buffer = await renderNotesBuffer(notes, options);
   return encodeWav16([buffer.getChannelData(0)], buffer.sampleRate);
 }
 
-/** The same synth voice rendered for canvas playback, without a WAV round trip. */
-export async function renderNotesBuffer(
-  notes: PianoNote[],
-  options: { sampleRate?: number; tail?: number; volume?: number } = {},
-): Promise<AudioBuffer> {
+/** The same synth voice (or sample) rendered for canvas playback, without a WAV round trip. */
+export async function renderNotesBuffer(notes: PianoNote[], options: RenderNotesOptions = {}): Promise<AudioBuffer> {
   const sampleRate = options.sampleRate ?? 44100;
   const seconds = Math.max(0.5, notesEndTime(notes) + (options.tail ?? 1.5));
   const OfflineCtx: typeof OfflineAudioContext =
@@ -342,8 +419,9 @@ export async function renderNotesBuffer(
   if (!OfflineCtx) throw new Error('Offline audio rendering is not available here');
   const ctx = new OfflineCtx(1, Math.ceil(seconds * sampleRate), sampleRate);
   const master = createOutput(ctx, options.volume ?? 0.6);
+  const sampler = options.sampler ?? null;
   for (const note of sortNotes(notes)) {
-    scheduleVoice(ctx, master, note.pitch, note.velocity, note.startTime, note.endTime - note.startTime);
+    scheduleNote(ctx, master, sampler, note.pitch, note.velocity, note.startTime, note.endTime - note.startTime);
   }
   const buffer = await new Promise<AudioBuffer>((resolve, reject) => {
     ctx.oncomplete = (event) => resolve(event.renderedBuffer);

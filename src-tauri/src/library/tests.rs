@@ -914,3 +914,113 @@ fn listen_mode_survives_reopening_and_rejects_invalid_values() {
     assert_eq!(saved.listen_mode, "notes");
     assert_eq!(saved.title, "Renamed");
 }
+
+// ---------------------------------------------------------------- samples
+
+/// A tiny valid WAV file (44-byte header and a few samples).
+fn wav_bytes() -> Vec<u8> {
+    let samples: [i16; 8] = [0, 1000, 2000, 1000, 0, -1000, -2000, -1000];
+    let data_len = (samples.len() * 2) as u32;
+    let mut out = Vec::new();
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data_len).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&44_100u32.to_le_bytes());
+    out.extend_from_slice(&(44_100u32 * 2).to_le_bytes());
+    out.extend_from_slice(&2u16.to_le_bytes());
+    out.extend_from_slice(&16u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_len.to_le_bytes());
+    for s in samples {
+        out.extend_from_slice(&s.to_le_bytes());
+    }
+    out
+}
+
+#[test]
+fn samples_are_created_written_once_updated_and_deleted() {
+    let (_dir, lib) = lib();
+    let source = create(&lib);
+    fs::write(&source.media_path, b"take").unwrap();
+    finalize(&lib, &source.id);
+    let sample = lib
+        .create_sample(CreateSampleArgs {
+            title: Some("  Low C  ".into()),
+            duration_ms: Some(1200),
+            source_sketch_id: Some(source.id.clone()),
+            source_start_ms: Some(500),
+            source_end_ms: Some(1700),
+            settings: Some(serde_json::json!({ "version": 1, "gainDb": -3 })),
+        })
+        .unwrap();
+    assert_eq!(sample.title, "Low C");
+    assert!(sample.audio_path.is_none(), "no audio until it is written");
+    assert_eq!(sample.settings["gainDb"], -3);
+
+    let path = lib.write_sample_audio(&sample.id, &wav_bytes()).unwrap();
+    assert!(path.is_file());
+    assert!(path.starts_with(lib.samples_dir()));
+    // The stored audio is written once.
+    assert!(lib.write_sample_audio(&sample.id, &wav_bytes()).is_err());
+    assert!(lib.get_sample(&sample.id).unwrap().audio_path.is_some());
+
+    let updated = lib
+        .update_sample(UpdateSampleArgs {
+            id: sample.id.clone(),
+            title: Some("Bass".into()),
+            settings: Some(serde_json::json!({ "version": 1, "reverb": 0.4 })),
+        })
+        .unwrap();
+    assert_eq!(updated.title, "Bass");
+    assert_eq!(updated.settings["reverb"], 0.4);
+    assert!(updated.updated_at >= sample.updated_at);
+    assert_eq!(lib.list_samples().unwrap().len(), 1);
+
+    // A sketch plays its notes with it; deleting the sample sends it back to the piano.
+    let sketch = lib.set_note_sample(&source.id, Some(&sample.id)).unwrap();
+    assert_eq!(sketch.note_sample_id.as_deref(), Some(sample.id.as_str()));
+    lib.delete_sample(&sample.id).unwrap();
+    assert!(lib.list_samples().unwrap().is_empty());
+    assert!(!lib.sample_dir(&sample.id).exists());
+    assert_eq!(lib.get(&source.id).unwrap().sketch.note_sample_id, None);
+}
+
+#[test]
+fn samples_reject_bad_input() {
+    let (_dir, lib) = lib();
+    let source = create(&lib);
+    fs::write(&source.media_path, b"take").unwrap();
+    finalize(&lib, &source.id);
+    assert!(lib.create_sample(CreateSampleArgs { duration_ms: Some(0), ..Default::default() }).is_err());
+    assert!(lib.create_sample(CreateSampleArgs { duration_ms: Some(120_000), ..Default::default() }).is_err());
+    assert!(lib
+        .create_sample(CreateSampleArgs { source_start_ms: Some(900), source_end_ms: Some(100), ..Default::default() })
+        .is_err());
+    assert!(lib
+        .create_sample(CreateSampleArgs { settings: Some(serde_json::json!([1, 2])), ..Default::default() })
+        .is_err());
+    let sample = lib.create_sample(CreateSampleArgs::default()).unwrap();
+    assert!(lib.write_sample_audio(&sample.id, b"not a wav file at all, but long enough to be checked..").is_err());
+    assert!(lib.write_sample_audio("../../etc", &wav_bytes()).is_err());
+    assert!(lib.set_note_sample(&source.id, Some("0123456789abcdef0123456789abcdef")).is_err());
+    assert!(lib.update_sample(UpdateSampleArgs { id: "0123456789abcdef0123456789abcdef".into(), title: None, settings: None }).is_err());
+}
+
+#[test]
+fn duplicates_keep_the_note_sample() {
+    let (_dir, lib) = lib();
+    let notebook = lib.create_notebook("N").unwrap();
+    let source = create(&lib);
+    fs::write(&source.media_path, b"take").unwrap();
+    finalize(&lib, &source.id);
+    lib.place_sketch(PlaceSketchArgs { id: source.id.clone(), notebook_id: Some(notebook.id.clone()), canvas_x_ms: 0, canvas_y: 0.0 }).unwrap();
+    let sample = lib.create_sample(CreateSampleArgs::default()).unwrap();
+    lib.set_note_sample(&source.id, Some(&sample.id)).unwrap();
+    let copy = lib
+        .duplicate_sketch(DuplicateSketchArgs { id: source.id.clone(), notebook_id: notebook.id, canvas_x_ms: 5000, canvas_y: 10.0 })
+        .unwrap();
+    assert_eq!(copy.note_sample_id.as_deref(), Some(sample.id.as_str()));
+}

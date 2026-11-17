@@ -68,6 +68,41 @@ export interface Sketch {
   /** A text note's box: width and minimum height in canvas pixels (null = fit the text). */
   canvasW: number | null;
   canvasH: number | null;
+  /** The library sample its notes play with (null: the built-in piano). */
+  noteSampleId: string | null;
+}
+
+/** A sound in the sample library: cut from a recording, played with its settings (see `samples/settings.ts`). */
+export interface Sample {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  /** Length of the stored audio (before the settings trim it). */
+  durationMs: number | null;
+  /** The stored audio (a WAV file), once written. */
+  audioPath: string | null;
+  /** Where it was cut from (the sketch may since have been deleted). */
+  sourceSketchId: string | null;
+  sourceStartMs: number | null;
+  sourceEndMs: number | null;
+  /** Trim, envelope, effects and root note, as stored (normalize with `normalizeSampleSettings`). */
+  settings: Record<string, unknown>;
+}
+
+export interface CreateSampleArgs {
+  title?: string;
+  durationMs?: number | null;
+  sourceSketchId?: string | null;
+  sourceStartMs?: number | null;
+  sourceEndMs?: number | null;
+  settings?: Record<string, unknown>;
+}
+
+export interface UpdateSampleArgs {
+  id: string;
+  title?: string;
+  settings?: Record<string, unknown>;
 }
 
 export interface CreateTextNoteArgs {
@@ -314,6 +349,17 @@ export interface SketchLibrary {
   createTextNote(args: CreateTextNoteArgs): Promise<Sketch>;
   updateTextNote(args: UpdateTextNoteArgs): Promise<Sketch>;
   updateRhythm(args: UpdateRhythmArgs): Promise<Sketch>;
+
+  /** Every sample in the library, oldest first. */
+  listSamples(): Promise<Sample[]>;
+  /** A new sample with its audio (a WAV file). */
+  createSample(args: CreateSampleArgs, wav: Uint8Array): Promise<Sample>;
+  /** Rename a sample or change its settings (its audio never changes). */
+  updateSample(args: UpdateSampleArgs): Promise<Sample>;
+  /** Delete a sample; sketches whose notes played with it go back to the piano. */
+  removeSample(id: string): Promise<void>;
+  /** Play a sketch's notes with a library sample (null: the built-in piano). */
+  setNoteSample(id: string, sampleId: string | null): Promise<Sketch>;
 }
 
 /** Where the derived analysis WAV for a recording lives. */

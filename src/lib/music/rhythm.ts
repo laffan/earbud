@@ -1,6 +1,7 @@
 /**
- * Rhythm sketches: what is tapped on the three pads, turned into a step
- * pattern.
+ * Rhythm sketches: what is tapped on the four pads, turned into a step
+ * pattern. Each pad sounds a built-in drum (kick, snare, hat, clap) or a
+ * sample from the library (`RhythmPattern.samples`).
  *
  * 1. The tempo comes from the taps (`detectTempo`, the same detector as for
  *    played notes; a weaker fit is accepted than for a recording, since taps
@@ -36,6 +37,11 @@ export interface RhythmPattern {
   pads: number[][];
   /** Every second 16th is played this fraction of a step late (0 = straight; ⅓ ≈ triplet feel). */
   swing?: number;
+  /**
+   * The library sample each pad plays instead of its own sound (by sample
+   * id; null or missing = the pad's own sound, also when the sample is gone).
+   */
+  samples?: (string | null)[];
 }
 
 /** A pad struck while recording: which one, and when (seconds, any origin). */
@@ -51,11 +57,29 @@ export interface PadInfo {
 }
 
 export const PADS: PadInfo[] = [
-  // Labelled by number, not by drum: the sounds are a kick, a snare and a closed hi-hat (drums.ts, MIDI 36/38/42).
+  // Labelled by number, not by drum: the sounds are a kick, a snare, a closed hi-hat and a clap (drums.ts, MIDI 36/38/42/39).
   { name: 'Beat 1', keys: ['1', 'j'] },
   { name: 'Beat 2', keys: ['2', 'k'] },
   { name: 'Beat 3', keys: ['3', 'l'] },
+  { name: 'Beat 4', keys: ['4', ';'] },
 ];
+
+/** The built-in sound of each pad, in words. */
+export const PAD_SOUNDS = ['Kick', 'Snare', 'Hi-hat', 'Clap'];
+
+const SAMPLE_ID = /^[0-9a-f]{32}$/;
+
+/** The sample a pad plays (null: its own sound). */
+export function padSample(p: Pick<RhythmPattern, 'samples'>, pad: number): string | null {
+  const id = p.samples?.[pad];
+  return typeof id === 'string' && SAMPLE_ID.test(id) ? id : null;
+}
+
+/** The pattern with pad `pad` playing `sample` (null: its own sound again). */
+export function withPadSample(p: RhythmPattern, pad: number, sample: string | null): RhythmPattern {
+  const samples = PADS.map((_, i) => (i === pad ? sample : padSample(p, i)));
+  return { ...p, samples: samples.some((x) => x !== null) ? samples : undefined };
+}
 
 export const STEPS_PER_BEAT = 4;
 export const BEATS_PER_BAR = 4;
@@ -130,7 +154,9 @@ export function normalizePattern(raw: unknown): RhythmPattern | null {
     return Array.from({ length: steps }, (_, s) => clamp(Number(row[s]) || 0, 0, 1));
   });
   const lengthBars = Math.round(Number(r.lengthBars));
+  const samples = PADS.map((_, i) => padSample(r, i));
   return {
+    ...(samples.some((x) => x !== null) ? { samples } : {}),
     version: 1,
     bpm: clamp(bpm, MIN_BPM, MAX_BPM),
     stepsPerBeat,

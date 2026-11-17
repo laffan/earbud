@@ -18,11 +18,14 @@
   import { detectChords, type ChordSegment } from '../music/chords';
   import { detectKey, spellChord } from '../music/key';
   import { notesEndTime } from '../music/notes';
-  import { NoteSynth } from '../music/synth';
+  import { NoteSynth, type Instrument } from '../music/synth';
   import { confidentTempo, nearestBeat } from '../music/tempo';
   import { AudioEngine, type EngineTrack } from '../playback/audioEngine';
   import { loadTakeBuffer, stretchBuffer } from '../playback/takeBuffers';
   import { TakeSource } from '../playback/takeSource.svelte';
+  import { bufferData, cutMono, cutSample } from '../samples/extract';
+  import { pitchedSample, playOnce, scheduleSampleNote } from '../samples/render';
+  import { sampleTitle } from '../samples/settings';
   import { VideoFollower } from '../playback/videoFollower';
   import { errorMessage } from '../platform/tauri';
   import { app } from '../state/app.svelte';
@@ -31,6 +34,7 @@
   import Icon from './Icon.svelte';
   import { RollViewport } from './rollViewport.svelte';
   import Sheet from './Sheet.svelte';
+  import { registerTransport } from './transport';
   import TempoSheet from './TempoSheet.svelte';
   import TrackPanel, { type ListenMode } from './TrackPanel.svelte';
   import { displayTitle, formatClock, formatDate, formatDuration, formatTimeOfDay } from './format';
@@ -107,29 +111,34 @@
    * Every sound of the sketch: the tracks' recordings and the synth, on one
    * audio clock. The waveforms, piano rolls, video and click follow it.
    */
-  const engine = new AudioEngine({
-    onState: (state) => {
-      currentTime = state.position;
-      buffering = state.buffering;
-      if (state.playing !== playing) {
-        playing = state.playing;
-        if (!playing) click.stop();
-        else if (showTempo) click.start();
-      }
-      video.update(state.position, state.playing && !state.buffering, rate);
-    },
-    onFrame: (position, playbackRate) => {
-      synth.pump();
-      if (showTempo) click.tick(position, playbackRate);
-      video.update(position, true, playbackRate);
-    },
-    onCue: (clock) => {
-      if (clock && synthOn) synth.cue(clock);
-      else synth.stop();
-    },
-    stretch: stretchBuffer,
-    log: (message) => app.logCapture(`[playback] ${message}`),
-  });
+  function makeEngine(): AudioEngine {
+    const made: AudioEngine = new AudioEngine({
+      onState: (state) => {
+        if (made !== engine) return;
+        currentTime = state.position;
+        buffering = state.buffering;
+        if (state.playing !== playing) {
+          playing = state.playing;
+          if (!playing) click.stop();
+          else if (showTempo) click.start();
+        }
+        video.update(state.position, state.playing && !state.buffering, rate);
+      },
+      onFrame: (position, playbackRate) => {
+        synth.pump();
+        if (showTempo) click.tick(position, playbackRate);
+        video.update(position, true, playbackRate);
+      },
+      onCue: (clock) => {
+        if (clock && synthOn) synth.cue(clock);
+        else synth.stop();
+      },
+      stretch: stretchBuffer,
+      log: (message) => app.logCapture(`[playback] ${message}`),
+    });
+    return made;
+  }
+  let engine = makeEngine();
   const synth = new NoteSynth({ context: () => engine.context, destination: () => engine.input });
   const video = new VideoFollower({
     // WebKit can play a file URL it cannot seek in; an in-memory copy can.
@@ -265,8 +274,9 @@
     return waiting ? ('pending' as const) : ('empty' as const);
   });
 
-  function playPitches(pitches: number[], spread: number) {
-    synth.playChord(pitches, 80, 1.6, spread);
+  function playPitches(pitches: number[], spread: number, instrument: Instrument = 'piano') {
+    synth.unlock();
+    synth.playChord(pitches, 80, 1.6, spread, instrument);
   }
   const anyEdits = $derived(playable.some((e) => e.take.hasEdits));
 
@@ -287,6 +297,97 @@
       else if (engine.clock) synth.cue(engine.clock);
     });
   });
+
+  // ---------------------------------------------------------- samples
+
+  /** The library sample the notes play with (null: the piano). */
+  const noteSampleId = $derived(app.sketches.find((s) => s.id === id)?.noteSampleId ?? detail?.noteSampleId ?? null);
+  const noteSample = $derived(app.sample(noteSampleId));
+  let choosingSample = $state(false);
+
+  // The synth plays notes with the sample (resampled to each note), or the piano.
+  $effect(() => {
+    const sample = noteSample;
+    untrack(() => {
+      if (!sample) {
+        synth.setSampler(null);
+        return;
+      }
+      pitchedSample(engine.context, sample).then(
+        (pitched) => {
+          if (!disposed && app.sample(noteSampleId)?.updatedAt === sample.updatedAt) synth.setSampler(pitched);
+        },
+        (error) => app.logCapture(`[playback] could not prepare the sample for the notes: ${errorMessage(error)}`),
+      );
+    });
+  });
+
+  /** A take's decoded sound, decoding it now if it was not yet. */
+  async function takeSound(take: Sketch): Promise<AudioBuffer> {
+    const ready = buffers[take.id];
+    if (ready) return ready;
+    const capture = app.exportDeps().capture;
+    return loadTakeBuffer(engine.context, { mediaPath: take.mediaPath, analysisPath: take.analysisPath, hasVideo: take.hasVideo }, {
+      exportAudio: capture?.exportAudio ? (media, out) => capture.exportAudio!(media, out) : undefined,
+    });
+  }
+
+  /** A passage of a take (its own time) into the sample library. */
+  async function addSample(take: Sketch, from: number, to: number) {
+    try {
+      const cut = cutSample(bufferData(await takeSound(take)), from, to);
+      await app.addSample(
+        {
+          title: sampleTitle(title || displayTitle({ title: '', createdAt: take.createdAt }), from + take.offsetMs / 1000),
+          durationMs: cut.durationMs,
+          sourceSketchId: id,
+          sourceStartMs: Math.round(from * 1000),
+          sourceEndMs: Math.round(to * 1000),
+          settings: { ...cut.settings },
+        },
+        cut.wav,
+      );
+    } catch (error) {
+      app.toast(`Could not cut the sample: ${errorMessage(error)}`, 'error');
+    }
+  }
+
+  let stopPreview: (() => void) | null = null;
+  /** Hear a passage of a take (its own time), as it would be cut. */
+  async function previewSample(take: Sketch, from: number, to: number) {
+    if (engine.needsRenewal) renewAudio(`context ${engine.contextState}`);
+    engine.unlock();
+    stopPreview?.();
+    try {
+      const ctx = engine.context;
+      const sound = await takeSound(take);
+      const mono = cutMono(bufferData(sound), from, to);
+      const buffer = ctx.createBuffer(1, Math.max(1, mono.length), sound.sampleRate);
+      buffer.copyToChannel(mono, 0);
+      stopPreview = playOnce(ctx, engine.input, buffer);
+    } catch (error) {
+      app.toast(`Could not play the passage: ${errorMessage(error)}`, 'error');
+    }
+  }
+
+  async function chooseNoteSample(sampleId: string | null) {
+    choosingSample = false;
+    await app.setNoteSample(id, sampleId);
+    if (sampleId && listen === 'recording') {
+      // Choosing a sound for the notes is asking to hear them.
+      setListen('notes');
+      app.toast('Playing the notes (Notes). Choose Take or Both to change.');
+    }
+  }
+
+  /** Hear a sample from the picker: a chord on its root, as notes would play it. */
+  async function auditionSample(sample: (typeof app.samples)[number]) {
+    synth.unlock();
+    const pitched = await pitchedSample(engine.context, sample);
+    const root = Math.round(pitched.root);
+    const ctx = engine.context;
+    for (const [k, p] of [root, root + 4, root + 7].entries()) scheduleSampleNote(ctx, engine.input, pitched, p, 90, ctx.currentTime + 0.02 + k * 0.18, 0.5);
+  }
 
   // --------------------------------------------------------------- ui
   let showMenu = $state(false);
@@ -344,12 +445,22 @@
 
   onMount(() => {
     void load();
+    // The Chords section can play guitar shapes: their recordings load in the background.
+    synth.preloadGuitar();
     // The playback gesture requests WebKit's playback session. The capture
     // flow switches back to automatic selection before starting the recorder.
+    document.addEventListener('visibilitychange', onVisibility);
+    const unregister = registerTransport(onSpace);
+    return () => {
+      unregister();
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   });
 
   onDestroy(() => {
     disposed = true;
+    window.clearTimeout(watchdog);
+    stopPreview?.();
     window.clearTimeout(notesTimer);
     if (detail && textNotes !== detail.textNotes) void app.saveNotesText(id, textNotes);
     if (tempoTimer !== undefined) void saveTempo();
@@ -382,10 +493,61 @@
     video.update(currentTime, playing && !buffering, rate);
   }
 
+  /**
+   * A fresh audio context, inside a tap: after the app was in the background
+   * (or the system interrupted the audio) WebKit can leave the old one
+   * suspended for good, and play then did nothing. Decoded buffers are kept.
+   */
+  function renewAudio(reason: string) {
+    const old = engine;
+    const at = currentTime;
+    old.pause();
+    synth.stop();
+    engine = makeEngine();
+    old.dispose();
+    synth.rebind();
+    app.logCapture(`[playback] new audio context (${reason}; the last one was ${old.contextState})`);
+    engine.setTracks(engineTracks);
+    engine.setDuration(duration);
+    engine.setRange(cropStart ?? 0, cropEnd);
+    engine.setLoop(loopPlayback);
+    engine.setRate(rate);
+    engine.seek(at);
+  }
+
   function togglePlay() {
     // Wake the audio inside this tap (WebKit starts audio only in a gesture).
-    if (!playing) engine.unlock();
+    if (engine.needsRenewal) renewAudio(`context ${engine.contextState}`);
+    engine.unlock();
     engine.toggle();
+    if (playing) watchStart();
+  }
+
+  let watchdog: number | undefined;
+  /** If the audio context still does not run after a while, say so and use a fresh one on the next tap. */
+  function watchStart() {
+    window.clearTimeout(watchdog);
+    const watched = engine;
+    watchdog = window.setTimeout(() => {
+      if (watched !== engine || !playing || engine.contextState === 'running') return;
+      app.logCapture(`[playback] no sound after 2 s (context ${engine.contextState}); a fresh context on the next tap`);
+      engine.markStale();
+      engine.pause();
+      app.toast('The sound did not start. Tap play again.', 'error');
+    }, 2000);
+  }
+
+  /** The space bar (see transport.ts): with the tempo sheet open, the click comes too. */
+  function onSpace() {
+    if (showTempo) togglePlayWithClick();
+    else togglePlay();
+  }
+
+  /** Hidden (another app, the lock screen): stop, and start the sound afresh on the next tap. */
+  function onVisibility() {
+    if (document.visibilityState !== 'hidden') return;
+    engine.pause();
+    engine.markStale();
   }
 
   function seek(t: number) {
@@ -550,17 +712,7 @@
     app.shareSketches([id]);
   }
 
-  function onKey(e: KeyboardEvent) {
-    const target = e.target as HTMLElement;
-    if (target.closest('input, textarea')) return;
-    if (e.key === ' ' && !e.repeat) {
-      e.preventDefault();
-      togglePlay();
-    }
-  }
 </script>
-
-<svelte:window onkeydown={onKey} />
 
 <div class="sketch-view">
   <header class="bar">
@@ -637,6 +789,10 @@
               oncropchange={onCropChange}
               onnotes={(notes) => (takeNotes = { ...takeNotes, [take.id]: notes })}
               {spell}
+              onaddsample={(from, to) => addSample(take, from, to)}
+              onpreviewsample={(from, to) => previewSample(take, from, to)}
+              onchoosesample={() => (choosingSample = true)}
+              noteSampleName={noteSample ? noteSample.title || 'Sample' : null}
             />
           {/if}
         {/each}
@@ -755,6 +911,36 @@
     onrate={setRate}
     onclose={closeTempo}
   />
+{/if}
+
+{#if choosingSample}
+  <Sheet title="Play the notes with" onclose={() => (choosingSample = false)}>
+    <ul class="sample-choices" role="listbox" aria-label="Sound for the notes">
+      <li>
+        <button class="choice" role="option" aria-selected={!noteSampleId} onclick={() => chooseNoteSample(null)}>
+          <span class="check">{#if !noteSampleId}<Icon name="check" size={16} />{/if}</span>
+          <span class="choice-name">Piano <span class="dim">(built in)</span></span>
+        </button>
+      </li>
+      {#each app.samples as s (s.id)}
+        <li>
+          <button class="choice" role="option" aria-selected={noteSampleId === s.id} onclick={() => chooseNoteSample(s.id)}>
+            <span class="check">{#if noteSampleId === s.id}<Icon name="check" size={16} />{/if}</span>
+            <span class="choice-name">{s.title || 'Sample'}</span>
+          </button>
+          <button class="icon-button" onclick={() => auditionSample(s)} aria-label="Hear {s.title || 'the sample'}"><Icon name="play" size={16} /></button>
+        </li>
+      {/each}
+    </ul>
+    {#if app.samples.length === 0}
+      <p class="confirm-text">
+        No samples yet. Hold <kbd>Ctrl</kbd> and drag across the waveform (or press and hold it for two seconds), then
+        <em>Add to library</em>.
+      </p>
+    {:else}
+      <p class="sample-hint">Each note plays the sample from its root note (set in the sample's editor), faster for higher notes and slower for lower ones.</p>
+    {/if}
+  </Sheet>
 {/if}
 
 {#if confirmation}
@@ -1093,6 +1279,55 @@
   .confirm-actions {
     display: flex;
     gap: 8px;
+  }
+  .sample-choices {
+    list-style: none;
+    margin: 0 0 8px;
+    padding: 0;
+    display: grid;
+    gap: 2px;
+    max-height: 50vh;
+    overflow-y: auto;
+  }
+  .sample-choices li {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .choice {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px;
+    border-radius: var(--radius-sm);
+    text-align: left;
+  }
+  .choice:hover {
+    background: var(--paper-sunk);
+  }
+  .choice .check {
+    width: 16px;
+    color: var(--accent);
+    display: inline-grid;
+  }
+  .choice-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .sample-hint {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--ink-3);
+  }
+  kbd {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    padding: 1px 5px;
+    border-radius: 4px;
+    border: 1px solid var(--rule-strong);
   }
 
   /* Wide screens: the take and the notes side by side under the tracks. */

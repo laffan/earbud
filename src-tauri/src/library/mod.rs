@@ -13,6 +13,8 @@
 //!     take-audio.m4a|wav      the take's audio track (on export)
 //!     exports/                friendly-named hard links handed to share/save
 //!   (every take of a multi-track sketch has a folder like this of its own)
+//!   samples/<id>/sample.wav   the sample library: sounds cut from recordings
+//!                             (see `samples.rs`)
 //!   inbox/                    recordings received from the Apple Watch,
 //!                             waiting to be imported as sketches
 //! ```
@@ -21,6 +23,7 @@
 //! with `cargo test` on any host.
 
 pub mod models;
+mod samples;
 mod schema;
 
 use std::fs;
@@ -81,7 +84,7 @@ pub struct Library {
     conn: Mutex<Connection>,
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -90,7 +93,7 @@ fn now_ms() -> i64 {
 
 /// Accept only the ids this library generates (uuid v4, simple format) so an
 /// id can never be used to escape the sketches directory.
-fn validate_id(id: &str) -> Result<()> {
+pub(crate) fn validate_id(id: &str) -> Result<()> {
     if id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()) {
         Ok(())
     } else {
@@ -125,7 +128,7 @@ pub fn safe_file_stem(name: &str) -> String {
 }
 
 /// A fresh id in the same form as sketch ids (uuid v4, 32 hex characters).
-fn new_id() -> String {
+pub(crate) fn new_id() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
 
@@ -204,6 +207,7 @@ impl Library {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         fs::create_dir_all(root.join("sketches"))?;
+        fs::create_dir_all(root.join(samples::SAMPLES_DIR))?;
         let mut conn = Connection::open(root.join(DB_FILE))?;
         schema::migrate(&mut conn)?;
         Ok(Library {
@@ -212,7 +216,7 @@ impl Library {
         })
     }
 
-    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+    pub(crate) fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
         // A panic while holding the lock leaves SQLite itself consistent, so
         // recover the guard instead of poisoning the whole library.
         self.conn.lock().unwrap_or_else(|e| e.into_inner())
@@ -554,6 +558,7 @@ impl Library {
             canvas_w: row.get("canvas_w")?,
             canvas_h: row.get("canvas_h")?,
             listen_mode: row.get("listen_mode")?,
+            note_sample_id: row.get("note_sample_id")?,
             id,
         })
     }
@@ -1004,7 +1009,7 @@ impl Library {
                                        crop_start_ms, crop_end_ms, parent_id, track_id, offset_ms, count_in_ms,
                                        tempo_bpm, beat_ms, tempo_source, notebook_id, canvas_x_ms, canvas_y,
                                        kind, rhythm_json, canvas_repeats, canvas_w, canvas_h, listen_mode,
-                                       canvas_volume)
+                                       canvas_volume, note_sample_id)
                  SELECT ?2, title, created_at, ?3, status, duration_ms, media_file,
                         media_mime, has_video, video_width, video_height, text_notes,
                         CASE transcription_status WHEN 'running' THEN 'pending' ELSE transcription_status END,
@@ -1012,7 +1017,7 @@ impl Library {
                         crop_start_ms, crop_end_ms, NULL, ?4, offset_ms, count_in_ms,
                         tempo_bpm, beat_ms, tempo_source, ?5, ?6, ?7,
                         kind, rhythm_json, canvas_repeats, canvas_w, canvas_h, listen_mode,
-                        canvas_volume
+                        canvas_volume, note_sample_id
                    FROM sketches WHERE id = ?1",
                 params![args.id, id, now, new_track, args.notebook_id, x, y],
             )?;

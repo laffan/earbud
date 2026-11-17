@@ -161,12 +161,12 @@
   }
 
   function drawRhythm(g: CanvasRenderingContext2D, p: RhythmPattern, from: number, to: number) {
-    const rows = 3;
+    const rows = p.pads.length;
     const rowH = (WAVE_H - 6) / rows;
     const step = stepSeconds(p);
     const bar = barSeconds(p);
     const cycle = patternSteps(p) * step;
-    const colors = [color('--ink-2', '#5b554c'), color('--accent', '#c8453a'), color('--chord', '#6d5226')];
+    const colors = [color('--ink-2', '#5b554c'), color('--accent', '#c8453a'), color('--chord', '#6d5226'), color('--note', '#2e4a66')];
     // Bars faint; where the pattern repeats, a dashed line instead.
     g.fillStyle = color('--rule', '#dcd3c3');
     g.globalAlpha = 0.5;

@@ -89,6 +89,8 @@ body {
   -webkit-tap-highlight-color: transparent;
   -webkit-text-size-adjust: 100%;
   overscroll-behavior-y: none;
+  /* Scrolling, but never pinch- or double-tap-zooming the page: only the canvas and the piano rolls zoom. */
+  touch-action: pan-x pan-y;
 }
 
 body {

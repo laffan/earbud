@@ -23,7 +23,8 @@
     "smoke:listen": "node scripts/listen-mode-check.cjs",
     "smoke:notebook": "node scripts/notebook-check.cjs",
     "smoke:watch": "node scripts/watch-link-smoke.mjs",
-    "fake-watch": "node scripts/fake-watch.mjs"
+    "fake-watch": "node scripts/fake-watch.mjs",
+    "smoke:samples": "node scripts/samples-check.cjs"
   },
   "license": "MIT",
   "dependencies": {

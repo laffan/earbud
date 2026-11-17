@@ -6,6 +6,7 @@ platform code and AI models can be replaced independently.
 ```
 ┌──────────────────────────── UI (Svelte) ────────────────────────────┐
 │ Notebook canvas · Recorder · Rhythm pads · Sketch view · Reference  │
+│ Sample library (src/lib/samples)                                    │
 └──────┬───────────────────────┬──────────────────────┬───────────────┘
        │ app state / capture flow (src/lib/state)     │
 ┌──────▼──────────┐  ┌─────────▼─────────┐  ┌─────────▼────────────────┐
@@ -135,7 +136,9 @@ Pure TypeScript, no UI or platform dependencies, unit tested.
 - `midi.ts`: Standard MIDI File export via `@tonejs/midi`.
 - `summary.ts`: per-sketch digest (note count, chord progression, pitch range, ≤240 preview notes) stored in
   SQLite so the list can draw mini piano rolls without loading every note.
-- `synth.ts`: Web Audio piano-ish voice. `NoteSynth` plays notes in step with playback by following the playback
+- `synth.ts`: Web Audio piano-ish voice, or a library sample (`setSampler`: every note, preview and audition is then
+  `scheduleSampleNote`; `renderNotesBuffer` / `renderNotesToWav` take the same `sampler` for the canvas and the
+  *Notes audio* export). `playChord` takes an instrument: the note voice, the piano, or the guitar. `NoteSynth` plays notes in step with playback by following the playback
   engine's clock mapping (`cue(mapping)`, then `pump()` every frame) on the engine's own audio context, so notes and
   recordings share one clock and need no drift correction. A mapping that takes over in the future (the next pass of
   a loop) lets the notes before the switch play out; notes never start past the pass's end (`until`). At most 48
@@ -176,12 +179,22 @@ Pure TypeScript, no UI or platform dependencies, unit tested.
   taken off). Used by the rhythm panel and the rhythm view; unit tested with a fake clock.
 - Swing (`swing` in the pattern, 0–0.5): every second 16th is that fraction of a step late (`stepTime`), in playback,
   on the canvas, in the rendered audio and in the MIDI export.
-- `drums.ts`: the pads' sounds (kick: a sine falling 150 → 45 Hz with a click; snare: high-passed noise over a
-  short triangle; hat: high-passed noise), each rendered once per sample rate into a 0.6 s one-shot with an
-  `OfflineAudioContext`. `DrumKit` strikes the one-shots live (no synthesis on the hit), and `mixRhythm` renders a
-  rhythm by adding them at its hits in plain JS (unit tested), so what is heard while tapping is what the canvas
-  plays. `rhythmToWav` is the same mix as a WAV for export (scaled down only if it would clip); `rhythmToMidi`
-  (`midi.ts`) writes the hits as General MIDI drums (36, 38, 42) on channel 10 at the rhythm's tempo.
+- `drums.ts`: the four pads' sounds (kick: a sine falling 150 → 45 Hz with a click; snare: high-passed noise over a
+  short triangle; hat: high-passed noise; clap: three quick bursts of band-passed noise and a short tail), each
+  rendered once per sample rate into a 0.6 s one-shot with an `OfflineAudioContext`. A pad can play a library sample
+  instead (`RhythmPattern.samples[pad]`, a sample id; `padSounds` asks a `PadSampleSource` for its rendered sound and
+  falls back to the pad's own when it is gone). `DrumKit` strikes the one-shots live (no synthesis on the hit;
+  `setPadSound` replaces a pad's), and `mixRhythm` renders a rhythm by adding the pads' sounds at its hits in plain
+  JS (unit tested), so what is heard while tapping is what the canvas plays. `rhythmToWav` is the same mix as a WAV
+  for export (scaled down only if it would clip); `rhythmToMidi` (`midi.ts`) writes the hits as General MIDI drums
+  (36, 38, 42, 39; a pad playing a sample keeps its note) on channel 10 at the rhythm's tempo. Patterns from before
+  the fourth pad are read with an empty fourth row (`normalizePattern`).
+- `guitar.ts`: guitar shapes played as a guitar: eleven recorded steel-string notes (`public/sounds/guitar/<midi>.mp3`,
+  E2–A♭5 a major third apart; Fluid R3, see its README), fetched and decoded once (the buffers belong to no
+  context), the encoder's leading silence cut. `strumGuitar` plays each chord note from the nearest recording
+  (`nearestZone`, at most two semitones away) through `scheduleSampleNote`, lowest string first, 28 ms apart.
+  `NoteSynth.playChord(…, 'guitar')` uses it once loaded (`preloadGuitar` on opening the sketch view and the
+  Reference section) and the piano until then.
 - `tempo.ts`: tempo and beat from notes. Note starts within 50 ms are one onset, weighted by loudness and count.
   Candidate beat periods (50–200 BPM) come from the autocorrelation of a 10 ms onset-strength signal, supported by
   the repeat at twice the period and weighted towards moderate tempos (log-normal around 100 BPM, 0.9 octaves wide)
@@ -189,6 +202,29 @@ Pure TypeScript, no UI or platform dependencies, unit tested.
   (on beats fully, on half beats half). Confidence is the share of onset weight within 45 ms of a beat or half beat,
   rescaled so that randomly placed notes score about 0: steady synthesized playing scores about 1, random notes
   0.2–0.3, and under 0.5 counts as no tempo.
+
+- `selection.ts` also has `auditionNotes`: what to play when selected notes move (those sounding at the playhead,
+  else those struck within 70 ms of the selection's start; one per pitch, at most ten).
+
+## 3b. Samples (`src/lib/samples`, `src/lib/audio/pitch.ts`)
+
+- `settings.ts`: a sample's settings (`SampleSettings`: trim, level, attack, decay, release, reverb amount and room,
+  low- and high-pass, transposition, reverse, normalize, root note and its cents), read defensively
+  (`normalizeSampleSettings`). The JS half of rendering is here and unit tested: `shapeSample` trims, reverses,
+  normalizes (to −1 dBFS) and applies the envelope (`envelopeAt`: linear attack, an exponential decay to about
+  −35 dB over `decay` seconds, a linear release at the end) and the level. `playedRoot` is the pitch notes are played
+  from (root + cents + transposition); `rateFor(root, pitch) = 2^((pitch − root)/12)`.
+- `render.ts`: reading a sample's stored audio (a mono WAV, decoded in JS and cached), rendering it with its
+  settings (`renderSampleData`: `shapeSample`, then, only if needed, an `OfflineAudioContext` for transposition by
+  `playbackRate` (which also converts the rate), the filters and the reverb, a convolution with a fixed-seed noise
+  burst decaying over the room's length), cached per (id, `updatedAt`, rate); `pitchedSample` (a buffer and its
+  root); `scheduleSampleNote` (one note: resampled, held for its length then released over 0.12 s, or until the
+  sample ends) and `playOnce`.
+- `extract.ts`: cutting [from, to) of a take's decoded sound to mono, a 16-bit WAV, with first settings: its root
+  note from `detectPitch`.
+- `audio/pitch.ts`: YIN on frames (decimated to ≤ 24 kHz) across the loudest part after a 30 ms attack; frames
+  agreeing within a semitone of the median vote, their share is the confidence (< 0.4: no pitch). Unit tested on
+  synthesized plucked tones from E2 to C6 (within 3 cents), at other rates, detuned, and on noise and silence.
 
 ## 4. Sketch Library (`src-tauri/src/library`, `src/lib/library`)
 
@@ -236,6 +272,13 @@ Tables:
   id (keeping the recording date), with its transcription (edits included) and, for a recording, a new track; a
   transcription that was running is copied as pending. Only the sketch's own recording is copied, not takes of other
   tracks. `prepare_export` reports a missing recording (a rhythm has none) instead of failing.
+- The sample library (schema v10, `samples.rs`): a `samples` table (title, timestamps, `duration_ms`, where it was cut
+  from, `settings_json`, opaque to Rust, at most 16 KB) and `library/samples/<id>/sample.wav`, written once by
+  `write_sample_audio` (raw IPC body with an `x-sample-id` header; it must be a RIFF/WAVE file under 24 MB). The
+  asset protocol's scope includes `$APPDATA/library/samples/**`. `note_sample_id` on the sketch row is the sample its
+  notes play with (`set_note_sample`; copied by `duplicate_sketch`); `delete_sample` clears it on every sketch and
+  removes the folder. Rhythm patterns name their pads' samples inside `rhythm_json`. `MemoryLibrary` mirrors all of it
+  with blob URLs.
 - Tempo (schema v4, on the sketch row): `tempo_bpm`, `beat_ms` (where one beat falls on the timeline) and
   `tempo_source`: `count-in` (set when a new sketch is recorded with a count-in: its tempo, a beat on the
   downbeat), `detected` (by `tempo.ts` from the first recording's notes after each transcription of it, replacing
@@ -357,13 +400,34 @@ which makes the whole UI testable in Chromium.
   through `routeOutput`, which calls `setSinkId` with the chosen output where it exists (Chromium) and again when
   the choice changes (`setOutputDevice`, from `app.updateSettings`). On iOS the settings are kinds, passed to the
   native recorder as `audioInput` / `audioOutput` (see `docs/IOS.md`).
+- The space bar (`transport.ts`): one capture-phase listener installed by `App.svelte`. Views register a toggle while
+  shown (`registerTransport`; the last registered wins: the rhythm panel over the canvas, the sample editor over the
+  library). Space typed into text entry (`isTextEntry`: text-like inputs, text areas, editable content) is left
+  alone; otherwise the key's default is prevented on key down and key up, so a focused button is not also clicked
+  (which made play toggle twice), and repeats are ignored.
+- Page zoom (`blockPageZoom`, also from `App.svelte`): the viewport's `maximum-scale=1, user-scalable=no`,
+  `touch-action: pan-x pan-y` on the page, and prevented defaults for WebKit's `gesture*` events, two-finger
+  `touchmove`, ctrl + wheel (a trackpad pinch) and ⌘/Ctrl with + − = 0. The canvas and the piano roll zoom with their
+  own pointer and wheel handlers, which still receive these events.
+- Audio contexts that may be stuck: WebKit can leave a context that the system suspended or interrupted (background,
+  a call, the native recorder) silent for good. `AudioEngine.needsRenewal` (closed, interrupted, suspended after it
+  had run, or `markStale()`d) tells the canvas and the sketch view to make a new engine inside the tap that plays
+  (decoded buffers are handed over; the sketch view's synth is `rebind()`ed to the new context and keeps its sampler);
+  both mark their engine stale when the page is hidden and after 2 s of asking to play without a running context.
+  `LiveContext` (`audio/liveContext.ts`) does the same for views with their own context (the rhythm view, the rhythm
+  panel, the sample library): `wake()` in a tap renews when needed and calls `onRenew` to rebuild the graph (kit,
+  player, limiter).
 - Text selection: `body` sets `user-select: none` (and `-webkit-touch-callout: none`), so taps, holds and drags
   never select UI text or open the iOS callout; inputs, text areas and `.selectable` (the diagnostics log) opt back in.
 - `RhythmView.svelte`: a rhythm opened full size (the app routes a sketch of kind `rhythm` here instead of the sketch
-  view). Its own audio context and `DrumKit` through a limiter, a `RhythmPlayer`; edits go through an undo stack
-  and are saved 0.5 s after the last one (`update_rhythm`). The step grid shows one pad and one bar; a press on a
-  step becomes a velocity drag once it moves 6 px vertically (160 px from silent to full, one undo step per drag),
-  otherwise a tap toggles it.
+  view). Its own `LiveContext` and `DrumKit` through a limiter, a `RhythmPlayer`; edits go through an undo stack
+  and are saved 0.5 s after the last one (`update_rhythm`). The bars are a full-width horizontal carousel (CSS scroll
+  snapping, each bar `min(440px, 100vw − 64px)` wide, padded so the first and last can sit in the middle); the bar
+  nearest the middle is the one edited (`page`), found on scroll; swiping stops it following playback, and the
+  overview, ← →, a tap on a side bar's step and playback scroll it there. Steps have `touch-action: pan-x`: a sideways
+  swipe scrolls (the browser cancels the press, which changes nothing), a vertical drag of 6 px sets the velocity
+  (160 px from silent to full, one undo step per drag), otherwise a tap toggles it. *Sound* picks the pad's sample
+  (`withPadSample`); the kit loads the samples' renderings when the pattern or a sample changes.
 - `CanvasTile.svelte`: a sketch on the canvas, its title over its waveform (Take/Both), a miniature piano roll
   (Notes), or its rhythm hits. The waveform uses recording-only peaks, 100 per second. Notes reflect edits, crop,
   count-in and repeats; repeats after the first are lighter. Only the part in view is drawn.
@@ -379,14 +443,29 @@ which makes the whole UI testable in Chromium.
   (own audio context, unlocked in each tap). Recording collects `{ time, pitches, symbol }` per tap
   (`performance.now()`), then `app.saveChordSketch` turns them into a sketch at the end of the open notebook. Spelling:
   flats for roots named flat, else the names of the chord's key.
-- `RhythmModal.svelte`: the draggable rhythm panel: pads (pointer-down strikes, so taps are timed by the event's
+- `RhythmModal.svelte`: the draggable rhythm panel: four pads (pointer-down strikes, so taps are timed by the event's
   timestamp), then the step sequencer, previewed with a 25 ms look-ahead scheduler that reads the pattern on every
-  tick (edits play at once).
+  tick (edits play at once). Its own `LiveContext` (it used to borrow the canvas's context).
+- `SampleLibraryView.svelte` (route `#/samples`, from the button between Reference and Settings): a grid of samples
+  (`SampleWave.svelte` draws the trimmed part of each one's stored audio). A tap plays the rendered sample
+  (`sampleBuffer`, `playOnce`) through a limiter in its own `LiveContext`; a 500 ms hold or a right-click opens its
+  menu (edit, delete). `SampleEditor.svelte`: the settings as sliders and the trim handles, saved 400 ms after the last
+  change (`app.updateSample`, which bumps the revision of every sketch playing the sample so the canvas renders it
+  again); play renders the current settings directly.
+- `Waveform.svelte` with `onaddsample`: Ctrl held (tracked from key events, or on the press) turns a press into a
+  selection drag; a press held 2 s without moving (8 px) starts one from its point (the magnifier closes). The
+  selection is clamped to the take's sound and 60 s, has draggable edges, and a fixed-position tooltip (play, *Add
+  to library*, length, ×). `SketchView` cuts the take's decoded buffer (`cutSample`) and calls `app.addSample`.
+- `TrackPanel.svelte`: the roll is always editing once there are notes and none are being transcribed; *Use sample…*
+  in its menu opens the sketch view's picker (`app.setNoteSample`; choosing a sample while *Take* is selected
+  switches to *Notes*). `PianoRoll` reports `onaudition` with `auditionNotes(moved, playhead)` whenever what that
+  would play changes during a drag (or once at the drop), and on every keyboard nudge; a tap on empty space clears
+  the selection and seeks.
 - `pipeline/processingQueue.ts`: one job at a time, paused while recording, and cancellable. Each job runs analysis
   audio, then `engine.transcribe`, then `summarize` + `save_transcription`, then the MIDI file. Failures only set
   `transcription_status = failed`.
 - `PianoRoll.svelte`: canvas renderer and gesture handling (seek, pan, pinch/ctrl-wheel zoom, select, move,
-  resize, double-tap to add, keyboard editing). It follows the playhead and lights sounding notes and keys (chord
+  resize, double-tap to add, keyboard editing; the sketch view's roll is always in edit mode). It follows the playhead and lights sounding notes and keys (chord
   names are in the track's chord strip, not on the roll). In edit mode the selection is a list of note indices: a one-finger drag on empty space draws a
   selection rectangle (Shift adds; the view scrolls when the rectangle reaches an edge), dragging a selected note
   moves or resizes the whole selection rigidly, and panning moves to two fingers, the wheel and the time ruler.

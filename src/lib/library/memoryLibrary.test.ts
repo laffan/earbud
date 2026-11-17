@@ -69,3 +69,39 @@ describe('MemoryLibrary on the canvas', () => {
     expect(resolveObjectURL(detail.mediaPath!)).toBeTruthy();
   });
 });
+
+describe('MemoryLibrary samples', () => {
+  const wav = () => {
+    const bytes = new Uint8Array(48);
+    bytes.set([...'RIFF'].map((c) => c.charCodeAt(0)), 0);
+    bytes.set([...'WAVE'].map((c) => c.charCodeAt(0)), 8);
+    return bytes;
+  };
+
+  it('adds, edits and deletes samples; sketches playing one go back to the piano', async () => {
+    const library = new MemoryLibrary();
+    const notebook = await library.createNotebook('N');
+    const id = await recording(library, notebook.id);
+    const sample = await library.createSample({ title: ' Kick ', durationMs: 400, sourceSketchId: id, settings: { gainDb: -3 } }, wav());
+    expect(sample.title).toBe('Kick');
+    expect(sample.audioPath).toMatch(/^blob:/);
+    const edited = await library.updateSample({ id: sample.id, settings: { reverb: 0.5 } });
+    expect(edited.settings).toEqual({ reverb: 0.5 });
+    expect(edited.updatedAt).toBeGreaterThan(sample.updatedAt);
+    expect((await library.setNoteSample(id, sample.id)).noteSampleId).toBe(sample.id);
+    const copy = await library.duplicate({ id, notebookId: notebook.id, canvasXMs: 0, canvasY: 0 });
+    expect(copy.noteSampleId).toBe(sample.id);
+    await library.removeSample(sample.id);
+    expect(await library.listSamples()).toEqual([]);
+    expect((await library.get(id)).noteSampleId).toBeNull();
+    expect((await library.get(copy.id)).noteSampleId).toBeNull();
+  });
+
+  it('refuses what is not a sample', async () => {
+    const library = new MemoryLibrary();
+    await expect(library.createSample({}, new Uint8Array(10))).rejects.toThrow();
+    await expect(library.createSample({ durationMs: 0 }, wav())).rejects.toThrow();
+    await expect(library.updateSample({ id: 'nope' })).rejects.toThrow();
+  });
+});
+

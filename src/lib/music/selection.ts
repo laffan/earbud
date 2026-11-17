@@ -146,3 +146,31 @@ export function joinNotes(
   const added = selected.filter((n) => !kept.includes(n));
   return { notes: [...kept, ...added], selected };
 }
+
+/** Notes starting within this of the earliest one count as struck together (seconds). */
+const TOGETHER = 0.07;
+/** Most notes an audition plays at once. */
+const MAX_AUDITION = 10;
+
+/**
+ * What to play when selected notes are moved: those of them sounding at the
+ * playhead (`at`, in the notes' time), or, when none is, those struck at the
+ * start of the selection (the first note and any begun with it). One note
+ * per pitch, lowest first.
+ */
+export function auditionNotes(selected: readonly PianoNote[], at: number): PianoNote[] {
+  if (selected.length === 0) return [];
+  let chosen = selected.filter((n) => n.startTime <= at && n.endTime > at);
+  if (chosen.length === 0) {
+    const first = Math.min(...selected.map((n) => n.startTime));
+    chosen = selected.filter((n) => n.startTime <= first + TOGETHER);
+  }
+  const byPitch = new Map<number, PianoNote>();
+  for (const n of chosen) if (!byPitch.has(n.pitch)) byPitch.set(n.pitch, n);
+  return [...byPitch.values()].sort((a, b) => a.pitch - b.pitch).slice(0, MAX_AUDITION);
+}
+
+/** A key that changes when an audition would sound different (its pitches). */
+export function auditionKey(notes: readonly PianoNote[]): string {
+  return notes.map((n) => n.pitch).join(',');
+}

@@ -10,6 +10,8 @@ import {
   withBarAdded,
   withBars,
   withCleared,
+  padSample,
+  withPadSample,
   withStep,
   type Tap,
 } from './rhythm';
@@ -149,11 +151,43 @@ describe('patterns on the canvas', () => {
     expect(normalizePattern({ bpm: 'fast' })).toBeNull();
     const p = normalizePattern({ bpm: 1000, bars: 1, pads: [[1, 2, -1]], lengthBars: 0 })!;
     expect(p.bpm).toBe(240);
-    expect(p.pads.length).toBe(3);
+    // A pattern from before the fourth pad gets an empty row for it.
+    expect(p.pads.length).toBe(4);
     expect(p.pads[0].slice(0, 4)).toEqual([1, 1, 0, 0]);
-    expect(p.pads[2].length).toBe(16);
+    expect(p.pads[3].length).toBe(16);
+    expect(p.samples).toBeUndefined();
     expect(p.lengthBars).toBe(1);
     expect(p.swing).toBe(0);
     expect(normalizePattern({ bpm: 90, bars: 1, pads: [], swing: 2 })!.swing).toBe(0.5);
   });
+
+  it('remembers which pads play library samples', () => {
+    const id = 'ab'.repeat(16);
+    const p = withPadSample(emptyPattern(), 3, id);
+    expect(padSample(p, 3)).toBe(id);
+    expect(padSample(p, 0)).toBeNull();
+    expect(normalizePattern(JSON.parse(JSON.stringify(p)))!.samples).toEqual([null, null, null, id]);
+    // Back to the pad's own sound: nothing to remember.
+    expect(withPadSample(p, 3, null).samples).toBeUndefined();
+    // Something that is not a sample id is ignored.
+    expect(normalizePattern({ ...p, samples: ['../x', 3, null, id] })!.samples).toEqual([null, null, null, id]);
+  });
 });
+
+describe('four pads, each with its own sound', () => {
+  it('mixes each pad with the sound given for it (a library sample replaces the pad\'s own)', () => {
+    const p = emptyPattern(120, 1);
+    p.pads[3][0] = 1;
+    p.pads[0][4] = 0.5;
+    const rate = 1000;
+    const own = [new Float32Array([1]), new Float32Array([1]), new Float32Array([1]), new Float32Array([1])];
+    const sample = new Float32Array([0.25, 0.25]);
+    const mixed = mixRhythm(p, [own[0], own[1], own[2], sample], rate);
+    // Beat 4 at the start plays the sample (at the kit's level, 0.7).
+    expect(mixed[0]).toBeCloseTo(0.25 * 0.7, 6);
+    expect(mixed[1]).toBeCloseTo(0.25 * 0.7, 6);
+    // Beat 1 on the second beat (0.5 s), at half level.
+    expect(mixed[500]).toBeCloseTo(0.5 * 0.7, 6);
+  });
+});
+

@@ -15,7 +15,7 @@
   import { chordVoicing, detectChords, type ChordSegment } from '../music/chords';
   import { notesToMidi } from '../music/midi';
   import { normalizeNote, sortNotes } from '../music/notes';
-  import { canJoin, joinNotes, shiftNotes, type NoteShift } from '../music/selection';
+  import { auditionNotes, canJoin, joinNotes, shiftNotes, type NoteShift } from '../music/selection';
   import { summarize } from '../music/summary';
   import type { NoteSynth } from '../music/synth';
   import { errorMessage } from '../platform/tauri';
@@ -48,6 +48,13 @@
     onnotes: (notes: PianoNote[]) => void;
     /** A chord's symbol as the sketch shows it (spelled for its key). */
     spell?: (chord: ChordSegment) => string;
+    /** A passage of the recording (its own time, seconds) for the sample library: add it, or hear it. */
+    onaddsample?: (from: number, to: number) => void | Promise<void>;
+    onpreviewsample?: (from: number, to: number) => void;
+    /** Choose what the notes play with (the piano or a library sample). */
+    onchoosesample?: () => void;
+    /** The library sample the notes play with, by name (null: the piano). */
+    noteSampleName?: string | null;
   }
 
   let {
@@ -64,6 +71,10 @@
     oncropchange,
     onnotes,
     spell,
+    onaddsample,
+    onpreviewsample,
+    onchoosesample,
+    noteSampleName = null,
   }: Props = $props();
 
   // ------------------------------------------------------------ data
@@ -72,7 +83,6 @@
   let notes = $state.raw<PianoNote[]>([]);
 
   // ---------------------------------------------------------- editing
-  let editing = $state(false);
   let selection = $state<number[]>([]);
   let undoStack: PianoNote[][] = [];
   let redoStack: PianoNote[][] = [];
@@ -99,6 +109,8 @@
   const job = $derived(app.jobs[take.id]);
   const transcribing = $derived(!!job || live.transcriptionStatus === 'running');
   const hasTranscription = $derived(!!detail?.transcription);
+  /** The roll is always editable, once there are notes to edit and none are on the way. */
+  const editing = $derived(hasTranscription && !transcribing);
   const chords = $derived(detectChords(notes));
 
   function workingNotes(d: SketchDetail): PianoNote[] {
@@ -201,7 +213,20 @@
     const next = notes.slice();
     indices.forEach((index, k) => (next[index] = changed[k]));
     commit(next, changed);
-    if (changed.length === 1 && changed[0].pitch !== originals[0].pitch) synth.preview(changed[0].pitch);
+    audition(auditionNotes(changed, currentTime - offset));
+  }
+
+  /** Moved notes, heard: those at the playhead, else those at the start of the selection. */
+  function audition(heard: PianoNote[]) {
+    if (heard.length === 0) return;
+    const velocity = heard.reduce((sum, n) => sum + n.velocity, 0) / heard.length;
+    synth.unlock();
+    synth.playChord(
+      heard.map((n) => n.pitch),
+      Math.max(60, Math.round(velocity)),
+      0.55,
+      0,
+    );
   }
 
   function deleteSelected() {
@@ -250,14 +275,6 @@
     }
   }
 
-  function toggleEditing() {
-    editing = !editing;
-    if (!editing) {
-      selection = [];
-      void saveNow();
-    }
-  }
-
   function playChord(chord: ChordSegment) {
     synth.playChord(chordVoicing(chord, notes));
     if (!playing) onseek(chord.startTime + offset);
@@ -281,7 +298,6 @@
   function retranscribe() {
     showMenu = false;
     showRetranscribe = false;
-    editing = false;
     selection = [];
     dirty = false;
     window.clearTimeout(saveTimer);
@@ -352,6 +368,11 @@
           <button role="menuitem" onclick={askRetranscribe} disabled={transcribing}>
             <Icon name="refresh" size={18} /> {hasTranscription ? 'Transcribe again' : 'Transcribe'}
           </button>
+          {#if onchoosesample}
+            <button role="menuitem" onclick={() => ((showMenu = false), onchoosesample?.())}>
+              <Icon name="samples" size={18} /> Use sample…{#if noteSampleName}<span class="menu-note">{noteSampleName}</span>{/if}
+            </button>
+          {/if}
           {#if detail?.hasEdits}
             <button role="menuitem" onclick={revertEdits}><Icon name="undo" size={18} /> Revert note edits</button>
           {/if}
@@ -425,13 +446,13 @@
           <button class="link" onclick={() => (selection = [])}>Deselect</button>
           {#if selectedIndices.length < notes.length}<button class="link" onclick={selectAll}>Select all</button>{/if}
         {:else}
-          Tap a note to select it. Drag to scroll; press and hold, then drag, to select several (or to pick up a
-          note). Drag a selected note to move the selection, drag an end to resize, double-tap to add.
+          Tap a note to select it; hold, then drag, to select several. Drag a selection to move it (you hear it at
+          the playhead), drag an end to resize, double-tap to add.
         {/if}
       </p>
     {/if}
 
-    <div class="stack" class:editing>
+    <div class="stack">
       <div class="roll-wrap">
         <PianoRoll
           {notes}
@@ -447,18 +468,8 @@
           {onseek}
           onchange={commit}
           onpreview={(pitch) => synth.preview(pitch)}
+          onaudition={audition}
         />
-        <button
-          class="pencil"
-          class:on={editing}
-          onclick={toggleEditing}
-          disabled={!hasTranscription || transcribing}
-          aria-pressed={editing}
-          aria-label={editing ? 'Done editing notes' : 'Edit notes'}
-          title={editing ? 'Done' : 'Edit notes'}
-        >
-          <Icon name={editing ? 'check' : 'edit'} size={17} />
-        </button>
       </div>
       <ChordStrip
         {chords}
@@ -479,6 +490,8 @@
         flush
         onseek={(t) => onseek(t)}
         {oncropchange}
+        onaddsample={onaddsample ? (start, end) => onaddsample(start - offset, end - offset) : undefined}
+        onpreviewsample={onpreviewsample ? (start, end) => onpreviewsample(start - offset, end - offset) : undefined}
       />
     </div>
 
@@ -569,6 +582,15 @@
   .menu button:hover:not(:disabled) {
     background: var(--paper-sunk);
   }
+  .menu-note {
+    margin-left: auto;
+    max-width: 8em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.78rem;
+    color: var(--ink-3);
+  }
   .menu-info {
     margin: 2px 10px 6px;
     font-size: 0.78rem;
@@ -612,9 +634,6 @@
     background: var(--paper-raised);
     min-width: 0;
   }
-  .stack.editing {
-    box-shadow: 0 0 0 2px var(--accent-soft);
-  }
   .stack :global(.roll) {
     border: none;
     border-radius: 0;
@@ -623,30 +642,6 @@
   .roll-wrap {
     position: relative;
     height: clamp(240px, 44vh, 560px);
-  }
-  /* The pencil sits in the corner above the keyboard. */
-  .pencil {
-    position: absolute;
-    left: 4px;
-    top: 5px;
-    width: 32px;
-    height: 32px;
-    border-radius: 8px;
-    display: grid;
-    place-items: center;
-    color: var(--ink-2);
-    background: transparent;
-    border: none;
-  }
-  .pencil:hover:not(:disabled) {
-    background: var(--paper-sunk);
-  }
-  .pencil.on {
-    color: var(--paper);
-    background: var(--accent);
-  }
-  .pencil:disabled {
-    opacity: 0.4;
   }
 
   .edit-toolbar {

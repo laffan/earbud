@@ -129,6 +129,26 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE sketches ADD COLUMN canvas_volume REAL NOT NULL DEFAULT 1
         CHECK (canvas_volume >= 0 AND canvas_volume <= 1);
     "#,
+    // v10: the sample library. A sample is a short sound cut from a recording
+    // (`samples/<id>/sample.wav`, written once) with its playback settings
+    // (trim, envelope, effects, root note) as JSON, rendered when played. A
+    // sketch can play its notes with one (`note_sample_id`); rhythms name the
+    // samples their pads play inside their pattern.
+    r#"
+    CREATE TABLE samples (
+        id               TEXT PRIMARY KEY NOT NULL,
+        title            TEXT NOT NULL DEFAULT '',
+        created_at       INTEGER NOT NULL,
+        updated_at       INTEGER NOT NULL,
+        duration_ms      INTEGER,
+        source_sketch_id TEXT,
+        source_start_ms  INTEGER,
+        source_end_ms    INTEGER,
+        settings_json    TEXT NOT NULL DEFAULT '{}'
+    );
+    CREATE INDEX samples_created_at ON samples(created_at);
+    ALTER TABLE sketches ADD COLUMN note_sample_id TEXT;
+    "#,
 ];
 
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {

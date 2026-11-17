@@ -299,4 +299,27 @@ describe('AudioEngine', () => {
     engine.play();
     expect(last().position).toBe(0);
   });
+
+  it('says when its context may be stuck and should be replaced in the next tap', () => {
+    class Stoppable extends FakeAudioContext {
+      interrupt() {
+        this.setState('suspended');
+      }
+    }
+    const ctx = new Stoppable();
+    const { engine } = harness({ ctx });
+    expect(engine.needsRenewal).toBe(false);
+    engine.setTracks([track('a', fakeBuffer(2))]);
+    expect(engine.needsRenewal).toBe(false);
+    // The system suspended a context that had been running (the app was in the background).
+    ctx.interrupt();
+    expect(engine.needsRenewal).toBe(true);
+    const fresh = harness();
+    fresh.engine.setTracks([]);
+    fresh.engine.markStale();
+    expect(fresh.engine.needsRenewal).toBe(true);
+    fresh.engine.dispose();
+    expect(fresh.engine.needsRenewal).toBe(true);
+  });
 });
+

@@ -17,7 +17,8 @@ import { setDeviceLog, setOutputDevice, type IosInput, type IosOutput } from '..
 import { beginCaptureSession, webAudioSessionSummary } from '../audio/session';
 import { CHORD_TAPS_BACKEND, CHORD_TAPS_ENGINE, importAudioSketch, importMidiSketch, notesSketch, type Placement } from '../library/importTrack';
 import { getLibrary, type Sketch, type SketchLibrary } from '../library';
-import type { CreateRhythmArgs, CreateTextNoteArgs, ListenMode, Notebook, UpdateRhythmArgs, UpdateTextNoteArgs } from '../library/types';
+import type { CreateRhythmArgs, CreateSampleArgs, CreateTextNoteArgs, ListenMode, Notebook, Sample, UpdateRhythmArgs, UpdateTextNoteArgs } from '../library/types';
+import { forgetSample, pitchedSample, renderedSample } from '../samples/render';
 import type { RhythmPattern } from '../music/rhythm';
 import type { PianoNote } from '../transcription/types';
 import type { Crop } from '../ui/slice';
@@ -96,7 +97,7 @@ export interface CanvasTarget {
   onEnd?: (saved: Sketch | null) => void;
 }
 
-export type View = { name: 'home' } | { name: 'sketch'; id: string } | { name: 'reference' };
+export type View = { name: 'home' } | { name: 'sketch'; id: string } | { name: 'reference' } | { name: 'samples' };
 
 /** How a sketch is sliced in two (see `slice.ts`): crops of a recording, or a rhythm's two halves. */
 export type SlicePlan =
@@ -205,6 +206,7 @@ function loadSettings(): Settings {
 
 function viewFromHash(): View {
   if (location.hash === '#/reference') return { name: 'reference' };
+  if (location.hash === '#/samples') return { name: 'samples' };
   const match = /^#\/sketch\/([0-9a-f]{32})$/.exec(location.hash);
   return match ? { name: 'sketch', id: match[1] } : { name: 'home' };
 }
@@ -249,6 +251,8 @@ export class AppState {
   /** The notebook whose canvas is shown. */
   notebookId = $state<string | null>(null);
   readonly notebook = $derived(this.notebooks.find((n) => n.id === this.notebookId) ?? null);
+  /** The sample library, oldest first. */
+  samples = $state<Sample[]>([]);
   /** A sketch copied for pasting (by id; pasting copies it again). */
   clipboard = $state<{ id: string } | null>(null);
   /** The sketches on the open notebook's canvas. */
@@ -318,6 +322,10 @@ export class AppState {
       }
       this.sketches = await this.library.list();
       await this.loadNotebooks();
+      this.samples = await this.library.listSamples().catch((error) => {
+        this.logCapture(`could not read the sample library: ${errorMessage(error)}`);
+        return [];
+      });
       if (report.recovered.length > 0) {
         this.toast(
           report.recovered.length === 1
@@ -693,6 +701,97 @@ export class AppState {
     }
   }
 
+  // --------------------------------------------------------- sample library
+
+  /** The library's samples by id. */
+  sample(id: string | null | undefined): Sample | null {
+    return id ? (this.samples.find((s) => s.id === id) ?? null) : null;
+  }
+
+  /** A sample's sound with its settings, at a sample rate (null if it is gone): for rhythm pads. */
+  readonly sampleSound = async (id: string, sampleRate: number): Promise<Float32Array | null> => {
+    const sample = this.sample(id);
+    return sample ? renderedSample(sample, sampleRate) : null;
+  };
+
+  /** Add a sound to the sample library (a mono WAV). Problems are toasted. */
+  async addSample(args: CreateSampleArgs, wav: Uint8Array): Promise<Sample | null> {
+    try {
+      const sample = await this.library.createSample(args, wav);
+      this.samples = [...this.samples, sample];
+      this.toast(`Added “${sample.title || 'Sample'}” to the library.`, 'info', { label: 'Open', run: () => this.openSamples() });
+      return sample;
+    } catch (error) {
+      this.toast(`Could not add the sample: ${errorMessage(error)}`, 'error');
+      return null;
+    }
+  }
+
+  /** Rename a sample or change its settings. Shown at once; the library confirms. */
+  async updateSample(id: string, patch: { title?: string; settings?: Record<string, unknown> }): Promise<Sample | null> {
+    const index = this.samples.findIndex((s) => s.id === id);
+    if (index >= 0) {
+      const current = this.samples[index];
+      this.samples[index] = {
+        ...current,
+        title: patch.title?.trim() ?? current.title,
+        settings: patch.settings ?? current.settings,
+        updatedAt: Math.max(Date.now(), current.updatedAt + 1),
+      };
+    }
+    try {
+      const saved = await this.library.updateSample({ id, ...patch });
+      const at = this.samples.findIndex((s) => s.id === id);
+      if (at >= 0) this.samples[at] = saved;
+      this.touchSampleUsers(id);
+      return saved;
+    } catch (error) {
+      this.toast(`Could not save the sample: ${errorMessage(error)}`, 'error');
+      this.samples = await this.library.listSamples().catch(() => this.samples);
+      return null;
+    }
+  }
+
+  /** Delete a sample. Sketches whose notes played with it go back to the piano; pads to their own sounds. */
+  async deleteSample(id: string) {
+    try {
+      await this.library.removeSample(id);
+    } catch (error) {
+      this.toast(`Could not delete the sample: ${errorMessage(error)}`, 'error');
+      return;
+    }
+    this.samples = this.samples.filter((s) => s.id !== id);
+    forgetSample(id);
+    for (const [i, s] of this.sketches.entries()) {
+      if (s.noteSampleId === id) this.sketches[i] = { ...s, noteSampleId: null };
+    }
+    this.touchSampleUsers(id);
+    this.toast('Sample deleted.');
+  }
+
+  /** Play a sketch's notes with a sample (null: the piano). */
+  async setNoteSample(id: string, sampleId: string | null) {
+    try {
+      this.upsert(await this.library.setNoteSample(id, sampleId));
+    } catch (error) {
+      this.toast(`Could not change how the notes play: ${errorMessage(error)}`, 'error');
+    }
+  }
+
+  /** Sketches that play a sample (their notes, or a rhythm's pads) sound different now. */
+  private touchSampleUsers(sampleId: string) {
+    for (const s of this.sketches) {
+      if (s.noteSampleId === sampleId || s.rhythm?.samples?.includes(sampleId)) this.touch(s.id);
+    }
+  }
+
+  /** The sample library: a grid of samples. */
+  openSamples() {
+    if (this.view.name === 'samples') return;
+    history.pushState(null, '', '#/samples');
+    this.view = { name: 'samples' };
+  }
+
   // ------------------------------------------------------------- navigation
 
   openSketch(id: string) {
@@ -828,7 +927,17 @@ export class AppState {
 
   /** Dependencies for the exporter (storage + native capture helpers). */
   exportDeps() {
-    return { library: this.library, capture: this.captureEngine };
+    return {
+      library: this.library,
+      capture: this.captureEngine,
+      samples: this.sampleSound,
+      noteSample: async (id: string) => {
+        const sample = this.sample(id);
+        const Offline = window.OfflineAudioContext ?? (window as unknown as { webkitOfflineAudioContext?: typeof OfflineAudioContext }).webkitOfflineAudioContext;
+        // Any context can make the buffer; the export renders it at its own rate.
+        return sample && Offline ? pitchedSample(new Offline(1, 1, 44100), sample) : null;
+      },
+    };
   }
 
   transcribe(id: string) {

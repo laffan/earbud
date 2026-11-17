@@ -43,8 +43,9 @@ const OUT = process.env.SMOKE_OUT;
     if (!ok) problems.push(message);
   };
 
-  await page.click('button[aria-label="Edit notes"]');
+  // The roll is always editing: its toolbar is there without a pencil to tap.
   await page.waitForSelector('.edit-toolbar');
+  expect((await page.$('button[aria-label="Edit notes"]')) === null, 'the old pencil button is still there');
   const roll = await (await page.$('.roll canvas')).boundingBox();
   const total = await noteCount();
   console.log('notes in the demo sketch:', total);

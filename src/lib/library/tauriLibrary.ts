@@ -14,6 +14,9 @@ import type {
   Notebook,
   PlaceSketchArgs,
   RecoveryReport,
+  Sample,
+  CreateSampleArgs,
+  UpdateSampleArgs,
   SaveEditsArgs,
   SaveTranscriptionArgs,
   Sketch,
@@ -132,5 +135,27 @@ export class TauriLibrary implements SketchLibrary {
   }
   updateRhythm(args: UpdateRhythmArgs) {
     return invoke<Sketch>('update_rhythm', { args });
+  }
+  listSamples() {
+    return invoke<Sample[]>('list_samples');
+  }
+  async createSample(args: CreateSampleArgs, wav: Uint8Array) {
+    const created = await invoke<Sample>('create_sample', { args });
+    try {
+      // Raw IPC body: no JSON/base64 encoding of the audio.
+      return await invoke<Sample>('write_sample_audio', wav, { headers: { 'x-sample-id': created.id } });
+    } catch (error) {
+      await invoke<void>('delete_sample', { id: created.id }).catch(() => {});
+      throw error;
+    }
+  }
+  updateSample(args: UpdateSampleArgs) {
+    return invoke<Sample>('update_sample', { args });
+  }
+  removeSample(id: string) {
+    return invoke<void>('delete_sample', { id });
+  }
+  setNoteSample(id: string, sampleId: string | null) {
+    return invoke<Sketch>('set_note_sample', { id, sampleId });
   }
 }

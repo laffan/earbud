@@ -27,9 +27,12 @@ Built with Tauri 2, Svelte 5 + TypeScript, Rust + SQLite, Swift + AVFoundation (
 | Area | State |
 | --- | --- |
 | Notebook canvas (this branch): notebooks, free placement on a timeline, long-press to create, playhead plays what it crosses, minimap, repeat range | Done, checked in Chromium (`npm run smoke:notebook`); not yet run on an iPhone |
-| Rhythm sketches (this branch): three pads, tempo detected from the taps, 16th-note step sequencer, repeat by dragging, export as audio and MIDI drums | Done, unit tested; checked in Chromium |
+| Rhythm sketches (this branch): four pads, tempo detected from the taps, 16th-note step sequencer, repeat by dragging, export as audio and MIDI drums | Done, unit tested; checked in Chromium |
 | Sketch menu on the canvas (this branch): copy and paste (also into another notebook), duplicate, export, delete; recordings repeat by dragging their right edge | Done, unit tested (Rust and TS); checked in Chromium |
-| Rhythm view (this branch): full-size step sequencer, velocity by dragging, record pads into the loop, swing, tap tempo, undo | Done, unit tested (player, swing, bars); checked in Chromium |
+| Rhythm view (this branch): full-size step sequencer, bars side by side to swipe between, velocity by dragging, record pads into the loop, a sound per pad (built in or a library sample), swing, tap tempo, undo | Done, unit tested (player, swing, bars, pad samples); checked in Chromium at phone and iPad sizes (`npm run smoke:samples`) |
+| Sample library (this branch): cut a passage from a sketch's waveform (Ctrl + drag, or a 2 s hold), a grid of samples that play on tap, an editor (trim, envelope, level, tone, reverb, transpose, reverse, root note); rhythm pads and a sketch's notes can play samples | Done, unit tested (TS: pitch detection, settings, cutting, the sampler; Rust: storage); checked in Chromium (`npm run smoke:samples`); not yet on a device |
+| Space bar, play after returning to the app, page zoom (this branch): space plays and pauses whatever is in front; every view starts a fresh audio context in the tap after the app was in the background; only the canvas and piano rolls zoom | Done, unit tested (space bar, context renewal); checked in Chromium; the background case is simulated there, not yet confirmed on an iPhone |
+| Guitar chord previews (this branch): recorded steel-string guitar notes, strummed | Done, unit tested (zones, strum); checked in Chromium |
 | Text notes on the canvas (this branch): double-tap to write, markdown, move and resize, emoji-only notes large and on the minimap | Done, unit tested (markdown, storage); checked in Chromium |
 | Sketch volume and Slice (this branch): a volume slider in the sketch menu, shown as a bar on the sketch's left; Slice cuts a recording or a rhythm into two sketches | Done, unit tested (Rust storage, slice geometry); checked in Chromium |
 | Reference section (this branch): every chord of a root on one page with piano and guitar diagrams (all shapes); circle of fifths that records tapped chords as a sketch | Done, unit tested (chord taps); checked in Chromium at phone and iPad sizes |
@@ -44,7 +47,7 @@ Built with Tauri 2, Svelte 5 + TypeScript, Rust + SQLite, Swift + AVFoundation (
 | Chord names, MIDI export | Done, unit tested |
 | Chords section: key, chords used with piano and guitar diagrams, circle of fifths | Done (experimental), unit tested; checked in Chromium |
 | Playback through one Web Audio graph (all tracks sample-locked, limiter, gapless loop, slowed playback by WSOLA) | Done, unit tested and checked in Chromium; not yet run on an iPhone or Mac |
-| Piano roll, synchronized playback, note editing | Done, tested end to end in Chromium and in the Linux desktop app |
+| Piano roll, synchronized playback, note editing (on this branch always editing; moved notes are heard) | Done, tested end to end in Chromium and in the Linux desktop app (earlier versions); `npm run smoke:edit` on this branch |
 | Tracks (layered recordings in one sketch), takes, mute/solo, count-in | On this branch: kept in storage and in the capture flow, not shown (layering happens on the canvas); count-in kept |
 | Tempo: detection from the first recording, editor with a click, beat-aligned takes | Done, detection unit tested on synthesized playing (not on real recordings yet) |
 | Titles, text notes, export/share | Done |
@@ -117,7 +120,12 @@ vertically. Everything below works with a finger, a mouse or a trackpad.
 | Drag a sketch's right edge | Repeats it: a recording plays its playing part again, whole times in a row (×2, ×3…); a rhythm repeats its pattern over more (or fewer) bars. |
 | Drag; pinch, or ctrl/⌘ + scroll | Scrolls the canvas; zooms the timeline. |
 
-- **Reference.** The book button next to Settings opens the Reference section: see [Reference](#reference).
+- **Reference.** The book button opens the Reference section: see [Reference](#reference).
+- **Samples.** The button between Reference and Settings opens the sample library: see [Sample library](#sample-library).
+- **The space bar** plays and pauses whatever is in front: the canvas (or stops a recording onto it), an open sketch
+  (with the click when the tempo sheet is open), a rhythm, the rhythm panel's pattern, the sample last played in the
+  library, or the sample being edited. Not while typing in a text field (sliders, checkboxes and buttons do not count).
+  A focused play button is not also pressed by the space bar (that toggled twice, so play seemed to do nothing).
 - **Notebooks.** The title at the top opens the list of notebooks, with *New notebook*, *Rename* and *Delete*
   (which deletes its sketches). The first launch creates *Notebook 1*. Each notebook remembers its scroll, zoom and
   repeat setting.
@@ -134,20 +142,25 @@ vertically. Everything below works with a finger, a mouse or a trackpad.
   its image is not shown while recording onto the canvas.
 - **Import audio** opens the import sheet used before: an audio file (transcribed like a recording) or a MIDI file
   (its notes, played by the built-in piano). It is placed where you held.
-- **Record rhythm** opens a panel you can drag by its top. Tap the three pads (*Beat 1*, *Beat 2*, *Beat 3*, which
-  sound as a kick, a snare and a hat; keys 1 2 3 or J K L); recording starts with the first tap. *Done* turns the taps into a pattern: the tempo is detected,
+- **Record rhythm** opens a panel you can drag by its top. Tap the four pads (*Beat 1* to *Beat 4*, which sound as a
+  kick, a snare, a hat and a clap; keys 1 2 3 4 or J K L ;); recording starts with the first tap. *Done* turns the taps into a pattern: the tempo is detected,
   the beat nearest the first tap becomes bar 1, every tap moves to the nearest 16th note, and the pattern is as many
   whole 4/4 bars as you played (a lone downbeat at the end is taken as the loop coming round and dropped). The step
   sequencer then shows it: tap steps on or off, change the tempo or the number of bars, play it in a loop, or
   record again. *Save* puts it on the canvas.
-- **The rhythm view** (double-tap a rhythm) is its full-size editor. At the top, every bar with all three pads (tap a
-  bar to edit it; *+ Bar* adds a copy of the last bar, *×2* doubles the pattern, *− Bar* removes the last). Below,
-  one pad's bar as 16 large steps, a row per beat: tap a step to switch it on (at 80 %) or off; drag up or down on a
-  step to set its velocity, shown as how full it is and as a number. The three pads under the grid sound, choose the
-  pad the grid shows, and with **record** (the red button next to play) on while the loop plays, write each hit on
-  the step it was meant for. Also: tempo (− / + and *Tap*), **swing** (every second 16th later, up to half a step),
-  how many bars it plays on the canvas, undo / redo (⌘/Ctrl+Z), and *Clear* for a pad. Edits save themselves.
-  Keys: 1 2 3 or J K L for the pads, space to play.
+- **The rhythm view** (double-tap a rhythm) is its full-size editor. At the top, every bar with all four pads (tap a
+  bar to go to it; *+ Bar* adds a copy of the last bar, *×2* doubles the pattern, *− Bar* removes the last). Below,
+  the bars **side by side**, the one being edited in the middle: swipe sideways between them (on an iPad the bars
+  either side show, dimmed; on an iPhone only the edges). Each shows one pad's bar as 16 large steps, a row per
+  beat: tap a step to switch it on (at 80 %) or off (a step of a bar at the side also brings that bar to the
+  middle); drag up or down on a step to set its velocity, shown as how full it is and as a number. While the loop
+  plays, the bars follow it until you swipe. The four pads under the bars sound, choose the pad the bars show, and
+  with **record** (the red button next to play) on while the loop plays, write each hit on the step it was meant
+  for. **Sound** (next to the pad's name above the bars) chooses what the pad plays: its own sound (kick, snare,
+  hi-hat, clap) or a sample from the library, heard in the view, on the canvas and in the exported audio (the MIDI
+  export keeps the pad's drum note). Also: tempo (− / + and *Tap*), **swing** (every second 16th later, up to half a
+  step), how many bars it plays on the canvas, undo / redo (⌘/Ctrl+Z), and *Clear* for a pad. Edits save
+  themselves. Keys: 1 2 3 4 or J K L ; for the pads, ← → between bars, space to play.
 - **Text notes.** Double-tap empty canvas to write one where you tapped. Markdown: `#` headings, `**bold**`,
   `*italic*`, `~~strike~~`, `` `code` ``, lists and task lists (`- [ ]`, `- [x]`), `>` quotes, fenced code, `---`
   rules, and `[links](https://…)`; a single line break stays a line break. A note sits at a point of the timeline
@@ -178,8 +191,9 @@ vertically. Everything below works with a finger, a mouse or a trackpad.
   notebook*. The playhead plays every sketch it crosses, together, on one audio clock; the view follows it.
   A recording plays from its downbeat to its end, or only its crop if one is set in the sketch view. After a
   recording, after the app was in the background, and after a play that got no sound within 2 s, the next tap
-  starts the canvas's sound with a fresh audio context (see Known limitations). Each play writes the audio state to
-  Settings → Diagnostics.
+  starts the canvas's sound with a fresh audio context (see Known limitations). The sketch view, the rhythm view,
+  the rhythm panel and the sample library do the same (they each have their own sound): play used to stop working
+  in them after leaving the app and coming back. Each play writes the audio state to Settings → Diagnostics.
 - **Repeat** plays only the loop range, over and over: turning it on (or play) puts the playhead at the range's
   start when it is outside it, and a tap on the canvas outside the range leaves the playhead at the range's edge.
   The range is from the first sketch to the end of the last unless set: drag its red handles on the ruler along the
@@ -189,11 +203,45 @@ vertically. Everything below works with a finger, a mouse or a trackpad.
   playhead and, with repeat on, the loop's handles. Drag on it to move the view.
 - **A sketch** (double-tap) is the sketch view from before without tracks: piano roll, chord strip and waveform,
   the Chords section, the video, notes, tempo, crop, loop, *Take / Notes / Both*, note editing, transcribing again
-  and sharing. The *Take / Notes / Both* choice is saved per sketch across app launches and also controls its
+  and sharing. The piano roll is **always editing** (no pencil): tap a note to select it, tap empty space to
+  deselect and move the playhead there, hold and drag to select several, drag a selection to move it, drag an end
+  to resize, double-tap to add; the editing toolbar is always above the roll. **Every move is heard**: the selected
+  notes sounding at the playhead play, or, when none of them crosses the playhead, the ones struck at the start of
+  the selection (on each new pitch or each change of what is under the playhead while dragging, on each arrow key or
+  toolbar step, and once where a sideways drag lands). The ⋯ menu above the roll has *Use sample…* (see
+  [Sample library](#sample-library)). The *Take / Notes / Both* choice is saved per sketch across app launches and also controls its
   canvas playback. *Notes* plays the current edited transcription and shows a miniature piano roll on the canvas;
   *Take* and *Both* show the waveform. Crops and repeats apply to the selected sound. *Back* returns to the canvas.
 - **Apple Watch** recordings are placed at the end of the open notebook.
 - **Audio input and output** (Settings → Audio) are chosen separately; see [Audio devices](#audio-devices).
+
+### Sample library
+
+The button between Reference and Settings opens it: every sample as a button with its waveform and name.
+
+- **Making a sample.** In a sketch, on the waveform under the piano roll: hold **Ctrl** and drag across a passage, or
+  **press and hold** the waveform for **two seconds** without moving (the magnifier opens first; keep still), then
+  drag to set the other end, or let go for a passage of a second. The passage is shaded with handles at its ends, and
+  a tooltip over it has a play button, **Add to library**, its length and ×. *Add to library* cuts the passage out of
+  the take's decoded sound (mono, as a WAV of its own, at most 60 s) and finds its pitch; the toast has *Open*. A tap
+  elsewhere on the waveform, × or Esc lets the selection go.
+- **The library.** Tap a sample to hear it (tap again to stop; the space bar plays the last one again). **Press and
+  hold** (or right-click) for its menu: *Edit sample…* and *Delete*.
+- **The editor** (settings saved as you go; the stored audio is never changed): the name; the waveform with
+  **trim** handles (or ← → on a focused handle); **Level** (−24 to +12 dB), **Attack** (fade in), **Decay** (how long
+  the sound takes to die away, or off), **Release** (fade out at the end), **Normalize**, **Reverse**; **Reverb** (how
+  much) and **Room** (how long it rings), **Tone** (a high cut), **Low cut**, **Transpose** (semitones, faster or
+  slower); and **Sounds at**, the note it plays notes from (found in the sound when it has a steady pitch, with how
+  many cents off it is; − / + to set it by hand, *Detect* to look again). The play button (or space) plays it as set.
+- **Rhythm pads** can play a sample instead of their own sound (the rhythm view's *Sound*).
+- **A sketch's notes** can play with a sample: the ⋯ menu above the piano roll → *Use sample…* → a sample (each
+  with a play button that plays a chord with it) or *Piano*. Each note plays the sample resampled from its root to
+  the note (2^(semitones/12) times as fast, with the cents found in it taken off so it is in tune), held for the
+  note's length and released, or until the sample ends. Choosing a sample while *Take* is selected switches to
+  *Notes*. The canvas (in *Notes* and *Both*), note previews, moved-note auditions and the *Notes audio* export use
+  it too. The ⋯ menu shows which sample is in use.
+- Deleting a sample sends pads that played it back to their own sounds and sketches whose notes played with it back
+  to the piano.
 
 ### Audio devices
 
@@ -223,7 +271,10 @@ The book button next to Settings. Two tabs (the one last used opens):
   maj9, m9, m7♭5, dim7, m(maj7), 7sus4 (the chords the transcription recognises). Each has its name in words, its
   notes and how to play it with the *Piano | Guitar* choice (the same choice as the sketch view's Chords section):
   a keyboard, or every guitar shape found for it side by side, easiest first, each labelled with where it sits on
-  the neck. The play button plays the chord; tapping a guitar shape plays that shape.
+  the neck. The play button plays the chord; tapping a guitar shape plays that shape. Guitar shapes sound like a
+  **guitar**: recorded steel-string notes (one every major third, each chord note resampled from the nearest by at most
+  two semitones), strummed from the lowest string up; piano voicings play the piano. The sketch view's Chords
+  section plays guitar shapes the same way.
 - **Circle of fifths.** The same circle as in a sketch's Chords section. Tap a chord to hear it; its key's wedge is
   shaded and how to play it appears below the circle: a keyboard, or all its guitar shapes stacked (tap one to hear
   it; the one last heard is what a recording plays). The small record button under the circle,
@@ -267,7 +318,8 @@ for how sketches are made, placed and played; reviewing one (steps 3–6, 8, 9) 
    time) on three rings (major outside, minor in the middle, diminished inside), with the key's chords as a shaded
    wedge; tap any chord on it to hear it, including ones not played yet. With several tracks the section analyses the tracks you hear, together: mute or solo tracks to
    change what it reads.
-6. **Edit**: tap the pencil in the top-left corner of a piano roll. Tap a note to select it. A one-finger drag
+6. **Edit** (on this branch the roll is always editing, without the pencil; see
+   [The notebook canvas](#the-notebook-canvas-this-branch)): tap the pencil in the top-left corner of a piano roll. Tap a note to select it. A one-finger drag
    still scrolls; **press and hold, then drag** to draw a rectangle that selects every note it touches (on a
    note, press and hold picks the note up). With a mouse, drag across the roll to select (Shift adds,
    Cmd/Ctrl+A selects all). Drag a selected note to move the whole selection, drag its end to resize, and
@@ -364,7 +416,9 @@ src/                         Svelte + TypeScript UI and engines
   lib/vision/                Future visual analysis / fusion interfaces
   lib/state/                 App state and the capture flow
   lib/watch/                 Receiving recordings from the Apple Watch app
-  lib/ui/                    Components (notebook canvas, minimap, rhythm pads, recorder, sketch view, piano roll…)
+  lib/samples/               Sample library: settings, cutting from recordings, rendering, the sampler voice
+  lib/ui/                    Components (notebook canvas, minimap, rhythm pads, recorder, sketch view, piano roll,
+                             sample library and editor…), the space bar and page zoom (transport.ts)
 src-tauri/                   Rust app: Sketch Library (SQLite + files), Watch receiver, IPC commands
 plugins/tauri-plugin-capture Native capture plugin (Swift/AVFoundation on iOS)
 plugins/tauri-plugin-watch-link  Apple Watch receivers on iOS (Bluetooth LE, WatchConnectivity)
@@ -407,6 +461,10 @@ npm run smoke:notebook   # the canvas: sketches on one clock, gestures, the sket
 
 ```bash
 npm run smoke:listen     # saved Take/Notes/Both choice, canvas audio and preview, cropped repeats (needs npm run dev)
+```
+
+```bash
+npm run smoke:samples    # space bar, a fresh audio context after the page was hidden, the always-editing roll and its auditions, waveform → library, Use sample, the library and editor, the rhythm view (four pads, bars side by side, a pad's sample), guitar previews, page zoom
 ```
 
 On this branch `smoke:browser` records from the canvas and opens the sketch with a double-tap, and `smoke:playback`
@@ -486,10 +544,25 @@ used before the Web Audio player), so both fail at that step.
   whole take with the crop handles), and the sketch view plays at full volume.
 - **Text notes**: links in notes are shown but not followed (a tap on the canvas is a canvas gesture). Notes are not
   exported with sketches.
+- **Samples** play notes by resampling (like a classic sampler), so a note far from the sample's root sounds faster
+  or slower and its timbre (formants) moves with it; there is one sample per sound, not one per range of notes. A
+  sound without a steady pitch (a drum, noise) gets no root (C4 is assumed). Pitch detection (YIN) is tested on
+  synthesized tones, not on real recordings yet. Samples are mono. The editor's effects are rendered offline when the
+  sample plays (a reverb adds its tail), so the first play after a change of a long sample can take a moment.
+- **Audio after the background**: every view now makes a fresh audio context in the next tap after the page was
+  hidden (or after a context that ran was suspended or interrupted by the system). In Chromium this is simulated with
+  a visibility change; that it cures the silent play on an iPhone is not confirmed yet.
+- **Page zoom** is blocked with the viewport (`user-scalable=no`, honoured by the iOS app's web view; Safari in a
+  browser ignores it for accessibility), `touch-action: pan-x pan-y` on the page, WebKit's gesture events, two-finger
+  touch moves, ctrl + wheel and ⌘/Ctrl + − = 0. The canvas and piano rolls zoom with their own pinch and wheel handling.
+- **Guitar previews** are recordings of one guitar (Fluid R3, see `public/sounds/guitar/README.md`); chords tapped on
+  the circle of fifths and recorded as a sketch are still played by the built-in piano.
 - **Rhythm sketches**: tempo detection from taps needs about eight taps on a
   steady beat; with fewer, the median gap between taps is taken as the beat (folded into 70–160 BPM) and can be off
   by double or half, which the editor's tempo fixes. Only 4/4 and 16th notes.
 
 ## License
 
-MIT for Earbud's own code. Basic Pitch (model and library) is Apache-2.0, © Spotify AB.
+MIT for Earbud's own code. Basic Pitch (model and library) is Apache-2.0, © Spotify AB. The guitar samples in
+`public/sounds/guitar/` come from the Fluid (R3) General MIDI SoundFont by Frank Wen (MIT), as rendered by
+[MIDI.js Soundfonts](https://github.com/gleitz/midi-js-soundfonts) (CC BY 3.0).

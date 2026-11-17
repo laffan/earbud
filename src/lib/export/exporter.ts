@@ -9,7 +9,8 @@ import { decodeMediaToMono, decodeMediaToWav, loadAnalysisSamples, mixParts } fr
 import { encodeWav16 } from '../audio/wav';
 import { shareFiles, type CaptureEngine, type PlatformCapabilities } from '../capture';
 import { takeAudioPathFor, type ExportKind, type SketchDetail, type SketchLibrary } from '../library/types';
-import { rhythmToWav } from '../music/drums';
+import { rhythmToWav, type PadSampleSource } from '../music/drums';
+import type { PitchedSample } from '../samples/render';
 import { notesToMidi, rhythmToMidi, tracksToMidi } from '../music/midi';
 import { normalizePattern, type RhythmPattern } from '../music/rhythm';
 import type { PianoNote } from '../transcription/types';
@@ -37,6 +38,10 @@ export interface ExportDeps {
   capture: CaptureEngine | null;
   /** A rhythm to WAV (tests replace it: rendering needs Web Audio). */
   renderRhythm?: (pattern: RhythmPattern) => Promise<Uint8Array>;
+  /** Library samples played by rhythm pads. */
+  samples?: PadSampleSource;
+  /** The library sample a sketch plays its notes with, ready to play (null if gone). */
+  noteSample?: (id: string) => Promise<PitchedSample | null>;
 }
 
 /** What a rhythm sketch can be exported as: its sound and its hits as MIDI drums. */
@@ -179,7 +184,7 @@ export async function prepareExports(
         }
         if (rhythmKinds.includes('audio')) {
           progress('Rendering the rhythm…', 0.5);
-          await deps.library.writeFile(id, 'take-audio', await (deps.renderRhythm ?? rhythmToWav)(pattern));
+          await deps.library.writeFile(id, 'take-audio', await (deps.renderRhythm ?? ((p) => rhythmToWav(p, 44100, deps.samples)))(pattern));
         }
       } catch (error) {
         result.skipped.push(`${title}: ${errorMessage(error)}`);
@@ -191,6 +196,8 @@ export async function prepareExports(
     }
     const parts = await multiTrackParts(detail, deps.library);
     const notes = parts ? parts.flatMap((p) => p.notes) : currentNotes(detail);
+    // Notes audio is what the sketch plays its notes with: its sample, or the piano.
+    const sampler = detail.noteSampleId && deps.noteSample ? await deps.noteSample(detail.noteSampleId).catch(() => null) : null;
 
     try {
       if (parts) {
@@ -211,7 +218,7 @@ export async function prepareExports(
         const audibleNotes = audible.flatMap((p) => p.notes);
         if (wanted.includes('notes-audio') && audibleNotes.length > 0) {
           progress('Rendering notes…', 0.3);
-          await deps.library.writeFile(id, 'notes-audio', await renderNotesToWav(audibleNotes));
+          await deps.library.writeFile(id, 'notes-audio', await renderNotesToWav(audibleNotes, { sampler }));
         }
         if (wanted.includes('audio') && audible.length > 0) {
           progress('Mixing the tracks…', 0.6);
@@ -224,7 +231,7 @@ export async function prepareExports(
         }
         if (wanted.includes('notes-audio') && notes.length > 0) {
           progress('Rendering notes…', 0.3);
-          await deps.library.writeFile(id, 'notes-audio', await renderNotesToWav(notes));
+          await deps.library.writeFile(id, 'notes-audio', await renderNotesToWav(notes, { sampler }));
         }
         if (wanted.includes('audio') && detail.mediaPath) {
           progress('Extracting audio…', 0.6);

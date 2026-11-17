@@ -149,7 +149,9 @@ async function findNote(page) {
   // Edit: select a note, transpose, delete, undo.
   const countNotes = async () => Number((await text(page, '.details')).match(/Notes(\d+)/)[1]);
   const before = await countNotes();
-  await page.click('button[aria-label="Edit notes"]');
+  // The roll is always editing (no pencil to tap, which also used to bring it into view).
+  await page.waitForSelector('.edit-toolbar');
+  await page.$eval('.roll', (el) => el.scrollIntoView({ block: 'center' }));
   await page.waitForTimeout(300);
   const note = await findNote(page);
   if (!note) fail('no note found on the piano roll');
@@ -162,7 +164,6 @@ async function findNote(page) {
   if ((await countNotes()) !== before) fail('undo did not restore the note');
   await page.waitForSelector('.save-state:has-text("Saved")', { timeout: 5000 });
   await shot(page, '05-editing');
-  await page.click('button[aria-label="Done editing notes"]');
 
   await page.click('button[aria-label="Back to the notebook"]');
   await page.waitForSelector('[data-tile]');

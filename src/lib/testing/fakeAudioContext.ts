@@ -19,6 +19,8 @@ export interface StartedSource {
   /** How long it plays from `offset` (seconds; null = to its end). */
   duration: number | null;
   stoppedAt: number | null;
+  /** Its playback rate when it started (1 = as recorded). */
+  rate: number;
 }
 
 class FakeParam {
@@ -36,7 +38,14 @@ class FakeParam {
 export function fakeBuffer(duration: number, sampleRate = 48000, channels = 1): AudioBuffer {
   const length = Math.round(duration * sampleRate);
   const data = Array.from({ length: channels }, () => new Float32Array(length));
-  return { duration, length, sampleRate, numberOfChannels: channels, getChannelData: (c: number) => data[c] } as unknown as AudioBuffer;
+  return {
+    duration,
+    length,
+    sampleRate,
+    numberOfChannels: channels,
+    getChannelData: (c: number) => data[c],
+    copyToChannel: (source: Float32Array, c: number) => data[c].set(source.subarray(0, length)),
+  } as unknown as AudioBuffer;
 }
 
 class FakeNode {
@@ -102,12 +111,15 @@ export class FakeAudioContext {
   }
   createBufferSource() {
     const ctx = this;
-    const record: StartedSource = { buffer: null, when: -1, offset: 0, duration: null, stoppedAt: null };
+    const record: StartedSource = { buffer: null, when: -1, offset: 0, duration: null, stoppedAt: null, rate: 1 };
+    const playbackRate = new FakeParam();
     return Object.assign(new FakeNode(), {
       buffer: null as unknown,
+      playbackRate,
       onended: null as (() => void) | null,
       start(this: { buffer: unknown }, when = 0, offset = 0, duration?: number) {
         record.buffer = this.buffer;
+        record.rate = playbackRate.value;
         record.when = when;
         record.offset = offset;
         record.duration = duration ?? null;

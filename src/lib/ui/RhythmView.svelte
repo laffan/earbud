@@ -3,21 +3,27 @@
    * A rhythm sketch, full size (opened like a recording, by double-tapping
    * it on the canvas).
    *
-   * - The overview shows every bar with all three pads; tap a bar to edit it.
-   * - The step grid shows one pad's bar as 16 large steps (a row per beat).
-   *   Tap a step to switch it; drag up or down on it to set its velocity,
-   *   drawn as how full the step is.
-   * - The pads below sound and pick the pad the grid shows. With record on,
+   * - The overview shows every bar with all four pads; tap a bar to go to it.
+   * - The bars sit side by side, the one being edited in the middle: swipe
+   *   between them (on a wide screen the neighbours show at the sides). Each
+   *   shows one pad's steps, 16 large ones, a row per beat. Tap a step to
+   *   switch it; drag up or down on it to set its velocity, drawn as how
+   *   full the step is.
+   * - The pads below sound and pick the pad the bars show. With record on,
    *   pads struck while the loop plays are written on the step they were
-   *   meant for.
+   *   meant for. Each pad plays its own sound or a sample from the library
+   *   (*Sound* above the bars).
    * - Tempo (with tap tempo), swing, bars (a new bar copies the last one;
    *   ×2 doubles the pattern), how many bars it plays on the canvas.
    * Edits save themselves; undo and redo are in the bottom bar.
+   *
+   * Its audio context is renewed in the tap that plays when it may be stuck
+   * (after the app was in the background, see LiveContext): play used to
+   * stop working here after leaving the app.
    */
-  import { onDestroy, untrack } from 'svelte';
+  import { onDestroy, onMount, tick, untrack } from 'svelte';
   import { DrumKit } from '../music/drums';
-  import { routeOutput } from '../audio/devices';
-  import { preparePlaybackSession } from '../audio/session';
+  import { LiveContext } from '../audio/liveContext';
   import {
     doubled,
     emptyPattern,
@@ -27,21 +33,25 @@
     MAX_SWING,
     MIN_BPM,
     normalizePattern,
+    PAD_SOUNDS,
+    padSample,
     PADS,
     playSeconds,
     stepsPerBar,
     withBarAdded,
     withBars,
     withCleared,
+    withPadSample,
     withStep,
     type RhythmPattern,
   } from '../music/rhythm';
   import { RhythmPlayer } from '../music/rhythmPlayer';
-  import { audioContextClass } from '../playback/audioEngine';
   import { errorMessage } from '../platform/tauri';
+  import { playOnce, renderedSample, sampleBuffer } from '../samples/render';
   import { app } from '../state/app.svelte';
   import Icon from './Icon.svelte';
   import Sheet from './Sheet.svelte';
+  import { registerTransport } from './transport';
 
   let { id }: { id: string } = $props();
 
@@ -53,13 +63,19 @@
   const sketch = $derived(app.sketches.find((s) => s.id === id) ?? null);
   let pattern = $state.raw<RhythmPattern>(normalizePattern(untrack(() => sketch?.rhythm)) ?? emptyPattern());
   let title = $state(untrack(() => sketch?.title ?? ''));
-  /** The pad the step grid shows, and the bar. */
+  /** The pad the bars show, and the bar in the middle. */
   let lane = $state(0);
   let page = $state(0);
   let follow = true;
 
   const perBar = $derived(stepsPerBar(pattern));
   const bars = $derived(Array.from({ length: pattern.bars }, (_, i) => i));
+
+  /** What a pad plays: a library sample's name, or its own sound. */
+  function soundName(pad: number): string {
+    const sample = app.sample(padSample(pattern, pad));
+    return sample ? sample.title || 'Sample' : PAD_SOUNDS[pad];
+  }
 
   // ------------------------------------------------------------ editing
 
@@ -130,49 +146,116 @@
 
   // --------------------------------------------------------------- sound
 
-  const ctx = routeOutput(new (audioContextClass())({ latencyHint: 'interactive' }));
-  const limiter = ctx.createDynamicsCompressor();
-  limiter.threshold.value = -3;
-  limiter.ratio.value = 12;
-  limiter.connect(ctx.destination);
-  const kit = new DrumKit(ctx, limiter);
-  const player = new RhythmPlayer(ctx, kit, () => pattern);
+  let kit: DrumKit;
+  let player: RhythmPlayer;
+  /** Which samples the kit plays for the pads (and at which revision), as last applied. */
+  let padSoundsFor = '';
+
+  /** The kit and the player on a context (again after it is renewed). */
+  function build(ctx: AudioContext) {
+    kit?.dispose();
+    const limiter = ctx.createDynamicsCompressor();
+    limiter.threshold.value = -3;
+    limiter.ratio.value = 12;
+    limiter.connect(ctx.destination);
+    kit = new DrumKit(ctx, limiter);
+    player = new RhythmPlayer(ctx, kit, () => pattern);
+    padSoundsFor = '';
+    applyPadSounds();
+  }
+
+  const live = new LiveContext({
+    latencyHint: 'interactive',
+    onRenew: (ctx) => {
+      const was = playing;
+      player?.stop();
+      build(ctx);
+      if (was) player.start(0);
+    },
+    onHidden: () => stopPlaying(),
+    log: (message) => app.logCapture(`[rhythm] ${message}`),
+  });
+
   let playing = $state(false);
   let currentStep = $state(-1);
   let armed = $state(false);
   let frame = 0;
-  let lit = $state([0, 0, 0]);
+  let watchdog: number | undefined;
+  let lit = $state([0, 0, 0, 0]);
 
-  /** Wake the audio inside a tap (WebKit starts it only there). */
+  build(live.context);
+
+  /** The library samples the pads play, loaded into the kit (their own sounds otherwise). */
+  function applyPadSounds() {
+    const ctx = live.context;
+    const wanted = PADS.map((_, pad) => {
+      const sample = app.sample(padSample(pattern, pad));
+      return sample ? `${sample.id}:${sample.updatedAt}` : '';
+    });
+    const key = wanted.join('|');
+    if (key === padSoundsFor) return;
+    padSoundsFor = key;
+    const forKit = kit;
+    PADS.forEach((_, pad) => {
+      const sample = app.sample(padSample(pattern, pad));
+      if (!sample) {
+        forKit.setPadSound(pad, null);
+        return;
+      }
+      renderedSample(sample, ctx.sampleRate).then(
+        (data) => {
+          if (kit === forKit && padSoundsFor === key) forKit.setPadSound(pad, data);
+        },
+        (error) => app.logCapture(`[rhythm] could not load a pad's sample: ${errorMessage(error)}`),
+      );
+    });
+  }
+  $effect(() => {
+    void [pattern.samples, app.samples];
+    untrack(applyPadSounds);
+  });
+
+  /** Wake the audio inside a tap (WebKit starts it only there), with a fresh context if it may be stuck. */
   function unlock() {
-    preparePlaybackSession((message) => app.logCapture(`[rhythm] ${message}`));
-    if (ctx.state === 'running') return;
-    void ctx.resume().catch(() => {});
-    try {
-      const source = ctx.createBufferSource();
-      source.buffer = ctx.createBuffer(1, 1, ctx.sampleRate);
-      source.connect(ctx.destination);
-      source.start(0);
-    } catch {
-      // not needed where resume() suffices
-    }
+    live.wake();
+  }
+
+  function stopPlaying() {
+    player.stop();
+    playing = false;
+    cancelAnimationFrame(frame);
+    currentStep = -1;
   }
 
   function togglePlay() {
     unlock();
     if (playing) {
-      player.stop();
-      playing = false;
-      cancelAnimationFrame(frame);
-      currentStep = -1;
+      stopPlaying();
       return;
     }
     playing = true;
     follow = true;
     player.start(0);
+    // Still no running audio after a while: a fresh context on the next tap.
+    window.clearTimeout(watchdog);
+    watchdog = window.setTimeout(() => {
+      if (!playing || live.state === 'running') return;
+      app.logCapture(`[rhythm] no sound after 2 s (context ${live.state}); a fresh context on the next tap`);
+      live.markStale();
+      stopPlaying();
+      app.toast('The sound did not start. Tap play again.', 'error');
+    }, 2000);
+    let shownBar = -1;
     const paint = () => {
       currentStep = player.currentStep();
-      if (follow && currentStep >= 0) page = Math.floor(currentStep / perBar);
+      const bar = currentStep >= 0 ? Math.floor(currentStep / perBar) : -1;
+      if (follow && bar >= 0 && bar !== shownBar) {
+        shownBar = bar;
+        if (bar !== page) {
+          page = bar;
+          scrollToBar(bar, true);
+        }
+      }
       frame = requestAnimationFrame(paint);
     };
     frame = requestAnimationFrame(paint);
@@ -190,9 +273,71 @@
     }
   }
 
+  // ------------------------------------------------------- bars carousel
+
+  let carousel = $state<HTMLElement | null>(null);
+  /** Scrolling the carousel ourselves (not a swipe) until this time. */
+  let autoScrollUntil = 0;
+  let scrollFrame = 0;
+
+  /** Put bar `bar` in the middle. */
+  function scrollToBar(bar: number, smooth: boolean) {
+    const el = carousel?.querySelector<HTMLElement>(`[data-bar="${bar}"]`);
+    if (!carousel || !el) return;
+    autoScrollUntil = performance.now() + (smooth ? 600 : 80);
+    const left = el.offsetLeft - (carousel.clientWidth - el.offsetWidth) / 2;
+    carousel.scrollTo({ left, behavior: smooth ? 'smooth' : 'auto' });
+  }
+
+  /** The bar nearest the middle of the carousel. */
+  function centeredBar(): number {
+    if (!carousel) return page;
+    const middle = carousel.scrollLeft + carousel.clientWidth / 2;
+    let best = page;
+    let distance = Infinity;
+    for (const el of carousel.querySelectorAll<HTMLElement>('[data-bar]')) {
+      const d = Math.abs(el.offsetLeft + el.offsetWidth / 2 - middle);
+      if (d < distance) {
+        distance = d;
+        best = Number(el.dataset.bar);
+      }
+    }
+    return best;
+  }
+
+  function onCarouselScroll() {
+    cancelAnimationFrame(scrollFrame);
+    scrollFrame = requestAnimationFrame(() => {
+      const bar = centeredBar();
+      if (performance.now() > autoScrollUntil) {
+        // A swipe: the bars stop following the playback.
+        follow = false;
+        page = bar;
+      }
+    });
+  }
+
+  function goToBar(bar: number) {
+    page = bar;
+    follow = false;
+    scrollToBar(bar, true);
+  }
+
+  // A bar added, removed or undone: keep the one in the middle in view.
+  $effect(() => {
+    void pattern.bars;
+    const bar = untrack(() => page);
+    void tick().then(() => scrollToBar(bar, false));
+  });
+
+  onMount(() => {
+    scrollToBar(page, false);
+    return registerTransport(togglePlay);
+  });
+
   // --------------------------------------------------------------- steps
 
-  /** A press on a step: a tap switches it; a vertical drag sets its velocity. */
+  /** A press on a step: a tap switches it; a vertical drag sets its velocity. A sideways swipe scrolls the bars. */
   let press: { pointer: number; step: number; y0: number; level0: number; moved: boolean } | null = null;
   /** The step whose velocity is being dragged, for the readout. */
   let dragged = $state<number | null>(null);
@@ -231,9 +376,25 @@
       scheduleSave();
       return;
     }
+    const bar = Math.floor(p.step / perBar);
+    if (bar !== page) {
+      // A step of a bar at the side: it comes to the middle too.
+      page = bar;
+      follow = false;
+      scrollToBar(bar, true);
+    }
     const on = (pattern.pads[lane][p.step] ?? 0) > 0;
     commit(withStep(pattern, lane, p.step, on ? 0 : NEW_LEVEL));
     if (!on && !playing) kit.hit(lane, 0, NEW_LEVEL);
+  }
+
+  /** The browser took the press over (a sideways swipe scrolls the bars): nothing changes. */
+  function stepCancel(e: PointerEvent) {
+    const p = press;
+    if (!p || e.pointerId !== p.pointer) return;
+    press = null;
+    dragged = null;
+    if (p.moved) scheduleSave();
   }
 
   function stepKey(e: KeyboardEvent, step: number) {
@@ -289,6 +450,34 @@
     setSwing((pattern.swing ?? 0) * 100, true);
   }
 
+  // ----------------------------------------------------------- pad sound
+
+  let choosingSound = $state(false);
+  let stopAudition: (() => void) | null = null;
+
+  function chooseSound(sample: string | null) {
+    choosingSound = false;
+    commit(withPadSample(pattern, lane, sample));
+  }
+
+  /** Hear a sound in the picker: the pad's own, or a sample. */
+  async function hear(sample: string | null) {
+    const ctx = live.wake();
+    stopAudition?.();
+    stopAudition = null;
+    const found = app.sample(sample);
+    if (!found) {
+      kit.hit(lane, 0, 1);
+      return;
+    }
+    try {
+      const buffer = await sampleBuffer(ctx, found);
+      stopAudition = playOnce(ctx, ctx.destination, buffer, 0, 0.8);
+    } catch (error) {
+      app.toast(`Could not play the sample: ${errorMessage(error)}`, 'error');
+    }
+  }
+
   // ---------------------------------------------------------------- menu
 
   let showMenu = $state(false);
@@ -296,7 +485,7 @@
 
   function onKey(e: KeyboardEvent) {
     const target = e.target as HTMLElement;
-    if (target.closest('input, textarea')) return;
+    if (target.closest('input, textarea') || choosingSound) return;
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
       e.preventDefault();
       if (e.shiftKey) redo();
@@ -304,25 +493,27 @@
       return;
     }
     if (e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
-    if (e.key === ' ') {
-      e.preventDefault();
-      togglePlay();
-      return;
-    }
     const pad = PADS.findIndex((p) => p.keys.includes(e.key.toLowerCase()));
     if (pad >= 0) {
       e.preventDefault();
       strike(pad);
+    } else if (e.key === 'ArrowLeft' && page > 0) {
+      goToBar(page - 1);
+    } else if (e.key === 'ArrowRight' && page < pattern.bars - 1) {
+      goToBar(page + 1);
     }
   }
 
   onDestroy(() => {
+    window.clearTimeout(watchdog);
     player.stop();
+    stopAudition?.();
     cancelAnimationFrame(frame);
+    cancelAnimationFrame(scrollFrame);
     if (saveTimer !== undefined) void save();
     void saveTitle();
     kit.dispose();
-    void ctx.close().catch(() => {});
+    live.dispose();
   });
 
   const position = $derived.by(() => {
@@ -367,10 +558,10 @@
   </header>
 
   <main class="content">
-    <!-- Every bar, all pads: tap one to edit it. -->
+    <!-- Every bar, all pads: tap one to go to it. -->
     <section class="overview" aria-label="Bars">
       {#each bars as bar (bar)}
-        <button class="bar-block" class:current={bar === page} onclick={() => ((page = bar), (follow = false))} aria-label="Bar {bar + 1}" aria-pressed={bar === page}>
+        <button class="bar-block" class:current={bar === page} onclick={() => goToBar(bar)} aria-label="Bar {bar + 1}" aria-pressed={bar === page}>
           <span class="bar-number tabular">{bar + 1}</span>
           {#each PADS as _, p (p)}
             <span class="mini-row">
@@ -394,46 +585,65 @@
       </div>
     </section>
 
-    <!-- One pad's bar: 16 large steps, a row per beat. -->
-    <section class="grid-area" aria-label="{PADS[lane].name} steps, bar {page + 1}">
-      <div class="grid-head">
-        <span class="lane-name pad-{lane}">{PADS[lane].name}</span>
-        <span class="dim">bar {page + 1} of {pattern.bars}</span>
-        <span class="spacer"></span>
-        {#if dragged !== null}
-          <span class="readout tabular">velocity {Math.round((pattern.pads[lane][dragged] ?? 0) * 100)}%</span>
-        {:else}
-          <span class="dim hint">Tap a step; drag up or down for velocity</span>
-        {/if}
-      </div>
-      <div class="steps pad-{lane}" role="group" onpointermove={stepMove} onpointerup={stepUp} onpointercancel={stepUp}>
-        {#each Array(perBar) as _, i (i)}
-          {@const step = page * perBar + i}
-          {@const level = pattern.pads[lane][step] ?? 0}
-          <button
-            class="step"
-            class:on={level > 0}
-            class:now={step === currentStep}
-            class:dragging={dragged === step}
-            onpointerdown={(e) => stepDown(e, step)}
-            onkeydown={(e) => stepKey(e, step)}
-            aria-pressed={level > 0}
-            aria-label="Step {Math.floor(i / pattern.stepsPerBeat) + 1}.{(i % pattern.stepsPerBeat) + 1}{level > 0 ? `, velocity ${Math.round(level * 100)}%` : ''}"
-          >
-            <span class="fill" style:height="{level * 100}%"></span>
-            <span class="num tabular">{Math.floor(i / pattern.stepsPerBeat) + 1}.{(i % pattern.stepsPerBeat) + 1}</span>
-            {#if level > 0}<span class="vel tabular">{Math.round(level * 100)}</span>{/if}
-          </button>
-        {/each}
-      </div>
-    </section>
+    <div class="grid-head pad-{lane}">
+      <span class="lane-name">{PADS[lane].name}</span>
+      <button class="sound-button" onclick={() => (choosingSound = true)} aria-label="Sound of {PADS[lane].name}: {soundName(lane)}. Change">
+        <Icon name="samples" size={15} /> {soundName(lane)} <Icon name="down" size={14} />
+      </button>
+      <span class="spacer"></span>
+      {#if dragged !== null}
+        <span class="readout tabular">velocity {Math.round((pattern.pads[lane][dragged] ?? 0) * 100)}%</span>
+      {:else}
+        <span class="dim tabular">bar {page + 1} of {pattern.bars}</span>
+      {/if}
+    </div>
+  </main>
 
+  <!-- The bars side by side, the one being edited in the middle: swipe between them. -->
+  <section
+    class="carousel"
+    bind:this={carousel}
+    onscroll={onCarouselScroll}
+    aria-label="{PADS[lane].name} steps, bar {page + 1} of {pattern.bars}"
+  >
+    {#each bars as bar (bar)}
+      <div class="bar-panel" class:focused={bar === page} data-bar={bar}>
+        <div class="panel-head">
+          <span class="tabular">Bar {bar + 1}</span>
+          {#if bar === page}<span class="dim hint">Tap a step; drag up or down for velocity</span>{/if}
+        </div>
+        <div class="steps pad-{lane}" role="group" aria-label="Bar {bar + 1}" onpointermove={stepMove} onpointerup={stepUp} onpointercancel={stepCancel}>
+          {#each Array(perBar) as _, i (i)}
+            {@const step = bar * perBar + i}
+            {@const level = pattern.pads[lane][step] ?? 0}
+            <button
+              class="step"
+              class:on={level > 0}
+              class:now={step === currentStep}
+              class:dragging={dragged === step}
+              onpointerdown={(e) => stepDown(e, step)}
+              onkeydown={(e) => stepKey(e, step)}
+              aria-pressed={level > 0}
+              aria-label="Bar {bar + 1}, step {Math.floor(i / pattern.stepsPerBeat) + 1}.{(i % pattern.stepsPerBeat) + 1}{level > 0 ? `, velocity ${Math.round(level * 100)}%` : ''}"
+            >
+              <span class="fill" style:height="{level * 100}%"></span>
+              <span class="num tabular">{Math.floor(i / pattern.stepsPerBeat) + 1}.{(i % pattern.stepsPerBeat) + 1}</span>
+              {#if level > 0}<span class="vel tabular">{Math.round(level * 100)}</span>{/if}
+            </button>
+          {/each}
+        </div>
+      </div>
+    {/each}
+  </section>
+
+  <main class="content">
     <!-- The pads: sound, pick the pad above, and record into the loop. -->
     <section class="pads" aria-label="Pads">
       {#each PADS as pad, p (pad.name)}
-        <button class="pad pad-{p}" class:selected={lane === p} onpointerdown={(e) => (e.preventDefault(), strike(p))} aria-label="{pad.name} (key {pad.keys[0]})">
+        <button class="pad pad-{p}" class:selected={lane === p} onpointerdown={(e) => (e.preventDefault(), strike(p))} aria-label="{pad.name}, {soundName(p)} (key {pad.keys[0]})">
           {#key lit[p]}<span class="flash" class:go={lit[p] > 0}></span>{/key}
           <span class="pad-name">{pad.name}</span>
+          <span class="pad-sound">{soundName(p)}</span>
           <span class="pad-key">{pad.keys[0]}</span>
         </button>
       {/each}
@@ -492,6 +702,36 @@
   </footer>
 </div>
 
+{#if choosingSound}
+  {@const current = padSample(pattern, lane)}
+  <Sheet title="{PADS[lane].name} plays" onclose={() => (choosingSound = false)}>
+    <ul class="choices" role="listbox" aria-label="Sound of {PADS[lane].name}">
+      <li>
+        <button class="choice" role="option" aria-selected={current === null} onclick={() => chooseSound(null)}>
+          <span class="check">{#if current === null}<Icon name="check" size={16} />{/if}</span>
+          <span class="choice-name">{PAD_SOUNDS[lane]} <span class="dim">(built in)</span></span>
+        </button>
+        <button class="icon-button" onclick={() => hear(null)} aria-label="Hear the {PAD_SOUNDS[lane]}"><Icon name="play" size={16} /></button>
+      </li>
+      {#each app.samples as s (s.id)}
+        <li>
+          <button class="choice" role="option" aria-selected={current === s.id} onclick={() => chooseSound(s.id)}>
+            <span class="check">{#if current === s.id}<Icon name="check" size={16} />{/if}</span>
+            <span class="choice-name">{s.title || 'Sample'}</span>
+          </button>
+          <button class="icon-button" onclick={() => hear(s.id)} aria-label="Hear {s.title || 'the sample'}"><Icon name="play" size={16} /></button>
+        </li>
+      {/each}
+    </ul>
+    {#if app.samples.length === 0}
+      <p class="confirm-text">
+        No samples in the library yet. Open a recording and, on its waveform, hold <kbd>Ctrl</kbd> and drag (or press and
+        hold for two seconds), then <em>Add to library</em>.
+      </p>
+    {/if}
+  </Sheet>
+{/if}
+
 {#if confirmDelete}
   <Sheet title="Delete this rhythm?" onclose={() => (confirmDelete = false)}>
     <p class="confirm-text">The rhythm will be removed from the notebook.</p>
@@ -507,6 +747,7 @@
     --kick: var(--ink-2);
     --snare: var(--accent);
     --hat: var(--chord);
+    --clap: var(--note);
     min-height: 100vh;
     min-height: 100dvh;
     padding-bottom: calc(var(--safe-bottom) + 84px);
@@ -519,6 +760,9 @@
   }
   .pad-2 {
     --pad: var(--hat);
+  }
+  .pad-3 {
+    --pad: var(--clap);
   }
   .bar {
     position: sticky;
@@ -654,10 +898,66 @@
   /* Step grid */
   .grid-head {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: 8px;
-    margin-bottom: 8px;
     min-height: 1.5em;
+    margin-bottom: -8px;
+  }
+  .sound-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 55%;
+    min-height: 30px;
+    padding: 0 10px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--pad) 55%, var(--rule));
+    font-size: 0.82rem;
+    color: var(--ink-2);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* The bars side by side, full width, the one being edited in the middle. */
+  .carousel {
+    --panel: min(440px, calc(100vw - 64px));
+    display: flex;
+    gap: 14px;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scroll-snap-type: x mandatory;
+    padding: 14px calc((100vw - var(--panel)) / 2) 6px;
+    margin-bottom: 18px;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .carousel::-webkit-scrollbar {
+    display: none;
+  }
+  .bar-panel {
+    flex: none;
+    width: var(--panel);
+    scroll-snap-align: center;
+    scroll-snap-stop: always;
+    opacity: 0.45;
+    transform: scale(0.95);
+    transition:
+      opacity 160ms ease,
+      transform 160ms ease;
+  }
+  .bar-panel.focused {
+    opacity: 1;
+    transform: none;
+  }
+  .panel-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin: 0 2px 8px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--ink-2);
   }
   .lane-name {
     font-weight: 700;
@@ -681,7 +981,8 @@
     display: grid;
     grid-template-columns: repeat(4, 1fr);
     gap: 8px;
-    touch-action: none;
+    /* Sideways swipes scroll the bars; vertical drags set a step's velocity. */
+    touch-action: pan-x;
     user-select: none;
     -webkit-user-select: none;
     -webkit-touch-callout: none;
@@ -693,7 +994,7 @@
     overflow: hidden;
     background: var(--paper-sunk);
     border: 1px solid var(--rule);
-    touch-action: none;
+    touch-action: pan-x;
     transition: transform 80ms ease;
   }
   /* The first step of each beat a little darker, to read the grid. */
@@ -747,7 +1048,7 @@
   /* Pads */
   .pads {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     gap: 10px;
     touch-action: none;
     user-select: none;
@@ -775,6 +1076,19 @@
   .pad-name {
     position: relative;
     font-weight: 600;
+    margin-top: -10px;
+  }
+  .pad-sound {
+    position: absolute;
+    left: 6px;
+    right: 6px;
+    bottom: 22px;
+    font-size: 0.7rem;
+    color: var(--ink-3);
+    text-align: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .pad-key {
     position: absolute;
@@ -912,6 +1226,50 @@
   .save-state {
     font-size: 0.78rem;
     color: var(--ink-3);
+  }
+  .choices {
+    list-style: none;
+    margin: 0 0 8px;
+    padding: 0;
+    display: grid;
+    gap: 2px;
+    max-height: 50vh;
+    overflow-y: auto;
+  }
+  .choices li {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .choice {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px;
+    border-radius: var(--radius-sm);
+    text-align: left;
+  }
+  .choice:hover {
+    background: var(--paper-sunk);
+  }
+  .choice .check {
+    width: 16px;
+    display: inline-grid;
+    color: var(--accent);
+  }
+  .choice-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  kbd {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    padding: 1px 5px;
+    border-radius: 4px;
+    border: 1px solid var(--rule-strong);
   }
   .confirm-text {
     margin: 0 0 16px;

@@ -88,6 +88,8 @@
   }
 
   const synth = new NoteSynth();
+  // Guitar shapes play recorded guitar notes: load them now, not on the first tap.
+  synth.preloadGuitar();
   onDestroy(() => synth.dispose());
 
   // ------------------------------------------------------------- a chord
@@ -140,14 +142,15 @@
 
   function play(c: Shown) {
     synth.unlock();
-    synth.playChord(pitchesOf(c), 80, 1.6, instrument === 'guitar' ? 0.035 : 0.012);
+    const guitar = instrument === 'guitar' && !!shapeOf(c);
+    synth.playChord(pitchesOf(c), 80, 1.6, guitar ? 0.035 : 0.012, guitar ? 'guitar' : 'piano');
   }
 
   /** One of a chord's guitar shapes, heard (and remembered as the one to play for it). */
   function playShape(c: Shown, index: number) {
     shapeIndex = { ...shapeIndex, [c.symbol]: index };
     synth.unlock();
-    synth.playChord(shapePitches(c.guitar[index]), 80, 1.6, 0.035);
+    synth.playChord(shapePitches(c.guitar[index]), 80, 1.6, 0.035, 'guitar');
   }
 
   /** Where a shape sits on the neck, in words. */

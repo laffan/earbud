@@ -41,6 +41,7 @@ function sketch(patch: Partial<Sketch>): Sketch {
     rhythm: null,
     canvasRepeats: 1,
     canvasVolume: 1,
+    noteSampleId: null,
     canvasW: null,
     canvasH: null,
     ...patch,

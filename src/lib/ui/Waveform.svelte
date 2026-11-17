@@ -6,6 +6,11 @@
    * view of the waveform around the finger) that follows the finger while
    * it moves; it works on the crop handles too. The bracket handles at
    * either end crop playback to a section; what lies outside them is dimmed.
+   *
+   * With `onaddsample`: hold Ctrl and drag across the waveform, or press and
+   * hold it for 2 seconds without moving (then drag, or let go), to select a
+   * passage. A tooltip over it offers *Add to library*; its edges can be
+   * dragged, and a tap elsewhere (or Esc) lets it go.
    */
   import { onDestroy, onMount } from 'svelte';
   import { DETAIL_RATE, loadPeaks, type Peaks } from '../audio/peaks';
@@ -27,6 +32,10 @@
     onseek?: (time: number, scrubbing: boolean) => void;
     /** Crop handles moved; `done` is true when the drag ends. */
     oncropchange?: (start: number, end: number, done: boolean) => void;
+    /** A passage selected for the sample library (sketch time): add it. */
+    onaddsample?: (start: number, end: number) => void | Promise<void>;
+    /** Hear the selected passage. */
+    onpreviewsample?: (start: number, end: number) => void;
   }
 
   let {
@@ -39,7 +48,17 @@
     flush = false,
     onseek,
     oncropchange,
+    onaddsample,
+    onpreviewsample,
   }: Props = $props();
+
+  /** Press this long without moving to select a passage for the library (ms). */
+  const SELECT_HOLD_MS = 2000;
+  /** A selection made without dragging is this long (seconds). */
+  const DEFAULT_SELECTION = 1;
+  /** Longest passage the library takes (seconds). */
+  const MAX_SELECTION = 60;
+  const MIN_SELECTION = 0.05;
 
   /** Shortest crop allowed (seconds). */
   const MIN_CROP = 0.5;
@@ -120,7 +139,110 @@
     loupe = null;
   }
 
-  onDestroy(() => window.clearTimeout(holdTimer));
+  // ------------------------------------------------------------ sample selection
+
+  /** The passage selected for the library (sketch time), while there is one. */
+  let selection = $state<{ start: number; end: number } | null>(null);
+  /** Dragging out a selection from its anchor, or one of its edges. */
+  let selecting: { anchor: number; pointer: number; moved: boolean } | null = null;
+  let edgeDrag = $state<{ edge: 'start' | 'end'; pointer: number } | null>(null);
+  let selectTimer = 0;
+  let ctrlHeld = false;
+  let adding = $state(false);
+
+  /** Where the take has sound: a selection stays inside it. */
+  const takeSpan = $derived({ start: Math.max(0, offset), end: Math.min(total, offset + (peaks?.duration ?? total)) });
+
+  function clampSelection(a: number, b: number): { start: number; end: number } {
+    let start = Math.max(takeSpan.start, Math.min(a, b));
+    let end = Math.min(takeSpan.end, Math.max(a, b));
+    if (end - start > MAX_SELECTION) end = start + MAX_SELECTION;
+    if (end - start < MIN_SELECTION) end = Math.min(takeSpan.end, start + MIN_SELECTION);
+    start = Math.max(takeSpan.start, Math.min(start, end - MIN_SELECTION));
+    return { start, end };
+  }
+
+  /** Begin selecting at `time` (the press stays on the waveform; dragging sets the other edge). */
+  function beginSelection(time: number, pointer: number) {
+    window.clearTimeout(selectTimer);
+    selectTimer = 0;
+    endHold();
+    scrubbing = false;
+    selecting = { anchor: time, pointer, moved: false };
+    selection = clampSelection(time, time + MIN_SELECTION);
+    navigator.vibrate?.(15);
+  }
+
+  function clearSelection() {
+    selection = null;
+    selecting = null;
+    edgeDrag = null;
+  }
+
+  async function addSelection() {
+    const sel = selection;
+    if (!sel || !onaddsample || adding) return;
+    adding = true;
+    try {
+      await onaddsample(sel.start, sel.end);
+      clearSelection();
+    } finally {
+      adding = false;
+    }
+  }
+
+  function edgeDown(edge: 'start' | 'end', e: PointerEvent) {
+    e.stopPropagation();
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    edgeDrag = { edge, pointer: e.pointerId };
+  }
+
+  function edgeMove(e: PointerEvent) {
+    const d = edgeDrag;
+    const sel = selection;
+    if (!d || d.pointer !== e.pointerId || !sel) return;
+    const t = timeAt(e.clientX);
+    selection = d.edge === 'start' ? clampSelection(Math.min(t, sel.end - MIN_SELECTION), sel.end) : clampSelection(sel.start, Math.max(t, sel.start + MIN_SELECTION));
+  }
+
+  function edgeUp(e: PointerEvent) {
+    if (edgeDrag?.pointer === e.pointerId) edgeDrag = null;
+  }
+
+  /** Where the tooltip sits: above the selection (below the waveform if there is no room), inside the window. */
+  let tipW = $state(220);
+  const tipBox = $derived.by(() => {
+    void width;
+    if (!selection || !canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    const mid = rect.left + (((selection.start + selection.end) / 2) / total) * rect.width;
+    const left = Math.max(8, Math.min(window.innerWidth - tipW - 8, mid - tipW / 2));
+    const above = rect.top - 52;
+    return { left, top: above >= 8 ? above : rect.bottom + 10 };
+  });
+
+  onMount(() => {
+    if (!onaddsample) return;
+    const key = (e: KeyboardEvent) => {
+      ctrlHeld = e.ctrlKey;
+      if (e.type === 'keydown' && e.key === 'Escape' && selection) clearSelection();
+    };
+    const blur = () => (ctrlHeld = false);
+    window.addEventListener('keydown', key);
+    window.addEventListener('keyup', key);
+    window.addEventListener('blur', blur);
+    return () => {
+      window.removeEventListener('keydown', key);
+      window.removeEventListener('keyup', key);
+      window.removeEventListener('blur', blur);
+    };
+  });
+
+  onDestroy(() => {
+    window.clearTimeout(holdTimer);
+    window.clearTimeout(selectTimer);
+  });
 
   /** Where the magnifier sits: above the waveform (below it if there is no room), inside the window. */
   const loupeBox = $derived.by(() => {
@@ -329,19 +451,55 @@
   }
 
   function onPointerDown(e: PointerEvent) {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
     canvas.setPointerCapture(e.pointerId);
-    scrubbing = true;
     const t = timeAt(e.clientX);
+    if (onaddsample && (e.ctrlKey || ctrlHeld)) {
+      // Ctrl: select a passage for the library instead of scrubbing.
+      e.preventDefault();
+      beginSelection(t, e.pointerId);
+      return;
+    }
+    if (selection) clearSelection();
+    scrubbing = true;
     onseek?.(t, true);
     armHold(e.clientX, () => timeAt(e.clientX));
+    if (onaddsample) {
+      window.clearTimeout(selectTimer);
+      // Held still for 2 s: select from here.
+      selectTimer = window.setTimeout(() => {
+        selectTimer = 0;
+        if (scrubbing) beginSelection(timeAt(pressX), e.pointerId);
+      }, SELECT_HOLD_MS);
+    }
   }
   function onPointerMove(e: PointerEvent) {
+    const s = selecting;
+    if (s && s.pointer === e.pointerId) {
+      const t = timeAt(e.clientX);
+      if (Math.abs(t - s.anchor) > 0.02) s.moved = true;
+      if (s.moved) selection = clampSelection(s.anchor, t);
+      return;
+    }
     if (!scrubbing) return;
     const t = timeAt(e.clientX);
+    if (selectTimer && Math.abs(e.clientX - pressX) > HOLD_SLOP) {
+      window.clearTimeout(selectTimer);
+      selectTimer = 0;
+    }
     onseek?.(t, true);
     moveHold(e.clientX, t);
   }
   function onPointerUp(e: PointerEvent) {
+    const s = selecting;
+    if (s && s.pointer === e.pointerId) {
+      selecting = null;
+      // Let go without dragging: a passage of a second from the press.
+      if (!s.moved) selection = clampSelection(s.anchor, s.anchor + DEFAULT_SELECTION);
+      return;
+    }
+    window.clearTimeout(selectTimer);
+    selectTimer = 0;
     endHold();
     if (!scrubbing) return;
     scrubbing = false;
@@ -367,7 +525,7 @@
     media.addEventListener('change', onTheme);
     // Once the magnifier is open, a vertical wobble must not scroll the page away.
     const onTouchMove = (e: TouchEvent) => {
-      if ((loupe || dragging) && e.cancelable) e.preventDefault();
+      if ((loupe || dragging || selecting || edgeDrag) && e.cancelable) e.preventDefault();
     };
     container.addEventListener('touchmove', onTouchMove, { passive: false });
     return () => {
@@ -393,8 +551,12 @@
     onpointerup={onPointerUp}
     onpointercancel={() => {
       scrubbing = false;
+      selecting = null;
+      window.clearTimeout(selectTimer);
+      selectTimer = 0;
       endHold();
     }}
+    oncontextmenu={(e) => onaddsample && e.preventDefault()}
     onkeydown={onKeyDown}
   ></canvas>
   {#if !path || failed}
@@ -444,7 +606,52 @@
       <span class="grip"></span>
     </div>
   {/if}
+
+  {#if selection}
+    <!-- The passage selected for the library, with its edges to drag. -->
+    <div class="selection" style:left="{(selection.start / total) * 100}%" style:width="{((selection.end - selection.start) / total) * 100}%"></div>
+    {#each ['start', 'end'] as const as edge (edge)}
+      <div
+        class="sel-edge"
+        style:left="{((edge === 'start' ? selection.start : selection.end) / total) * 100}%"
+        role="slider"
+        tabindex="-1"
+        aria-label="Selection {edge}"
+        aria-valuenow={Math.round((edge === 'start' ? selection.start : selection.end) * 10) / 10}
+        onpointerdown={(e) => edgeDown(edge, e)}
+        onpointermove={edgeMove}
+        onpointerup={edgeUp}
+        onpointercancel={edgeUp}
+      ></div>
+    {/each}
+  {/if}
 </div>
+
+{#if selection}
+  {#if tipBox}
+    <div
+      class="sample-tip"
+      role="toolbar"
+      tabindex="-1"
+      aria-label="Selected passage"
+      bind:clientWidth={tipW}
+      style:left="{tipBox.left}px"
+      style:top="{tipBox.top}px"
+      onpointerdown={(e) => e.stopPropagation()}
+    >
+      {#if onpreviewsample}
+        <button class="tip-icon" onclick={() => selection && onpreviewsample?.(selection.start, selection.end)} aria-label="Hear the selection">
+          <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l12-7.5z" fill="currentColor" /></svg>
+        </button>
+      {/if}
+      <button class="tip-add" onclick={addSelection} disabled={adding}>{adding ? 'Adding…' : 'Add to library'}</button>
+      <span class="tip-len tabular">{formatClockTenths(selection.end - selection.start)}</span>
+      <button class="tip-icon" onclick={clearSelection} aria-label="Cancel the selection">
+        <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
+      </button>
+    </div>
+  {/if}
+{/if}
 
 {#if loupe && loupeBox}
   <div class="loupe" style:left="{loupeBox.left}px" style:top="{loupeBox.top}px" aria-hidden="true">
@@ -570,6 +777,66 @@
     font-size: 0.8rem;
     color: var(--ink-3);
     pointer-events: none;
+  }
+  .selection {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+    border-left: 2px solid var(--accent);
+    border-right: 2px solid var(--accent);
+    pointer-events: none;
+  }
+  .sel-edge {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 24px;
+    margin-left: -12px;
+    touch-action: none;
+    cursor: ew-resize;
+    z-index: 2;
+  }
+  .sample-tip {
+    position: fixed;
+    z-index: 41;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px;
+    border-radius: 999px;
+    background: var(--ink);
+    color: var(--paper);
+    box-shadow: var(--shadow);
+    white-space: nowrap;
+    animation: tip-in 120ms ease;
+  }
+  @keyframes tip-in {
+    from {
+      opacity: 0;
+      translate: 0 4px;
+    }
+  }
+  .tip-add {
+    padding: 6px 12px;
+    border-radius: 999px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    background: var(--accent);
+    color: var(--accent-ink);
+  }
+  .tip-icon {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    color: var(--paper);
+  }
+  .tip-len {
+    font-size: 0.75rem;
+    opacity: 0.8;
+    padding: 0 2px;
   }
   .loupe {
     position: fixed;
