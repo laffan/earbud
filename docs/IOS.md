@@ -44,7 +44,7 @@ After setting up signing below, build an installable development-signed app:
 npm run tauri -- ios build --export-method debugging
 ```
 
-Install the IPA on a device included in your provisioning profile using Xcode → Window → Devices and Simulators. Use a current iOS or iPadOS version with WebAssembly SIMD support. Disconnect from the Mac and enable airplane mode. Import a short piano WAV or record a phrase, open the piano roll, then choose Share → MIDI. For a repeatable test fixture, `node scripts/make-test-audio.mjs chords.wav` generates four chords with 17 notes.
+Install the IPA on a device included in your provisioning profile using Xcode → Window → Devices and Simulators. Use a current iOS or iPadOS version with WebAssembly SIMD support. Disconnect from the Mac and enable airplane mode. Import a short piano WAV or record a phrase for the default Basic Pitch transcription. Open the recording’s actions, choose Transcribe again, select Dettato, and confirm. Use Share → MIDI to export the current notes. For a repeatable test fixture, `node scripts/make-test-audio.mjs chords.wav` generates four chords with 17 notes.
 
 Mobile uses the transcriber’s two pitched voices with overlapping two-second windows, and assigns velocity 80 to the decoded notes. The desktop Python pipeline also repairs notes and groups instruments, so results can differ. Recording and playback stay available while the mobile worker transcribes.
 

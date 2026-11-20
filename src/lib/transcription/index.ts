@@ -1,3 +1,5 @@
+import { BasicPitchEngine } from './basicPitchEngine';
+import { DEFAULT_TRANSCRIPTION_SETTINGS, transcriptionParams } from './settings';
 import { isIOSLike } from '../platform/tauri';
 import { MobileDettatoEngine } from './dettatoMobile';
 import { DettatoEngine } from './dettatoEngine';
@@ -9,8 +11,13 @@ export { DEFAULT_BASIC_PITCH_PARAMS, type BasicPitchParams } from './basicPitchP
 export * from './settings';
 
 const mobile = new MobileDettatoEngine();
-const engine = new DettatoEngine();
+const desktop = new DettatoEngine();
+export type TranscriptionModel = 'basic-pitch' | 'dettato';
 
-export function getTranscriptionEngine(): TranscriptionEngine {
-  return isIOSLike() ? mobile : engine;
+export function getTranscriptionEngine(model: TranscriptionModel = 'basic-pitch', settings = DEFAULT_TRANSCRIPTION_SETTINGS): TranscriptionEngine {
+  if (model === 'dettato') return isIOSLike() ? mobile : desktop;
+  return new BasicPitchEngine({
+    params: transcriptionParams(settings),
+    labels: { environment: settings.environment, heldNotes: settings.heldNotes },
+  });
 }

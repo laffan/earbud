@@ -29,6 +29,7 @@ import {
   getTranscriptionEngine,
   normalizeTranscriptionSettings,
   type TranscriptionSettings,
+  type TranscriptionModel,
 } from '../transcription';
 import { WatchReceiver } from '../watch/receiver.svelte';
 import { TauriWatchLink } from '../watch/tauriWatchLink';
@@ -289,7 +290,7 @@ export class AppState {
     this.queue = new ProcessingQueue({
       library: this.library,
       capture: () => this.captureEngine,
-      engine: getTranscriptionEngine,
+      engine: () => getTranscriptionEngine('basic-pitch', this.settings.transcription),
       onProgress: (id, progress) => {
         if (progress) this.jobs[id] = progress;
         else delete this.jobs[id];
@@ -940,8 +941,8 @@ export class AppState {
     };
   }
 
-  transcribe(id: string) {
-    this.queue.enqueue(id);
+  transcribe(id: string, model: TranscriptionModel = 'basic-pitch') {
+    this.queue.enqueue(id, getTranscriptionEngine(model, this.settings.transcription));
   }
 
   /** Change part of the transcription settings (applies to the next transcription). */

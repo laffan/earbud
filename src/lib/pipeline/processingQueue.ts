@@ -32,7 +32,7 @@ export interface ProcessingQueueOptions {
 }
 
 export class ProcessingQueue {
-  private queue: string[] = [];
+  private queue: { id: string; engine: TranscriptionEngine }[] = [];
   private running: string | null = null;
   private abort: AbortController | null = null;
   private paused = false;
@@ -40,16 +40,16 @@ export class ProcessingQueue {
   constructor(private options: ProcessingQueueOptions) {}
 
   /** Queue a sketch for (re-)transcription. No-op if already queued. */
-  enqueue(id: string) {
-    if (this.running === id || this.queue.includes(id)) return;
-    this.queue.push(id);
+  enqueue(id: string, engine?: TranscriptionEngine) {
+    if (this.running === id || this.queue.some(job => job.id === id)) return;
+    this.queue.push({ id, engine: engine ?? this.options.engine() });
     this.options.onProgress(id, { stage: 'queued', fraction: 0 });
     void this.pump();
   }
 
   /** Cancel a queued or running job. */
   cancel(id: string) {
-    this.queue = this.queue.filter((q) => q !== id);
+    this.queue = this.queue.filter((job) => job.id !== id);
     if (this.running === id) this.abort?.abort();
     else this.options.onProgress(id, null);
   }
@@ -61,17 +61,18 @@ export class ProcessingQueue {
   }
 
   isBusy(id: string): boolean {
-    return this.running === id || this.queue.includes(id);
+    return this.running === id || this.queue.some(job => job.id === id);
   }
 
   private async pump() {
     if (this.running || this.paused) return;
-    const id = this.queue.shift();
-    if (!id) return;
+    const job = this.queue.shift();
+    if (!job) return;
+    const { id, engine } = job;
     this.running = id;
     this.abort = new AbortController();
     try {
-      await this.process(id, this.abort.signal);
+      await this.process(id, engine, this.abort.signal);
     } finally {
       this.running = null;
       this.abort = null;
@@ -80,7 +81,7 @@ export class ProcessingQueue {
     }
   }
 
-  private async process(id: string, signal: AbortSignal) {
+  private async process(id: string, engine: TranscriptionEngine, signal: AbortSignal) {
     const { library, onProgress, onSketchChanged } = this.options;
     let sketch: Sketch;
     try {
@@ -130,7 +131,6 @@ export class ProcessingQueue {
 
       // 2. Notes.
       onProgress(id, { stage: 'transcribing', fraction: 0 });
-      const engine = this.options.engine();
       const notes = await engine.transcribe(analysisPath, {
         signal,
         onProgress: (fraction) => onProgress(id, { stage: 'transcribing', fraction }),

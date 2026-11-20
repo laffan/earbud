@@ -21,6 +21,7 @@
   import { errorMessage } from '../platform/tauri';
   import { app } from '../state/app.svelte';
   import { environmentName, type Environment, type HeldNotes } from '../transcription/settings';
+  import type { TranscriptionModel } from '../transcription';
   import type { PianoNote } from '../transcription/types';
   import ChordStrip from './ChordStrip.svelte';
   import Icon from './Icon.svelte';
@@ -94,6 +95,7 @@
   // --------------------------------------------------------------- ui
   let showMenu = $state(false);
   let showRetranscribe = $state(false);
+  let model = $state<TranscriptionModel>('basic-pitch');
   let retranscribeDiscards = $state(false);
   let confirmation = $state<{
     title: string;
@@ -303,15 +305,14 @@
     undoStack = [];
     redoStack = [];
     updateHistory();
-    app.transcribe(take.id);
+    app.transcribe(take.id, model);
   }
 
   function askRetranscribe() {
     showMenu = false;
-    if (hasTranscription) {
-      retranscribeDiscards = !!detail?.hasEdits || dirty;
-      showRetranscribe = true;
-    } else retranscribe();
+    model = 'basic-pitch';
+    retranscribeDiscards = !!detail?.hasEdits || dirty;
+    showRetranscribe = true;
   }
 
   const transcribedWith = $derived.by(() => {
@@ -398,12 +399,12 @@
     {:else if live.transcriptionStatus === 'failed'}
       <div class="banner warn">
         <span>Transcription failed: {live.transcriptionError ?? 'unknown error'}. The recording is safe.</span>
-        <button class="pill-button" onclick={retranscribe}>Try again</button>
+        <button class="pill-button" onclick={askRetranscribe}>Try again</button>
       </div>
     {:else if detail && !hasTranscription && live.status === 'saved'}
       <div class="banner">
         <span>Not transcribed yet.</span>
-        <button class="pill-button" onclick={retranscribe}>Transcribe</button>
+        <button class="pill-button" onclick={askRetranscribe}>Transcribe</button>
       </div>
     {:else if live.status === 'recording'}
       <div class="banner"><span>Recording…</span></div>
@@ -495,16 +496,22 @@
 </section>
 
 {#if showRetranscribe}
-  <Sheet title="Transcribe again" onclose={() => (showRetranscribe = false)}>
+  <Sheet title={hasTranscription ? 'Transcribe again' : 'Transcribe'} onclose={() => (showRetranscribe = false)}>
     <div class="retranscribe">
-      <p class="help">Run Dettato again on this recording?</p>
+      <label>
+        Transcription model
+        <select bind:value={model}>
+          <option value="basic-pitch">Basic Pitch (default)</option>
+          <option value="dettato">Dettato</option>
+        </select>
+      </label>
       {#if retranscribeDiscards}
         <p class="confirm-text">
           A new transcription replaces your note corrections on this take. The recording itself is never changed.
         </p>
       {/if}
       <div class="confirm-actions">
-        <button class="pill-button primary" onclick={retranscribe}>Transcribe again</button>
+        <button class="pill-button primary" onclick={retranscribe}>{hasTranscription ? 'Transcribe again' : 'Transcribe'}</button>
         <button class="pill-button" onclick={() => (showRetranscribe = false)}>Cancel</button>
       </div>
     </div>
