@@ -30,6 +30,7 @@
     "@tauri-apps/plugin-dialog": "^2.8.0",
     "@tensorflow/tfjs": "^4.22.0",
     "@tonejs/midi": "^2.0.28",
+    "onnxruntime-web": "^1.22.0",
     "tonal": "^6.5.1"
   },
   "devDependencies": {

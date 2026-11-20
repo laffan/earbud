@@ -1,9 +1,14 @@
+import { existsSync } from 'node:fs';
 import { defineConfig } from 'vitest/config';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 
 // Set by `tauri ios dev` / `tauri android dev` so a physical device can reach
 // the dev server over the local network.
 const host = process.env.TAURI_DEV_HOST;
+
+if (process.env.TAURI_ENV_PLATFORM === 'ios' && !existsSync('public/models/dettato/transcriber.onnx')) {
+  throw new Error('Prepare the offline Dettato model before building iOS. See docs/IOS.md.');
+}
 
 export default defineConfig({
   plugins: [svelte()],

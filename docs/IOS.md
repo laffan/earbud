@@ -21,7 +21,7 @@ Earbud's iOS build uses Tauri 2's iOS support. Recording is done natively by
    ```
 
    On an Intel Mac, also add `x86_64-apple-ios` for the simulator.
-3. Install JavaScript dependencies (this also copies the Basic Pitch model into `public/models/`):
+3. Install JavaScript dependencies:
 
    ```bash
    npm install
@@ -33,6 +33,28 @@ Earbud's iOS build uses Tauri 2's iOS support. Recording is done natively by
    ```
 
    If it reports missing tools, run `npm run tauri info` and follow its advice.
+
+### Bundle Dettato for offline transcription
+
+On an Apple silicon Mac, use Python 3.12 and run these commands once from the checkout. Model preparation requires internet access. The resulting app contains the weights and WebAssembly runtime.
+
+```sh
+python3.12 -m venv .venv-dettato
+.venv-dettato/bin/python -m pip install -r scripts/dettato-mobile-requirements.txt
+.venv-dettato/bin/python scripts/export-dettato-mobile.py
+```
+
+The exporter downloads Dettato's pitched-note weights, converts them and compares the six output maps with PyTorch. It writes the verified model to `public/models/dettato/transcriber.onnx` (about 62 MiB). Keep it there when running the iOS build.
+
+After setting up signing below, build an installable development-signed app:
+
+```sh
+npm run tauri -- ios build --export-method debugging
+```
+
+Install the IPA on a device included in your provisioning profile using Xcode → Window → Devices and Simulators. Use a current iOS or iPadOS version with WebAssembly SIMD support. Disconnect from the Mac and enable airplane mode. Import a short piano WAV or record a phrase, open the piano roll, then choose Share → MIDI. For a repeatable test fixture, `node scripts/make-test-audio.mjs chords.wav` generates four chords with 17 notes.
+
+Mobile uses the transcriber’s two pitched voices with overlapping two-second windows, and assigns velocity 80 to the decoded notes. The desktop Python pipeline also repairs notes and groups instruments, so results can differ. Recording and playback stay available while the mobile worker transcribes.
 
 ### Code signing
 

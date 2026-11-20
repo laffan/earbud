@@ -2,6 +2,10 @@
 
 This branch uses Dettato for new recordings, audio imports and **Transcribe again**.
 
+## Standalone iPhone and iPad
+
+The iOS app bundles Dettato’s pitched-note network and runs it on the device in a Web Worker. You can record, transcribe, edit and export MIDI in airplane mode. Prepare the model once on the build Mac, then install the signed app. [Build and device test instructions](docs/IOS.md#bundle-dettato-for-offline-transcription)
+
 ## Try it on a computer
 
 Requires Node.js 22.12+ and Python 3.10+ in an activated virtual environment. From the repository root, run:
@@ -18,7 +22,7 @@ npm ci
 npm run dev
 ```
 
-Open http://localhost:1420, record or import a short piano phrase, then open its piano roll and export MIDI. The first take downloads the model weights from Hugging Face. CPU inference can take a minute or more. After the weights are cached, you can run offline. Browser sketches disappear on reload. Desktop Tauri builds also require the local helper. Standalone mobile transcription is unsupported on this branch.
+Open http://localhost:1420, record or import a short piano phrase, then open its piano roll and export MIDI. The first take downloads the model weights from Hugging Face. CPU inference can take a minute or more. After the weights are cached, you can run offline. Browser sketches disappear on reload. Desktop Tauri builds also require the local helper.
 
 Earbud sends its mono analysis WAV to the loopback helper and combines all pitched instruments into its editable piano roll. Instrument assignments and drums are omitted from the sketch and exported MIDI. Cancelling discards the result. An inference already running in Python finishes before the next take starts.
 

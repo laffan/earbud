@@ -13,3 +13,6 @@ test-results/
 playwright-report/
 # scripts/fake-watch.mjs pairing
 fake-watch-link.json
+
+public/models/dettato/*.onnx
+.venv-dettato/

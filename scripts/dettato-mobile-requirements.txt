@@ -1,0 +1,4 @@
+dettato @ git+https://github.com/kobimusic/dettato@9b724251794f2bbd5eaa43e54734e5a251829130
+torch==2.15.0
+onnx==1.23.2
+onnxruntime==1.32.0

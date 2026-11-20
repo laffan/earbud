@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app, COUNT_IN_BEATS } from '../state/app.svelte';
+  import { isIOSLike } from '../platform/tauri';
   import AudioSettings from './AudioSettings.svelte';
   import Sheet from './Sheet.svelte';
   import WatchSettings from './WatchSettings.svelte';
@@ -110,7 +111,7 @@
 
   <section>
     <h3>Transcription</h3>
-    <p class="help">Dettato transcribes pitched notes using the helper running on this computer.</p>
+    <p class="help">{isIOSLike() ? 'Dettato transcribes pitched notes on this device.' : 'Dettato transcribes pitched notes using the helper running on this computer.'}</p>
     <label class="toggle">
       <input
         type="checkbox"
@@ -142,7 +143,7 @@
   <section class="about">
     <p>
       Everything stays on this device. Recordings are never modified; transcriptions and edits are stored beside
-      them. Dettato runs locally after its first model download.
+      them. Dettato runs locally.
     </p>
     {#if !app.library.persistent}
       <p class="warn">Browser preview: sketches are kept in memory and disappear on reload.</p>
