@@ -21,7 +21,7 @@ import {
 } from './basicPitchCore';
 import { transcriptionParams } from './settings';
 
-const modelDir = join(__dirname, '../../../public/models/basic-pitch');
+const modelDir = join(__dirname, '../../../node_modules/@spotify/basic-pitch/model');
 let model: GraphModel;
 
 beforeAll(async () => {

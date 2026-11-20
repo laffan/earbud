@@ -27,7 +27,6 @@
   import PianoRoll from './PianoRoll.svelte';
   import type { RollViewport } from './rollViewport.svelte';
   import Sheet from './Sheet.svelte';
-  import TranscriptionSettings from './TranscriptionSettings.svelte';
   import Waveform from './Waveform.svelte';
 
   interface Props {
@@ -498,7 +497,7 @@
 {#if showRetranscribe}
   <Sheet title="Transcribe again" onclose={() => (showRetranscribe = false)}>
     <div class="retranscribe">
-      <TranscriptionSettings />
+      <p class="help">Run Dettato again on this recording?</p>
       {#if retranscribeDiscards}
         <p class="confirm-text">
           A new transcription replaces your note corrections on this take. The recording itself is never changed.

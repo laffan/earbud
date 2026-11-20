@@ -289,7 +289,7 @@ export class AppState {
     this.queue = new ProcessingQueue({
       library: this.library,
       capture: () => this.captureEngine,
-      engine: () => getTranscriptionEngine(this.settings.transcription),
+      engine: getTranscriptionEngine,
       onProgress: (id, progress) => {
         if (progress) this.jobs[id] = progress;
         else delete this.jobs[id];
