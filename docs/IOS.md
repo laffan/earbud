@@ -36,7 +36,9 @@ Earbud's iOS build uses Tauri 2's iOS support. Recording is done natively by
 
 ### Bundle Dettato for offline transcription
 
-On an Apple silicon Mac, use Python 3.12 and run these commands once from the checkout. Model preparation requires internet access. The resulting app contains the weights and WebAssembly runtime.
+For the quickest build, download the **dettato-mobile-model** artifact from a successful branch build and unzip its contents into `public/models/dettato/`. Confirm that `public/models/dettato/transcriber.onnx` exists, then continue to signing. [Dettato iOS simulator builds](https://github.com/laffan/earbud/actions/workflows/dettato-ios.yml?query=branch%3Adettato)
+
+To generate the model yourself on an Apple silicon Mac, use Python 3.12 and run these commands once from the checkout. Model preparation requires internet access. The resulting app contains the weights and WebAssembly runtime.
 
 ```sh
 python3.12 -m venv .venv-dettato
