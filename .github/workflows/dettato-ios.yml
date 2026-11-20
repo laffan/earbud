@@ -1,0 +1,53 @@
+name: Dettato iOS simulator
+on:
+  push:
+    branches: [dettato]
+    paths:
+      - '.github/workflows/dettato-ios.yml'
+      - 'src/lib/transcription/**'
+      - 'src-tauri/**'
+      - 'scripts/*dettato*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  simulator:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+      - run: npm ci
+      - run: python -m pip install -r scripts/dettato-mobile-requirements.txt
+      - run: python scripts/export-dettato-mobile.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dettato-mobile-model
+          path: public/models/dettato/
+      - run: npm run tauri -- ios init --ci
+      - run: npm run tauri -- ios build --ci --target aarch64-sim --no-sign
+      - name: Install and launch the bundled app on an iPhone simulator
+        run: |
+          app=$(find src-tauri/gen/apple/build -name '*.app' -type d | head -1)
+          test -d "$app"
+          device=$(xcrun simctl list devices available -j | jq -er '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[] | select(.name | startswith("iPhone"))][0].udid')
+          xcrun simctl boot "$device"
+          xcrun simctl bootstatus "$device" -b
+          xcrun simctl install "$device" "$app"
+          xcrun simctl launch "$device" com.earbud.sketchbook
+          ditto -c -k --keepParent "$app" Earbud-simulator.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Earbud-iOS-simulator
+          path: Earbud-simulator.zip
