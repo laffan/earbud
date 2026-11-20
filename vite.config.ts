@@ -7,7 +7,7 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 const host = process.env.TAURI_DEV_HOST;
 
 if (process.env.TAURI_ENV_PLATFORM === 'ios' && !existsSync('public/models/dettato/transcriber.onnx')) {
-  throw new Error('Prepare the offline Dettato model before building iOS. See docs/IOS.md.');
+  throw new Error('The tracked model is missing. Restore it with git restore -- public/models/dettato/transcriber.onnx.');
 }
 
 export default defineConfig({

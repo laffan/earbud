@@ -4,7 +4,7 @@ This branch uses Dettato for new recordings, audio imports and **Transcribe agai
 
 ## Standalone iPhone and iPad
 
-The iOS app bundles Dettato’s pitched-note network and runs it on the device in a Web Worker. You can record, transcribe, edit and export MIDI in airplane mode. Prepare the model once on the build Mac, then install the signed app. [Build and device test instructions](docs/IOS.md#bundle-dettato-for-offline-transcription)
+The iOS app bundles Dettato’s pitched-note network and runs it on the device in a Web Worker. You can record, transcribe, edit and export MIDI in airplane mode. The branch includes the model weights. Build and sign the app on your Mac. [Build and device test instructions](docs/IOS.md#bundle-dettato-for-offline-transcription)
 
 ## Try it on a computer
 

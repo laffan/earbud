@@ -6,6 +6,7 @@ on:
       - '.github/workflows/dettato-ios.yml'
       - 'src/lib/transcription/**'
       - 'src-tauri/**'
+      - 'public/models/dettato/**'
       - 'scripts/*dettato*'
   workflow_dispatch:
 
@@ -29,12 +30,7 @@ jobs:
         with:
           targets: aarch64-apple-ios,aarch64-apple-ios-sim
       - run: npm ci
-      - run: python -m pip install -r scripts/dettato-mobile-requirements.txt
-      - run: python scripts/export-dettato-mobile.py
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dettato-mobile-model
-          path: public/models/dettato/
+      - run: python -m pip install pretty_midi
       - run: npm run tauri -- ios init --ci
       - run: npm run tauri -- ios build --ci --target aarch64-sim --no-sign
       - name: Install and launch the bundled app on an iPhone simulator
